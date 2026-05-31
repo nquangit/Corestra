@@ -1,0 +1,319 @@
+package dev.nquangit.corestra.ui.flowise;
+
+import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.flow.rule.ExtractRule;
+import dev.nquangit.corestra.flow.rule.InjectRule;
+
+import dev.nquangit.corestra.ui.component.StyledButton;
+
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
+import javax.swing.JTable;
+import javax.swing.ListSelectionModel;
+import javax.swing.SwingConstants;
+import javax.swing.table.DefaultTableModel;
+import java.awt.BorderLayout;
+import java.awt.Dimension;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * Displays the extract and inject rules for the currently selected {@link FlowStep}.
+ *
+ * <p>Each rule type is shown in its own table with Add, Edit, and Remove buttons.
+ * Double-clicking a row opens the {@link RuleEditorDialog} for that rule. Rules are persisted
+ * via the {@link FlowWorkspaceController} on every add, edit, or remove action.</p>
+ *
+ * <p>This class is not thread-safe. All mutations must occur on the Swing Event Dispatch Thread.</p>
+ */
+public final class RuleSummaryPanel extends JPanel {
+
+    private static final String[] EXTRACT_COLUMNS = {"Name", "Source", "Type", "Selector", "→ Variable"};
+    private static final String[] INJECT_COLUMNS  = {"Name", "Target", "Selector", "Source", "Strategy"};
+
+    private final FlowWorkspaceController controller;
+
+    private final DefaultTableModel extractModel;
+    private final DefaultTableModel injectModel;
+    private final JTable extractTable;
+    private final JTable injectTable;
+
+    /**
+     * Creates a rule summary panel wired to the supplied controller.
+     *
+     * @param controller the workspace controller that owns flow and step state
+     * @throws NullPointerException if {@code controller} is {@code null}
+     */
+    public RuleSummaryPanel(FlowWorkspaceController controller) {
+        super(new BorderLayout());
+        this.controller = Objects.requireNonNull(controller, "controller");
+
+        extractModel = readOnlyModel(EXTRACT_COLUMNS);
+        injectModel  = readOnlyModel(INJECT_COLUMNS);
+        extractTable = buildTable(extractModel);
+        injectTable  = buildTable(injectModel);
+
+        extractTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2) {
+                    editSelectedExtractRule();
+                }
+            }
+        });
+
+        injectTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2) {
+                    editSelectedInjectRule();
+                }
+            }
+        });
+
+        JPanel extractSection = buildSection("Extract Rules", extractTable,
+                this::addExtractRule, this::editSelectedExtractRule, this::removeSelectedExtractRule);
+        JPanel injectSection = buildSection("Inject Rules", injectTable,
+                this::addInjectRule, this::editSelectedInjectRule, this::removeSelectedInjectRule);
+
+        // Equal preferred widths → resetToPreferredSizes() places divider at available/2.
+        // resizeWeight(0.5) keeps it 50/50 when the outer layout redistributes space.
+        Dimension equalPref = new Dimension(100, 100);
+        extractSection.setPreferredSize(equalPref);
+        injectSection.setPreferredSize(equalPref);
+
+        JSplitPane splitPane = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT, extractSection, injectSection);
+        splitPane.setResizeWeight(0.5);
+        splitPane.setDividerSize(4);
+        splitPane.setBorder(BorderFactory.createEmptyBorder());
+
+        add(splitPane, BorderLayout.CENTER);
+
+        controller.addFlowChangeListener(this::refresh);
+        refresh();
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal builders
+    // -------------------------------------------------------------------------
+
+    private static DefaultTableModel readOnlyModel(String[] columns) {
+        return new DefaultTableModel(columns, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+    }
+
+    private static JTable buildTable(DefaultTableModel model) {
+        JTable table = new JTable(model);
+        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.setFillsViewportHeight(true);
+        table.getTableHeader().setReorderingAllowed(false);
+        table.setPreferredScrollableViewportSize(new java.awt.Dimension(0, 80));
+        return table;
+    }
+
+    private static JPanel buildSection(String title, JTable table,
+                                       Runnable onAdd, Runnable onEdit, Runnable onRemove) {
+        JPanel section = new JPanel(new BorderLayout());
+        section.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
+
+        JLabel titleLabel = new JLabel(title, SwingConstants.LEFT);
+        titleLabel.setBorder(BorderFactory.createEmptyBorder(0, 2, 2, 0));
+
+        StyledButton addBtn = StyledButton.primary("+");
+        addBtn.setToolTipText("Add rule");
+        addBtn.addActionListener(e -> onAdd.run());
+
+        StyledButton editBtn = StyledButton.neutral("Edit");
+        editBtn.setToolTipText("Edit selected rule");
+        editBtn.addActionListener(e -> onEdit.run());
+
+        StyledButton removeBtn = StyledButton.danger("−");
+        removeBtn.setToolTipText("Remove selected rule");
+        removeBtn.addActionListener(e -> onRemove.run());
+
+        JPanel buttonBar = new JPanel();
+        buttonBar.setLayout(new BoxLayout(buttonBar, BoxLayout.X_AXIS));
+        buttonBar.setBorder(BorderFactory.createEmptyBorder(2, 0, 0, 0));
+        buttonBar.add(addBtn);
+        buttonBar.add(Box.createHorizontalStrut(4));
+        buttonBar.add(editBtn);
+        buttonBar.add(Box.createHorizontalStrut(4));
+        buttonBar.add(removeBtn);
+        buttonBar.add(Box.createHorizontalGlue());
+
+        section.add(titleLabel, BorderLayout.NORTH);
+        section.add(new JScrollPane(table), BorderLayout.CENTER);
+        section.add(buttonBar, BorderLayout.SOUTH);
+        return section;
+    }
+
+    // -------------------------------------------------------------------------
+    // Refresh
+    // -------------------------------------------------------------------------
+
+    private void refresh() {
+        extractModel.setRowCount(0);
+        injectModel.setRowCount(0);
+
+        FlowStep step = controller.selectedStep();
+        if (step == null) {
+            return;
+        }
+
+        for (ExtractRule rule : step.extractRules()) {
+            extractModel.addRow(new Object[]{
+                    rule.name(),
+                    rule.sourceSide(),
+                    rule.extractorType(),
+                    rule.sourceSelector(),
+                    rule.targetVariableName()
+            });
+        }
+
+        for (InjectRule rule : step.injectRules()) {
+            injectModel.addRow(new Object[]{
+                    rule.name(),
+                    rule.target(),
+                    rule.targetSelector(),
+                    rule.valueSourceType() == InjectRule.ValueSourceType.STATIC
+                            ? "\"" + rule.staticValue() + "\""
+                            : "$" + rule.valueSourceKey(),
+                    rule.writeStrategy()
+            });
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Extract rule actions
+    // -------------------------------------------------------------------------
+
+    private void addExtractRule() {
+        FlowStep step = controller.selectedStep();
+        if (step == null) return;
+
+        RuleEditorDialog.openForExtract(this, controller, step, null, saved -> {
+            FlowStep updated = withExtractRules(step, appendRule(step.extractRules(), saved));
+            saveStep(updated);
+        });
+    }
+
+    private void editSelectedExtractRule() {
+        FlowStep step = controller.selectedStep();
+        int row = extractTable.getSelectedRow();
+        if (step == null || row < 0) return;
+
+        ExtractRule rule = step.extractRules().get(row);
+        RuleEditorDialog.openForExtract(this, controller, step, rule, saved -> {
+            List<ExtractRule> updated = replaceAt(step.extractRules(), row, saved);
+            saveStep(withExtractRules(step, updated));
+        });
+    }
+
+    private void removeSelectedExtractRule() {
+        FlowStep step = controller.selectedStep();
+        int row = extractTable.getSelectedRow();
+        if (step == null || row < 0) return;
+
+        List<ExtractRule> updated = removeAt(step.extractRules(), row);
+        saveStep(withExtractRules(step, updated));
+    }
+
+    // -------------------------------------------------------------------------
+    // Inject rule actions
+    // -------------------------------------------------------------------------
+
+    private void addInjectRule() {
+        FlowStep step = controller.selectedStep();
+        if (step == null) return;
+
+        RuleEditorDialog.openForInject(this, controller, step, null, saved -> {
+            FlowStep updated = withInjectRules(step, appendRule(step.injectRules(), saved));
+            saveStep(updated);
+        });
+    }
+
+    private void editSelectedInjectRule() {
+        FlowStep step = controller.selectedStep();
+        int row = injectTable.getSelectedRow();
+        if (step == null || row < 0) return;
+
+        InjectRule rule = step.injectRules().get(row);
+        RuleEditorDialog.openForInject(this, controller, step, rule, saved -> {
+            List<InjectRule> updated = replaceAt(step.injectRules(), row, saved);
+            saveStep(withInjectRules(step, updated));
+        });
+    }
+
+    private void removeSelectedInjectRule() {
+        FlowStep step = controller.selectedStep();
+        int row = injectTable.getSelectedRow();
+        if (step == null || row < 0) return;
+
+        List<InjectRule> updated = removeAt(step.injectRules(), row);
+        saveStep(withInjectRules(step, updated));
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private void saveStep(FlowStep updatedStep) {
+        FlowDefinition active = controller.activeFlow();
+        if (active == null) return;
+
+        List<FlowStep> newSteps = new ArrayList<>(active.steps());
+        for (int i = 0; i < newSteps.size(); i++) {
+            if (newSteps.get(i).id().equals(updatedStep.id())) {
+                newSteps.set(i, updatedStep);
+                break;
+            }
+        }
+
+        FlowDefinition updated = new FlowDefinition(
+                active.id(), active.name(), active.description(), active.enabled(),
+                newSteps, active.rules(), active.aggregation(), active.triggerConfig());
+        controller.updateFlow(updated);
+        controller.setSelectedStep(updatedStep);
+    }
+
+    private static FlowStep withExtractRules(FlowStep step, List<ExtractRule> rules) {
+        return step.withExtractRules(rules);
+    }
+
+    private static FlowStep withInjectRules(FlowStep step, List<InjectRule> rules) {
+        return step.withInjectRules(rules);
+    }
+
+    private static <T> List<T> appendRule(List<T> existing, T added) {
+        List<T> result = new ArrayList<>(existing);
+        result.add(added);
+        return result;
+    }
+
+    private static <T> List<T> replaceAt(List<T> existing, int index, T replacement) {
+        List<T> result = new ArrayList<>(existing);
+        result.set(index, replacement);
+        return result;
+    }
+
+    private static <T> List<T> removeAt(List<T> existing, int index) {
+        List<T> result = new ArrayList<>(existing);
+        result.remove(index);
+        return result;
+    }
+}

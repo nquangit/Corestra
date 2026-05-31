@@ -1,0 +1,13 @@
+{
+  "status": "ok",
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fintech.signature",
+    "refreshToken": "rt_8f2c1d9a4b",
+    "expiresIn": 900,
+    "customer": {
+      "id": "CUST-00417",
+      "displayName": "Acme Treasury",
+      "segment": "corporate"
+    }
+  }
+}

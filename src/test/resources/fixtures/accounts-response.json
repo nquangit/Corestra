@@ -1,0 +1,7 @@
+{
+  "accounts": [
+    {"iban": "DE89370400440532013000", "currency": "EUR", "balanceMinor": 1042599},
+    {"iban": "GB29NWBK60161331926819", "currency": "GBP", "balanceMinor": 88012}
+  ],
+  "nextCursor": "cursor_2c9a"
+}
