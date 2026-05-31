@@ -1,5 +1,17 @@
 package dev.nquangit.corestra.integration;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
 import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.handler.HttpHandler;
@@ -22,18 +34,6 @@ import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
-
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 /**
  * Montoya {@link HttpHandler} that runs per-step auto-trigger rules and aggregates responses.
@@ -341,10 +341,11 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
     private static void appendAggregatedEntry(StringBuilder sb, String body,
                                                int statusCode, AggregationPlan.Mode mode, String stepId) {
         switch (mode) {
-            case APPEND_RAW_RESPONSES -> sb.append(body == null ? "" : body);
+            case APPEND_RAW_RESPONSES -> sb.append(body == null ? "" : body).append("\n");
             case APPEND_NORMALIZED_SUMMARIES -> sb.append("[Step: ").append(stepId)
                     .append("] Status: ").append(statusCode).append('\n')
-                    .append(body == null ? "" : body);
+                    .append(body == null ? "" : body)
+                    .append("\n");
             case APPEND_SELECTED_EXTRACTS -> {} // no-op: variable extracts not supported for live response
         }
     }

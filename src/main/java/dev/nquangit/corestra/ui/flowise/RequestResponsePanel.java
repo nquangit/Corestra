@@ -6,8 +6,6 @@ import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
-import dev.nquangit.corestra.ui.component.StyledButton;
-
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -27,18 +25,10 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Embeds a Burp-native request editor (editable) and response editor (read-only) side by side.
+ * Embeds a Burp-native read-only request viewer and read-only response viewer side by side.
  *
  * <p>A step-header bar sits above the editors showing the selected step's name (editable)
  * and an enabled toggle. Changes are saved back through the {@link FlowWorkspaceController}.</p>
- *
- * <p>The toolbar above the header provides:
- * <ul>
- *   <li><b>Capture to Step</b> — reads the current editor content and updates the selected step's
- *       request template via {@link RequestResponseController#captureToStep()}.</li>
- *   <li><b>Send to Repeater</b> — sends the selected step's request template to Burp Repeater
- *       via {@link RequestResponseController#sendToRepeater()}.</li>
- * </ul>
  */
 public final class RequestResponsePanel extends JPanel {
 
@@ -50,7 +40,7 @@ public final class RequestResponsePanel extends JPanel {
         this.workspaceController = Objects.requireNonNull(workspaceController, "workspaceController");
         Objects.requireNonNull(api, "api");
 
-        HttpRequestEditor requestEditor = api.userInterface().createHttpRequestEditor();
+        HttpRequestEditor requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         HttpResponseEditor responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
 
         reqRespController = new RequestResponseController(workspaceController, requestEditor, responseEditor, api);
@@ -73,30 +63,13 @@ public final class RequestResponsePanel extends JPanel {
         splitPane.setResizeWeight(0.5);
         splitPane.setBorder(BorderFactory.createEmptyBorder());
 
-        JPanel northSection = new JPanel(new BorderLayout());
-        northSection.add(buildToolbar(), BorderLayout.NORTH);
-        northSection.add(buildStepHeader(), BorderLayout.SOUTH);
-
-        add(northSection, BorderLayout.NORTH);
+        add(buildStepHeader(), BorderLayout.NORTH);
         add(splitPane, BorderLayout.CENTER);
     }
 
     // -------------------------------------------------------------------------
     // Internal
     // -------------------------------------------------------------------------
-
-    private JPanel buildToolbar() {
-        StyledButton captureBtn = StyledButton.neutral("Capture to Step");
-        captureBtn.setToolTipText("Update the selected step's request template from the editor");
-        captureBtn.addActionListener(e -> reqRespController.captureToStep());
-
-        JPanel bar = new JPanel();
-        bar.setLayout(new BoxLayout(bar, BoxLayout.X_AXIS));
-        bar.setBorder(BorderFactory.createEmptyBorder(5, 4, 5, 4));
-        bar.add(captureBtn);
-        bar.add(Box.createHorizontalGlue());
-        return bar;
-    }
 
     private JPanel buildStepHeader() {
         JTextField nameField = new JTextField();

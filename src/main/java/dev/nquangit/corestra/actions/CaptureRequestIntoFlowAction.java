@@ -119,10 +119,8 @@ public final class CaptureRequestIntoFlowAction {
         }
 
         String scheme = secure ? "https" : "http";
+        // path() already returns the full path including query string per the Montoya API contract.
         String pathAndQuery = request.path();
-        if (request.query() != null && !request.query().isEmpty()) {
-            pathAndQuery = pathAndQuery + "?" + request.query();
-        }
         if (pathAndQuery == null || pathAndQuery.isEmpty()) {
             pathAndQuery = "/";
         }
