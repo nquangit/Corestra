@@ -14,6 +14,11 @@ public final class CorestraSettingsKeys {
      */
     public static final String FLOW_STORAGE_DOCUMENT_QUARANTINE = "corestra.flows.document.quarantine";
 
+    /**
+     * Stores serialized project metadata (name, owner, timestamps, etc.) in Burp project data.
+     */
+    public static final String PROJECT_METADATA = "corestra.project.metadata";
+
     private CorestraSettingsKeys() {
         throw new IllegalStateException("Utility class");
     }
