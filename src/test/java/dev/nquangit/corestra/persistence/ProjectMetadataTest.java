@@ -79,4 +79,11 @@ class ProjectMetadataTest {
         assertEquals("", meta.owner());
         assertEquals(500L, meta.createdAtEpochMillis());
     }
+
+    @Test
+    void negativeTimestampsAreClampedToZero() {
+        ProjectMetadata meta = new ProjectMetadata("n", "d", "o", "nt", -1L, -500L);
+        assertEquals(0L, meta.createdAtEpochMillis());
+        assertEquals(0L, meta.updatedAtEpochMillis());
+    }
 }
