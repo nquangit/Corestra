@@ -11,17 +11,18 @@ import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
+import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JSeparator;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.UIManager;
 import javax.swing.filechooser.FileNameExtensionFilter;
-import javax.swing.JFileChooser;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -54,65 +55,95 @@ public final class ProjectPanel extends JPanel {
 
     private ProjectMetadata currentMeta;
 
-    private final JTextField nameField = new JTextField();
-    private final JTextField ownerField = new JTextField();
-    private final JTextField descField = new JTextField();
-    private final JTextArea noteArea = new JTextArea(2, 20);
+    private final JTextField nameField   = new JTextField();
+    private final JTextField ownerField  = new JTextField();
+    private final JTextField descField   = new JTextField();
+    private final JTextArea  noteArea    = new JTextArea(3, 20);
     private final JLabel timestampsLabel = new JLabel(" ");
-    private final JLabel statsLabel = new JLabel(" ");
+    private final JLabel statsLabel      = new JLabel(" ");
 
     public ProjectPanel(FlowWorkspaceController controller,
                         ProjectMetadataRepository metadataRepo,
                         ProjectSerializer projectSerializer) {
         super(new BorderLayout());
-        this.controller = Objects.requireNonNull(controller, "controller");
-        this.metadataRepo = Objects.requireNonNull(metadataRepo, "metadataRepo");
+        this.controller        = Objects.requireNonNull(controller,        "controller");
+        this.metadataRepo      = Objects.requireNonNull(metadataRepo,      "metadataRepo");
         this.projectSerializer = Objects.requireNonNull(projectSerializer, "projectSerializer");
 
         this.currentMeta = metadataRepo.load();
 
-        JPanel content = new JPanel();
-        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-        content.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+        styleSecondary(timestampsLabel);
+        styleSecondary(statsLabel);
 
-        content.add(buildFormSection());
-        content.add(Box.createVerticalStrut(10));
-        content.add(buildTimestampsRow());
-        content.add(Box.createVerticalStrut(10));
-        content.add(buildStatsSection());
-        content.add(Box.createVerticalStrut(14));
-        content.add(buildTransferSection());
-        content.add(Box.createVerticalGlue());
-
-        add(new JScrollPane(content), BorderLayout.CENTER);
+        // All content anchored at the top; CENTER stays empty to absorb extra height.
+        add(buildContent(), BorderLayout.NORTH);
 
         wireListeners();
         refreshAll();
         controller.addFlowChangeListener(this::refreshStats);
     }
 
-    // ── Form ─────────────────────────────────────────────────────────────────
+    // ── Layout ───────────────────────────────────────────────────────────────
+
+    private JPanel buildContent() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx   = 0;
+        gbc.weightx = 1;
+        gbc.fill    = GridBagConstraints.HORIZONTAL;
+        gbc.anchor  = GridBagConstraints.NORTHWEST;
+
+        int row = 0;
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 4, 0);
+        panel.add(buildFormSection(), gbc);
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 2, 10, 0);
+        panel.add(timestampsLabel, gbc);
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 8, 0);
+        panel.add(new JSeparator(), gbc);
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 2, 8, 0);
+        panel.add(statsLabel, gbc);
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
+        panel.add(new JSeparator(), gbc);
+
+        gbc.gridy = row; gbc.insets = new Insets(0, 0, 0, 0);
+        panel.add(buildTransferSection(), gbc);
+
+        return panel;
+    }
 
     private JPanel buildFormSection() {
         JPanel form = new JPanel(new GridBagLayout());
+
         GridBagConstraints lc = new GridBagConstraints();
         lc.anchor = GridBagConstraints.WEST;
         lc.insets = new Insets(3, 0, 3, 8);
-        lc.gridx = 0;
+        lc.gridx  = 0;
 
         GridBagConstraints fc = new GridBagConstraints();
-        fc.fill = GridBagConstraints.HORIZONTAL;
+        fc.fill    = GridBagConstraints.HORIZONTAL;
         fc.weightx = 1;
-        fc.insets = new Insets(3, 0, 3, 0);
-        fc.gridx = 1;
+        fc.insets  = new Insets(3, 0, 3, 0);
+        fc.gridx   = 1;
 
         noteArea.setLineWrap(true);
         noteArea.setWrapStyleWord(true);
         noteArea.setFont(nameField.getFont());
 
-        lc.gridy = 0; fc.gridy = 0; form.add(new JLabel("Name:"), lc);        form.add(nameField, fc);
-        lc.gridy = 1; fc.gridy = 1; form.add(new JLabel("Owner:"), lc);       form.add(ownerField, fc);
-        lc.gridy = 2; fc.gridy = 2; form.add(new JLabel("Description:"), lc); form.add(descField, fc);
+        lc.gridy = 0; fc.gridy = 0;
+        form.add(new JLabel("Name:"), lc);        form.add(nameField, fc);
+
+        lc.gridy = 1; fc.gridy = 1;
+        form.add(new JLabel("Owner:"), lc);       form.add(ownerField, fc);
+
+        lc.gridy = 2; fc.gridy = 2;
+        form.add(new JLabel("Description:"), lc); form.add(descField, fc);
 
         lc.gridy = 3; fc.gridy = 3;
         lc.anchor = GridBagConstraints.NORTHWEST;
@@ -122,28 +153,7 @@ public final class ProjectPanel extends JPanel {
         return form;
     }
 
-    private JPanel buildTimestampsRow() {
-        Font base = UIManager.getFont("Label.font");
-        if (base != null) timestampsLabel.setFont(base.deriveFont(base.getSize2D() - 1f));
-        timestampsLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
-        JPanel row = new JPanel(new BorderLayout());
-        row.add(timestampsLabel, BorderLayout.WEST);
-        return row;
-    }
-
-    private JPanel buildStatsSection() {
-        JLabel header = dimLabel("── Statistics ──────────────────────────────");
-        JPanel section = new JPanel();
-        section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
-        section.add(header);
-        section.add(Box.createVerticalStrut(4));
-        section.add(statsLabel);
-        return section;
-    }
-
     private JPanel buildTransferSection() {
-        JLabel header = dimLabel("── Transfer ─────────────────────────────────");
-
         StyledButton importProjectBtn = StyledButton.primary("Import Project");
         StyledButton exportProjectBtn = StyledButton.success("Export Project");
         StyledButton importFlowsBtn   = StyledButton.neutral("Import Flow(s)");
@@ -154,30 +164,23 @@ public final class ProjectPanel extends JPanel {
         importFlowsBtn.addActionListener(e -> importFlows());
         exportFlowsBtn.addActionListener(e -> exportFlows());
 
-        JPanel row1 = new JPanel();
-        row1.setLayout(new BoxLayout(row1, BoxLayout.X_AXIS));
-        row1.add(importProjectBtn); row1.add(Box.createHorizontalStrut(8)); row1.add(exportProjectBtn);
-
-        JPanel row2 = new JPanel();
-        row2.setLayout(new BoxLayout(row2, BoxLayout.X_AXIS));
-        row2.add(importFlowsBtn); row2.add(Box.createHorizontalStrut(8)); row2.add(exportFlowsBtn);
-
-        JPanel section = new JPanel();
-        section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
-        section.add(header);
-        section.add(Box.createVerticalStrut(6));
-        section.add(row1);
-        section.add(Box.createVerticalStrut(4));
-        section.add(row2);
-        return section;
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.add(importProjectBtn);
+        row.add(Box.createHorizontalStrut(6));
+        row.add(exportProjectBtn);
+        row.add(Box.createHorizontalStrut(16));
+        row.add(importFlowsBtn);
+        row.add(Box.createHorizontalStrut(6));
+        row.add(exportFlowsBtn);
+        row.add(Box.createHorizontalGlue());
+        return row;
     }
 
-    private JLabel dimLabel(String text) {
-        JLabel lbl = new JLabel(text);
+    private void styleSecondary(JLabel lbl) {
         Font base = UIManager.getFont("Label.font");
         if (base != null) lbl.setFont(base.deriveFont(base.getSize2D() - 0.5f));
         lbl.setForeground(UIManager.getColor("Label.disabledForeground"));
-        return lbl;
     }
 
     // ── Listeners ─────────────────────────────────────────────────────────────
@@ -221,7 +224,7 @@ public final class ProjectPanel extends JPanel {
     private void refreshTimestamps() {
         timestampsLabel.setText(
                 "Created: " + DATE_FORMAT.format(new Date(currentMeta.createdAtEpochMillis()))
-                + "  •  Updated: " + DATE_FORMAT.format(new Date(currentMeta.updatedAtEpochMillis())));
+                + "   •   Updated: " + DATE_FORMAT.format(new Date(currentMeta.updatedAtEpochMillis())));
     }
 
     private void refreshStats() {
@@ -229,7 +232,9 @@ public final class ProjectPanel extends JPanel {
         int stepCount = flows.stream().mapToInt(f -> f.steps().size()).sum();
         int ruleCount = flows.stream().flatMap(f -> f.steps().stream())
                 .mapToInt(s -> s.extractRules().size() + s.injectRules().size()).sum();
-        statsLabel.setText("Flows: " + flows.size() + "    Steps: " + stepCount + "    Rules: " + ruleCount);
+        statsLabel.setText("Flows: " + flows.size()
+                + "   •   Steps: " + stepCount
+                + "   •   Rules: " + ruleCount);
     }
 
     // ── Export project ────────────────────────────────────────────────────────
