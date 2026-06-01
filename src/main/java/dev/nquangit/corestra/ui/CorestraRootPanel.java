@@ -39,6 +39,12 @@ public final class CorestraRootPanel extends JPanel {
         add(tabs, BorderLayout.CENTER);
 
         ThemeCoordinator.applyTheme(this, api);
+
+        // Burp's applyThemeToComponent may reset custom tab components via updateUI().
+        // Re-apply them explicitly so the rotated labels survive theme application.
+        for (int i = 0; i < tabs.getTabCount(); i++) {
+            tabs.setTabComponentAt(i, new RotatedTabLabel(tabs.getTitleAt(i)));
+        }
     }
 
     /**
