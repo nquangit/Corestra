@@ -19,9 +19,12 @@ import dev.nquangit.corestra.integration.SessionHandlingFlowMapper;
 import dev.nquangit.corestra.persistence.FlowRepository;
 import dev.nquangit.corestra.persistence.FlowSerializer;
 import dev.nquangit.corestra.persistence.PersistenceMigrationService;
+import dev.nquangit.corestra.persistence.ProjectMetadataRepository;
+import dev.nquangit.corestra.persistence.ProjectSerializer;
 import dev.nquangit.corestra.ui.CorestraRootPanel;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
+import dev.nquangit.corestra.ui.project.ProjectPanel;
 
 import java.util.List;
 import java.util.UUID;
@@ -56,8 +59,11 @@ public final class CorestraBootstrap {
         FlowWorkspaceController controller = new FlowWorkspaceController(flowRepository, flowEngine);
         seedDefaultFlow(controller);
 
+        ProjectMetadataRepository metadataRepo = new ProjectMetadataRepository(api.persistence());
+        ProjectSerializer projectSerializer = new ProjectSerializer(serializer);
         FlowisePanel flowisePanel = new FlowisePanel(controller, api);
-        CorestraRootPanel rootPanel = new CorestraRootPanel(flowisePanel, api);
+        ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer);
+        CorestraRootPanel rootPanel = new CorestraRootPanel(flowisePanel, projectPanel, api);
 
         api.userInterface().registerSuiteTab("Corestra", rootPanel);
         api.userInterface().registerContextMenuItemsProvider(
