@@ -19,6 +19,16 @@ public final class CorestraSettingsKeys {
      */
     public static final String PROJECT_METADATA = "corestra.project.metadata";
 
+    /**
+     * Stores persisted Access Testing configuration in Burp project data.
+     */
+    public static final String ACCESS_WORKSPACE_DOCUMENT = "corestra.access.workspace.document";
+
+    /**
+     * Stores the last invalid raw Access Testing configuration payload quarantined during recovery.
+     */
+    public static final String ACCESS_WORKSPACE_DOCUMENT_QUARANTINE = "corestra.access.workspace.document.quarantine";
+
     private CorestraSettingsKeys() {
         throw new IllegalStateException("Utility class");
     }

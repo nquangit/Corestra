@@ -3,11 +3,16 @@ package dev.nquangit.corestra.actions;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
+import dev.nquangit.corestra.access.template.AccessRequestTemplate;
+import dev.nquangit.corestra.access.template.OperationMetadata;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.flow.StoredRequestTemplate;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
+import javax.swing.JOptionPane;
 import java.awt.Component;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +32,7 @@ import java.util.Objects;
 public final class CorestraContextMenuProvider implements ContextMenuItemsProvider {
 
     private final FlowWorkspaceController controller;
+    private final AccessUiController accessController;
     private final CaptureRequestIntoFlowAction captureAction;
 
     /**
@@ -36,7 +42,19 @@ public final class CorestraContextMenuProvider implements ContextMenuItemsProvid
      * @throws NullPointerException if {@code controller} is {@code null}
      */
     public CorestraContextMenuProvider(FlowWorkspaceController controller) {
+        this(controller, null);
+    }
+
+    /**
+     * Creates the context menu provider with optional Access Testing actions.
+     *
+     * @param controller the workspace controller that owns the list of flows
+     * @param accessController optional Access Testing controller
+     * @throws NullPointerException if {@code controller} is {@code null}
+     */
+    public CorestraContextMenuProvider(FlowWorkspaceController controller, AccessUiController accessController) {
         this.controller = Objects.requireNonNull(controller, "controller");
+        this.accessController = accessController;
         this.captureAction = new CaptureRequestIntoFlowAction(controller);
     }
 
@@ -59,9 +77,24 @@ public final class CorestraContextMenuProvider implements ContextMenuItemsProvid
             return List.of();
         }
 
-        List<FlowDefinition> flows = controller.flows();
-        if (flows.isEmpty()) {
+        if (controller.flows().isEmpty() && accessController == null) {
             return List.of();
+        }
+
+        List<FlowDefinition> flows = controller.flows();
+        JMenu root = new JMenu("Corestra");
+
+        if (accessController != null) {
+            JMenuItem addToTemplates = new JMenuItem("Add to Access Templates");
+            addToTemplates.addActionListener(e -> addToAccessTemplates(pairs));
+            root.add(addToTemplates);
+            if (!flows.isEmpty()) {
+                root.addSeparator();
+            }
+        }
+
+        if (flows.isEmpty()) {
+            return List.of(root);
         }
 
         JMenu addToFlowMenu = new JMenu("Add to Corestra Flow");
@@ -89,16 +122,33 @@ public final class CorestraContextMenuProvider implements ContextMenuItemsProvid
                 }
             });
 
-            JMenu root = new JMenu("Corestra");
             root.add(quickItem);
             root.addSeparator();
             root.add(addToFlowMenu);
             return List.of(root);
         }
 
-        JMenu root = new JMenu("Corestra");
         root.add(addToFlowMenu);
         return List.of(root);
+    }
+
+    private void addToAccessTemplates(List<HttpRequestResponse> pairs) {
+        int created = 0;
+        for (HttpRequestResponse pair : pairs) {
+            StoredRequestTemplate request = CaptureRequestIntoFlowAction.toTemplate(pair.request());
+            AccessRequestTemplate template = accessController.saveCapturedRequestTemplate(
+                    request.method() + " " + request.pathAndQuery(),
+                    request,
+                    OperationMetadata.unknown());
+            if (template != null) {
+                created++;
+            }
+        }
+        JOptionPane.showMessageDialog(
+                null,
+                "Created " + created + " disabled Access Template" + (created == 1 ? "." : "s."),
+                "Corestra Access Templates",
+                JOptionPane.INFORMATION_MESSAGE);
     }
 
     // -------------------------------------------------------------------------

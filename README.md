@@ -13,6 +13,7 @@ Features:
 - Burp-native request/response editors and theme-aware UI.
 
 Documentation:
+- [Usage guide](USAGE.md)
 - [Architecture](docs/architecture.md)
 - [User guide](docs/user-guide.md)
 - Full task plan: `docs/plans/corestra-flowise-implementation-plan.md`
@@ -31,11 +32,9 @@ Build baseline:
 - Packaging: Maven Shade baseline artifact for scaffold packaging; not yet a functioning Burp extension
 
 Verification status:
-- Local verification in this WSL environment currently depends on Maven availability.
-- Maven is not installed here at the moment, so Task 0 defines the build and verification gate but does not claim a successful local build.
-- Do not treat later implementation work as verified until Maven is available locally or another agreed build path exists.
+- Local verification uses Maven.
 
-Verification commands once Maven is available:
+Verification commands:
 ```bash
 mvn -q test
 mvn -q package

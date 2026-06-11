@@ -19,11 +19,35 @@ import dev.nquangit.corestra.persistence.FlowSerializer;
 import dev.nquangit.corestra.persistence.PersistenceMigrationService;
 import dev.nquangit.corestra.persistence.ProjectMetadataRepository;
 import dev.nquangit.corestra.persistence.ProjectSerializer;
+import dev.nquangit.corestra.access.auth.runtime.AuthFlowExecutor;
+import dev.nquangit.corestra.access.auth.runtime.AuthManager;
+import dev.nquangit.corestra.access.auth.runtime.AuthRuleEvaluator;
+import dev.nquangit.corestra.access.evaluate.BasicResultEvaluator;
+import dev.nquangit.corestra.access.persistence.AccessWorkspaceProjectRepository;
+import dev.nquangit.corestra.access.repository.InMemoryAccessRepository;
+import dev.nquangit.corestra.access.runner.AccessTargetRequestPreparer;
+import dev.nquangit.corestra.access.runner.ManualAuthApplier;
+import dev.nquangit.corestra.access.runner.AccessPlanRunner;
+import dev.nquangit.corestra.access.runner.SingleAccessTestRunner;
+import dev.nquangit.corestra.access.runner.StoredRequestHttpRequestAdapter;
+import dev.nquangit.corestra.access.race.RaceRunner;
+import dev.nquangit.corestra.access.scenario.ScenarioManager;
+import dev.nquangit.corestra.access.scenario.ScenarioSetupFlowRunner;
+import dev.nquangit.corestra.access.security.RedactionService;
+import dev.nquangit.corestra.access.teardown.TeardownFlowRunner;
+import dev.nquangit.corestra.access.template.AccessRequestTemplateRenderer;
+import dev.nquangit.corestra.access.template.AccessScopedVariableStoreFactory;
+import dev.nquangit.corestra.access.variable.DefaultRuntimeValueProvider;
+import dev.nquangit.corestra.access.variable.TemplateRenderer;
+import dev.nquangit.corestra.access.variable.VariableResolver;
 import dev.nquangit.corestra.ui.CorestraRootPanel;
+import dev.nquangit.corestra.ui.access.AccessTestingPanel;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
 import dev.nquangit.corestra.ui.project.ProjectPanel;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.UUID;
 
@@ -48,8 +72,9 @@ public final class CorestraBootstrap {
         // Flow execution engine wired to the Montoya HTTP transport.
         ExtractionService extractionService = new ExtractionService();
         InjectionService injectionService = new InjectionService();
+        MontoyaHttpClient httpClient = new MontoyaHttpClient(api);
         FlowEngine flowEngine = new FlowEngine(
-                extractionService, injectionService, new MontoyaHttpClient(api));
+                extractionService, injectionService, httpClient);
 
         ServiceRegistry registry = new ServiceRegistry(api, flowRepository, flowEngine);
 
@@ -59,13 +84,87 @@ public final class CorestraBootstrap {
 
         ProjectMetadataRepository metadataRepo = new ProjectMetadataRepository(api.persistence());
         ProjectSerializer projectSerializer = new ProjectSerializer(serializer);
-        FlowisePanel flowisePanel = new FlowisePanel(controller, api);
-        ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer);
-        CorestraRootPanel rootPanel = new CorestraRootPanel(flowisePanel, projectPanel, api);
+        AccessWorkspaceProjectRepository accessProjectRepository = new AccessWorkspaceProjectRepository(api.persistence());
+        InMemoryAccessRepository accessRepository = new InMemoryAccessRepository(
+                accessProjectRepository.load(),
+                accessProjectRepository::save);
+        TemplateRenderer accessTemplateRenderer = new TemplateRenderer(
+                new VariableResolver(new DefaultRuntimeValueProvider()));
+        AccessRequestTemplateRenderer accessRequestTemplateRenderer = new AccessRequestTemplateRenderer(accessTemplateRenderer);
+        AccessScopedVariableStoreFactory accessStoreFactory = new AccessScopedVariableStoreFactory();
+        Clock authClock = Clock.systemUTC();
+        AuthManager authManager = new AuthManager(
+                accessRepository,
+                new AuthFlowExecutor(flowRepository, flowEngine, authClock),
+                new AuthRuleEvaluator(),
+                authClock);
+        ScenarioManager scenarioManager = new ScenarioManager(
+                accessRepository,
+                flowRepository,
+                new ScenarioSetupFlowRunner(flowEngine, authClock),
+                authManager,
+                new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
+                authClock);
+        RedactionService redactionService = new RedactionService();
+        StoredRequestHttpRequestAdapter requestAdapter = new StoredRequestHttpRequestAdapter();
+        TeardownFlowRunner teardownFlowRunner = new TeardownFlowRunner(
+                flowRepository::loadAll,
+                extractionService,
+                injectionService,
+                httpClient,
+                requestAdapter,
+                redactionService,
+                authClock);
+        AccessTargetRequestPreparer raceRequestPreparer = new AccessTargetRequestPreparer(
+                accessRequestTemplateRenderer,
+                accessStoreFactory,
+                new ManualAuthApplier(accessTemplateRenderer),
+                requestAdapter);
+        SingleAccessTestRunner accessRunner = new SingleAccessTestRunner(
+                accessRequestTemplateRenderer,
+                accessStoreFactory,
+                httpClient,
+                new BasicResultEvaluator(),
+                redactionService,
+                new ManualAuthApplier(accessTemplateRenderer),
+                requestAdapter,
+                new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
+                authManager,
+                scenarioManager,
+                teardownFlowRunner);
+        AccessPlanRunner accessPlanRunner = new AccessPlanRunner(accessRepository, accessRunner);
+        RaceRunner raceRunner = new RaceRunner(
+                accessRepository,
+                raceRequestPreparer,
+                requestAdapter,
+                httpClient,
+                new BasicResultEvaluator(),
+                redactionService,
+                new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
+                accessRunner,
+                authManager,
+                scenarioManager,
+                authClock,
+                java.util.concurrent.Executors.newFixedThreadPool(
+                        dev.nquangit.corestra.access.race.RaceRunConfig.MAX_CONCURRENCY));
+        AccessUiController accessUiController = new AccessUiController(
+                accessRepository,
+                new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
+                accessRequestTemplateRenderer,
+                accessStoreFactory,
+                accessRunner,
+                accessPlanRunner,
+                flowRepository::loadAll,
+                raceRunner);
+        AccessTestingPanel accessTestingPanel = new AccessTestingPanel(accessUiController);
+        FlowisePanel flowisePanel = new FlowisePanel(controller, api, accessUiController);
+        ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer,
+                accessRepository, accessTestingPanel::refreshUi);
+        CorestraRootPanel rootPanel = new CorestraRootPanel(flowisePanel, projectPanel, accessTestingPanel, api);
 
         api.userInterface().registerSuiteTab("Corestra", rootPanel);
         api.userInterface().registerContextMenuItemsProvider(
-                new CorestraContextMenuProvider(controller));
+                new CorestraContextMenuProvider(controller, accessUiController));
 
         // Session-handling integration: run opted-in prerequisite flows before Burp's request.
         RunFlowAction runFlowAction = new RunFlowAction(flowEngine);

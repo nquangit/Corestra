@@ -1,5 +1,7 @@
 package dev.nquangit.corestra.ui.project;
 
+import dev.nquangit.corestra.access.repository.InMemoryAccessRepository;
+import dev.nquangit.corestra.access.security.ExportMode;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.persistence.ProjectDocument;
 import dev.nquangit.corestra.persistence.ProjectMetadata;
@@ -12,6 +14,7 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JFileChooser;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
@@ -45,13 +48,19 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * Project metadata and import/export panel.
+ */
 public final class ProjectPanel extends JPanel {
 
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+    private static final ExportMode DEFAULT_ACCESS_EXPORT_MODE = ExportMode.SANITIZED_EXPORT;
 
     private final FlowWorkspaceController controller;
     private final ProjectMetadataRepository metadataRepo;
     private final ProjectSerializer projectSerializer;
+    private final InMemoryAccessRepository accessRepository;
+    private final Runnable accessRefreshCallback;
 
     private ProjectMetadata currentMeta;
 
@@ -61,19 +70,51 @@ public final class ProjectPanel extends JPanel {
     private final JTextArea  noteArea    = new JTextArea(3, 20);
     private final JLabel timestampsLabel = new JLabel(" ");
     private final JLabel statsLabel      = new JLabel(" ");
+    private final JComboBox<ExportMode> accessExportModeCombo = new JComboBox<>(
+            new ExportMode[]{ExportMode.FULL_EXPORT, ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS});
 
+    /**
+     * Creates a project panel without access repository integration.
+     *
+     * @param controller flow workspace controller
+     * @param metadataRepo project metadata repository
+     * @param projectSerializer project serializer
+     */
     public ProjectPanel(FlowWorkspaceController controller,
                         ProjectMetadataRepository metadataRepo,
                         ProjectSerializer projectSerializer) {
+        this(controller, metadataRepo, projectSerializer, new InMemoryAccessRepository(), () -> { });
+    }
+
+    /**
+     * Creates a project panel.
+     *
+     * @param controller flow workspace controller
+     * @param metadataRepo project metadata repository
+     * @param projectSerializer project serializer
+     * @param accessRepository access workspace repository
+     * @param accessRefreshCallback callback invoked after access workspace import
+     */
+    public ProjectPanel(FlowWorkspaceController controller,
+                        ProjectMetadataRepository metadataRepo,
+                        ProjectSerializer projectSerializer,
+                        InMemoryAccessRepository accessRepository,
+                        Runnable accessRefreshCallback) {
         super(new BorderLayout());
         this.controller        = Objects.requireNonNull(controller,        "controller");
         this.metadataRepo      = Objects.requireNonNull(metadataRepo,      "metadataRepo");
         this.projectSerializer = Objects.requireNonNull(projectSerializer, "projectSerializer");
+        this.accessRepository  = Objects.requireNonNull(accessRepository,  "accessRepository");
+        this.accessRefreshCallback = Objects.requireNonNull(accessRefreshCallback, "accessRefreshCallback");
 
         this.currentMeta = metadataRepo.load();
 
         styleSecondary(timestampsLabel);
         styleSecondary(statsLabel);
+        accessExportModeCombo.setSelectedItem(DEFAULT_ACCESS_EXPORT_MODE);
+        accessExportModeCombo.setToolTipText(exportModeDescription(currentAccessExportMode()));
+        accessExportModeCombo.addActionListener(event ->
+                accessExportModeCombo.setToolTipText(exportModeDescription(currentAccessExportMode())));
 
         // All content anchored at the top; CENTER stays empty to absorb extra height.
         add(buildContent(), BorderLayout.NORTH);
@@ -169,6 +210,10 @@ public final class ProjectPanel extends JPanel {
         row.add(importProjectBtn);
         row.add(Box.createHorizontalStrut(6));
         row.add(exportProjectBtn);
+        row.add(Box.createHorizontalStrut(10));
+        row.add(new JLabel("Access export:"));
+        row.add(Box.createHorizontalStrut(4));
+        row.add(accessExportModeCombo);
         row.add(Box.createHorizontalStrut(16));
         row.add(importFlowsBtn);
         row.add(Box.createHorizontalStrut(6));
@@ -245,10 +290,16 @@ public final class ProjectPanel extends JPanel {
         metadataRepo.save(currentMeta);
         refreshTimestamps();
 
-        ProjectDocument doc = new ProjectDocument(1, currentMeta, controller.flows());
+        ExportMode exportMode = currentAccessExportMode();
+        if (exportMode == ExportMode.FULL_EXPORT && !confirmFullAccessExport()) {
+            return;
+        }
+
+        ProjectDocument doc = new ProjectDocument(1, currentMeta, controller.flows(),
+                accessRepository.snapshotDocument());
         String json;
         try {
-            json = projectSerializer.serializeProject(doc);
+            json = projectSerializer.serializeProject(doc, exportMode);
         } catch (IllegalArgumentException e) {
             showError("Serialization failed: " + e.getMessage());
             return;
@@ -260,7 +311,7 @@ public final class ProjectPanel extends JPanel {
         chooser.setSelectedFile(new File(defaultName + ".json"));
         if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
 
-        writeFile(chooser.getSelectedFile(), json, "Project exported successfully.");
+        writeFile(chooser.getSelectedFile(), json, exportSuccessMessage(exportMode));
     }
 
     // ── Import project ────────────────────────────────────────────────────────
@@ -282,13 +333,26 @@ public final class ProjectPanel extends JPanel {
 
         ProjectMetadata m = doc.metadata();
         String info = "Importing project \"" + m.name() + "\" by \"" + m.owner()
-                + "\" — " + doc.flows().size() + " flow(s).\n\nHow should existing flows be handled?";
+                + "\" — " + doc.flows().size() + " flow(s), "
+                + doc.accessWorkspace().authProviders().size() + " auth provider(s), "
+                + doc.accessWorkspace().authProfiles().size() + " auth profile(s), "
+                + doc.accessWorkspace().dataProfiles().size() + " data profile(s), "
+                + doc.accessWorkspace().templates().size() + " access template(s), "
+                + doc.accessWorkspace().evaluationProfiles().size() + " evaluation profile(s), "
+                + doc.accessWorkspace().testCases().size() + " matrix row(s), "
+                + doc.accessWorkspace().results().size() + " latest result(s), "
+                + doc.accessEvidence().size() + " evidence item(s), "
+                + doc.accessReportDrafts().size() + " saved report draft(s).\n\n"
+                + "Runtime scenarios are not stored in project files.\n\n"
+                + "How should existing flows be handled?";
         int choice = JOptionPane.showOptionDialog(this, info, "Import Project",
                 JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
                 new Object[]{"Merge", "Replace All", "Cancel"}, "Merge");
 
         if (choice == 2 || choice == JOptionPane.CLOSED_OPTION) return;
         applyImportedFlows(doc.flows(), choice == 1);
+        accessRepository.replaceWith(doc.accessDocument());
+        accessRefreshCallback.run();
     }
 
     // ── Export flows ──────────────────────────────────────────────────────────
@@ -417,5 +481,36 @@ public final class ProjectPanel extends JPanel {
 
     private void showError(String message) {
         JOptionPane.showMessageDialog(this, message, "Error", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private ExportMode currentAccessExportMode() {
+        Object selected = accessExportModeCombo.getSelectedItem();
+        return selected instanceof ExportMode exportMode ? exportMode : DEFAULT_ACCESS_EXPORT_MODE;
+    }
+
+    private boolean confirmFullAccessExport() {
+        String message = "This export may include access tokens, cookies, credentials, "
+                + "and sensitive object IDs in Access Testing configuration.";
+        int choice = JOptionPane.showConfirmDialog(this, message, "Full Access Export",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        return choice == JOptionPane.OK_OPTION;
+    }
+
+    private static String exportSuccessMessage(ExportMode exportMode) {
+        return switch (exportMode) {
+            case FULL_EXPORT -> "Project exported successfully. Access configuration secrets may be included.";
+            case SANITIZED_EXPORT -> "Project exported successfully. Access secrets were redacted.";
+            case EXCLUDE_SECRETS -> "Project exported successfully. Access auth state was omitted.";
+            case ENCRYPTED_EXPORT -> "Project exported successfully.";
+        };
+    }
+
+    private static String exportModeDescription(ExportMode exportMode) {
+        return switch (exportMode) {
+            case FULL_EXPORT -> "Includes access tokens, cookies, and credentials in reusable Access Testing configuration.";
+            case SANITIZED_EXPORT -> "Redacts secrets in reusable Access Testing configuration.";
+            case EXCLUDE_SECRETS -> "Omits auth state while keeping safe Access Testing metadata.";
+            case ENCRYPTED_EXPORT -> "Encrypted access export is reserved for a future release.";
+        };
     }
 }

@@ -3,6 +3,7 @@ package dev.nquangit.corestra.ui.flowise;
 import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.StyledButton;
 
 import javax.swing.BorderFactory;
@@ -44,11 +45,26 @@ public final class FlowWorkspacePanel extends JPanel {
      * @throws NullPointerException if either argument is {@code null}
      */
     public FlowWorkspacePanel(FlowWorkspaceController controller, MontoyaApi api) {
+        this(controller, api, null);
+    }
+
+    /**
+     * Creates a workspace panel for one flow, wired to the supplied controllers.
+     *
+     * @param controller the workspace controller that owns flow and step selection state
+     * @param api the Montoya API used to create Burp-native editors
+     * @param accessController optional Access Testing controller for workflow actions
+     * @throws NullPointerException if controller or api is {@code null}
+     */
+    public FlowWorkspacePanel(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            AccessUiController accessController) {
         super(new BorderLayout());
         Objects.requireNonNull(controller, "controller");
         Objects.requireNonNull(api, "api");
 
-        StepListPanel stepList = new StepListPanel(controller);
+        StepListPanel stepList = new StepListPanel(controller, accessController);
         RequestResponsePanel reqResp = new RequestResponsePanel(controller, api);
         JTabbedPane detailTabs = buildDetailTabs(controller);
 

@@ -1,15 +1,25 @@
 package dev.nquangit.corestra.ui.flowise;
 
+import dev.nquangit.corestra.access.auth.AuthProfile;
+import dev.nquangit.corestra.access.data.DataProfile;
+import dev.nquangit.corestra.access.dependency.SetupSuggestionResult;
+import dev.nquangit.corestra.access.matrix.AccessTestCase;
+import dev.nquangit.corestra.access.matrix.ExpectedResult;
+import dev.nquangit.corestra.access.template.AccessRequestTemplate;
+import dev.nquangit.corestra.access.template.OperationMetadata;
+import dev.nquangit.corestra.access.variable.RenderMode;
 import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.UiTheme;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
@@ -17,6 +27,7 @@ import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.SwingUtilities;
+import javax.swing.JTextArea;
 import javax.swing.UIManager;
 import java.awt.BasicStroke;
 import java.awt.BorderLayout;
@@ -46,6 +57,7 @@ import java.util.Set;
 public final class StepListPanel extends JPanel {
 
     private final FlowWorkspaceController controller;
+    private final AccessUiController accessController;
     private final JPanel listContainer;
 
     private String  selectedStepId  = null;
@@ -54,8 +66,19 @@ public final class StepListPanel extends JPanel {
     private int     dropIndicatorY  = -1;
 
     public StepListPanel(FlowWorkspaceController controller) {
+        this(controller, null);
+    }
+
+    /**
+     * Creates a step list with optional Access Testing workflow actions.
+     *
+     * @param controller flow workspace controller
+     * @param accessController optional Access Testing controller
+     */
+    public StepListPanel(FlowWorkspaceController controller, AccessUiController accessController) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
+        this.accessController = accessController;
 
         listContainer = new JPanel() {
             @Override
@@ -430,6 +453,18 @@ public final class StepListPanel extends JPanel {
 
     private JPopupMenu buildRowContextMenu(FlowStep step) {
         JPopupMenu menu = new JPopupMenu();
+        if (accessController != null) {
+            JMenuItem convertItem = new JMenuItem("Convert Step to Access Template");
+            convertItem.addActionListener(e -> convertToAccessTemplate(step));
+            JMenuItem targetItem = new JMenuItem("Add Step as Matrix Target");
+            targetItem.addActionListener(e -> addAsMatrixTarget(step));
+            JMenuItem setupItem = new JMenuItem("Suggest Setup from This Step");
+            setupItem.addActionListener(e -> suggestSetupFromStep(step));
+            menu.add(convertItem);
+            menu.add(targetItem);
+            menu.add(setupItem);
+            menu.addSeparator();
+        }
         JMenuItem removeItem = new JMenuItem("Remove Step");
         removeItem.addActionListener(e -> removeStep(step));
         menu.add(removeItem);
@@ -512,6 +547,199 @@ public final class StepListPanel extends JPanel {
         controller.updateFlow(new FlowDefinition(active.id(), active.name(),
                 active.description(), active.enabled(), updated, active.rules(),
                 agg, active.triggerConfig()));
+    }
+
+    private void convertToAccessTemplate(FlowStep step) {
+        FlowDefinition active = controller.activeFlow();
+        if (active == null) {
+            return;
+        }
+        int choice = JOptionPane.showConfirmDialog(
+                this,
+                confirmationText("Create a disabled Access Template from this step?", active, step),
+                "Convert to Access Template",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.QUESTION_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            AccessRequestTemplate template =
+                    accessController.createTemplateFromFlowStep(active, step, OperationMetadata.unknown());
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Created disabled Access Template:\n" + template.name(),
+                    "Access Template Created",
+                    JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    "Access Template", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void addAsMatrixTarget(FlowStep step) {
+        FlowDefinition active = controller.activeFlow();
+        if (active == null) {
+            return;
+        }
+        if (accessController.authProfiles().isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "Create at least one auth profile before adding a matrix target.",
+                    "Add Matrix Target",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        MatrixTargetPanel form = new MatrixTargetPanel(accessController);
+        int choice = JOptionPane.showConfirmDialog(
+                this,
+                withSummary(form, "Create a disabled matrix row from this step?", active, step),
+                "Add as Matrix Target",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            AccessTestCase row = accessController.addFlowStepAsMatrixTarget(
+                    active,
+                    step,
+                    form.authProfileId(),
+                    form.dataProfileId(),
+                    form.expected());
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Created disabled matrix row:\n" + row.name(),
+                    "Matrix Target Created",
+                    JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    "Add Matrix Target", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void suggestSetupFromStep(FlowStep step) {
+        FlowDefinition active = controller.activeFlow();
+        if (active == null) {
+            return;
+        }
+        SetupSuggestionResult suggestion =
+                accessController.suggestSetupFromFlow(active.id(), step.id(), RenderMode.STRICT);
+        JTextArea text = new JTextArea(setupSuggestionText(suggestion));
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setRows(12);
+        text.setColumns(52);
+        JOptionPane.showMessageDialog(
+                this,
+                new JScrollPane(text),
+                "Setup Suggestion",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private static JPanel withSummary(JPanel form, String title, FlowDefinition flow, FlowStep step) {
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        JTextArea summary = new JTextArea(confirmationText(title, flow, step));
+        summary.setEditable(false);
+        summary.setLineWrap(true);
+        summary.setWrapStyleWord(true);
+        summary.setOpaque(false);
+        panel.add(summary, BorderLayout.NORTH);
+        panel.add(form, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private static String confirmationText(String title, FlowDefinition flow, FlowStep step) {
+        StoredRequestTemplate request = step.requestTemplate();
+        return title + "\n\n"
+                + "Flow: " + flow.name() + "\n"
+                + "Step: " + step.name() + "\n"
+                + "Request: " + request.method() + " " + request.host() + request.pathAndQuery() + "\n\n"
+                + "No HTTP request will be sent. Generated artifacts are disabled by default.";
+    }
+
+    private static String setupSuggestionText(SetupSuggestionResult suggestion) {
+        StringBuilder text = new StringBuilder();
+        text.append("Result: ").append(suggestion.success() ? "RUN_PREFIX can be suggested" : "Manual setup needed")
+                .append('\n');
+        if (!suggestion.reason().isBlank()) {
+            text.append("Reason: ").append(suggestion.reason()).append('\n');
+        }
+        text.append('\n').append("Suggested setup: ")
+                .append(suggestion.suggestedSetup().mode()).append('\n')
+                .append("Setup flow: ").append(suggestion.suggestedSetup().setupFlowId()).append('\n')
+                .append("Until before step: ").append(suggestion.suggestedSetup().untilBeforeStepId()).append('\n')
+                .append("Scenario policy: ").append(suggestion.suggestedSetup().scenarioPolicy()).append('\n');
+        text.append('\n').append("Required scenario variables").append('\n');
+        if (suggestion.requiredScenarioVariables().isEmpty()) {
+            text.append("- none").append('\n');
+        } else {
+            suggestion.requiredScenarioVariables().forEach(ref ->
+                    text.append("- ").append(ref.scopedKey())
+                            .append(" from ")
+                            .append(suggestion.producerStepIds().getOrDefault(ref, "missing producer"))
+                            .append('\n'));
+        }
+        if (!suggestion.warnings().isEmpty()) {
+            text.append('\n').append("Warnings").append('\n');
+            suggestion.warnings().forEach(warning -> text.append("- ").append(warning).append('\n'));
+        }
+        return text.toString();
+    }
+
+    private static final class MatrixTargetPanel extends JPanel {
+        private final JComboBox<ComboItem> auth = new JComboBox<>();
+        private final JComboBox<ComboItem> data = new JComboBox<>();
+        private final JComboBox<ExpectedResult> expected = new JComboBox<>(ExpectedResult.values());
+
+        private MatrixTargetPanel(AccessUiController controller) {
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            for (AuthProfile profile : controller.authProfiles()) {
+                auth.addItem(new ComboItem(profile.id(), profile.name()));
+            }
+            data.addItem(new ComboItem("", ""));
+            for (DataProfile profile : controller.dataProfiles()) {
+                data.addItem(new ComboItem(profile.id(), profile.name()));
+            }
+            expected.setSelectedItem(ExpectedResult.REVIEW);
+            add(labelled("Target Auth", auth));
+            add(labelled("Data Profile", data));
+            add(labelled("Expected", expected));
+        }
+
+        private String authProfileId() {
+            ComboItem item = (ComboItem) auth.getSelectedItem();
+            return item == null ? "" : item.id();
+        }
+
+        private String dataProfileId() {
+            ComboItem item = (ComboItem) data.getSelectedItem();
+            return item == null ? "" : item.id();
+        }
+
+        private ExpectedResult expected() {
+            return (ExpectedResult) expected.getSelectedItem();
+        }
+
+        private static JPanel labelled(String label, java.awt.Component component) {
+            JPanel panel = new JPanel(new BorderLayout(6, 2));
+            panel.setBorder(BorderFactory.createEmptyBorder(3, 0, 3, 0));
+            panel.add(new JLabel(label), BorderLayout.NORTH);
+            panel.add(component, BorderLayout.CENTER);
+            return panel;
+        }
+    }
+
+    private record ComboItem(String id, String label) {
+        private ComboItem {
+            id = id == null ? "" : id;
+            label = label == null ? "" : label;
+        }
+
+        @Override
+        public String toString() {
+            return label.isBlank() ? id : label;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

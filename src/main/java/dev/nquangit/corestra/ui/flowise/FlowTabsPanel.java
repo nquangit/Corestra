@@ -1,10 +1,15 @@
 package dev.nquangit.corestra.ui.flowise;
 
 import burp.api.montoya.MontoyaApi;
+import dev.nquangit.corestra.access.auth.AuthProfile;
+import dev.nquangit.corestra.access.data.DataProfile;
+import dev.nquangit.corestra.access.flow.AccessFlowTarget;
+import dev.nquangit.corestra.access.matrix.ExpectedResult;
 import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.UiTheme;
 
 import javax.swing.BorderFactory;
@@ -78,13 +83,29 @@ public final class FlowTabsPanel extends JTabbedPane {
 
     private final FlowWorkspaceController controller;
     private final MontoyaApi api;
+    private final AccessUiController accessController;
     private final Map<String, FlowWorkspacePanel> panelCache = new LinkedHashMap<>();
     private boolean refreshing = false;
 
     public FlowTabsPanel(FlowWorkspaceController controller, MontoyaApi api) {
+        this(controller, api, null);
+    }
+
+    /**
+     * Creates a flow tab panel with optional Access Testing workflow actions.
+     *
+     * @param controller flow workspace controller
+     * @param api Montoya API used by per-flow request viewers
+     * @param accessController optional Access Testing controller
+     */
+    public FlowTabsPanel(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            AccessUiController accessController) {
         super(JTabbedPane.TOP);
         this.controller = Objects.requireNonNull(controller, "controller");
         this.api        = Objects.requireNonNull(api, "api");
+        this.accessController = accessController;
 
         // Small insets → visible gap between adjacent coloured boxes.
         putClientProperty("JTabbedPane.tabInsets", new Insets(3, 4, 3, 4));
@@ -139,7 +160,7 @@ public final class FlowTabsPanel extends JTabbedPane {
         try {
             List<FlowDefinition> flows = controller.flows();
             for (FlowDefinition flow : flows) {
-                panelCache.computeIfAbsent(flow.id(), id -> new FlowWorkspacePanel(controller, api));
+                panelCache.computeIfAbsent(flow.id(), id -> new FlowWorkspacePanel(controller, api, accessController));
             }
             panelCache.keySet().retainAll(flows.stream().map(FlowDefinition::id).toList());
 
@@ -289,6 +310,21 @@ public final class FlowTabsPanel extends JTabbedPane {
         duplicate.addActionListener(e -> duplicateFlow(flow));
         menu.add(duplicate);
 
+        if (accessController != null) {
+            menu.addSeparator();
+            JMenuItem addFlowTarget = new JMenuItem("Add Flow as Access Target");
+            addFlowTarget.addActionListener(e -> addFlowAsAccessTarget(flow));
+            menu.add(addFlowTarget);
+
+            JMenuItem addMatrixTarget = new JMenuItem("Add Flow Last Step as Matrix Target");
+            addMatrixTarget.addActionListener(e -> addFlowLastStepAsMatrixTarget(flow));
+            menu.add(addMatrixTarget);
+
+            JMenuItem createTemplates = new JMenuItem("Create Templates from Flow Steps");
+            createTemplates.addActionListener(e -> createTemplatesFromFlowSteps(flow));
+            menu.add(createTemplates);
+        }
+
         menu.addSeparator();
 
         JMenu colorMenu = new JMenu("Change Color");
@@ -392,10 +428,130 @@ public final class FlowTabsPanel extends JTabbedPane {
         if (confirm == JOptionPane.YES_OPTION) controller.removeFlow(flow);
     }
 
+    private void addFlowAsAccessTarget(FlowDefinition flow) {
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                "Create a disabled Access flow target from \"" + flow.name() + "\"?\nNo HTTP request will be sent.",
+                "Add Flow as Access Target",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.QUESTION_MESSAGE);
+        if (confirm != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            AccessFlowTarget target = accessController.createFlowTargetFromFlow(flow, "", List.of());
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Created disabled Access flow target:\n" + target.name(),
+                    "Flow Target Created",
+                    JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    "Flow Target", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void addFlowLastStepAsMatrixTarget(FlowDefinition flow) {
+        MatrixTargetPanel form = new MatrixTargetPanel(accessController);
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                form,
+                "Add Flow Last Step as Matrix Target",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (confirm != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            AccessFlowTarget target = accessController.createFlowTargetFromFlow(flow, "", List.of());
+            accessController.addFlowTargetAsMatrixTarget(
+                    target,
+                    form.authProfileId(),
+                    form.dataProfileId(),
+                    form.expected());
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Created disabled Matrix row from flow target:\n" + target.name(),
+                    "Matrix Target Created",
+                    JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    "Matrix Target", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void createTemplatesFromFlowSteps(FlowDefinition flow) {
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                "Create disabled Access Templates from enabled steps in \"" + flow.name() + "\"?\nNo HTTP request will be sent.",
+                "Create Templates from Flow Steps",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.QUESTION_MESSAGE);
+        if (confirm != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            List<?> saved = accessController.createTemplatesFromFlowSteps(flow);
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Created or reused " + saved.size() + " Access Templates.",
+                    "Templates Created",
+                    JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    "Create Templates", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
     private static int indexOfFlow(List<FlowDefinition> flows, String flowId) {
         for (int i = 0; i < flows.size(); i++) {
             if (flows.get(i).id().equals(flowId)) return i;
         }
         return -1;
+    }
+
+    private static final class MatrixTargetPanel extends JPanel {
+        private final javax.swing.JComboBox<ComboItem> auth = new javax.swing.JComboBox<>();
+        private final javax.swing.JComboBox<ComboItem> data = new javax.swing.JComboBox<>();
+        private final javax.swing.JComboBox<ExpectedResult> expected = new javax.swing.JComboBox<>(ExpectedResult.values());
+
+        private MatrixTargetPanel(AccessUiController accessController) {
+            setLayout(new java.awt.GridLayout(0, 2, 6, 6));
+            for (AuthProfile profile : accessController.authProfiles()) {
+                auth.addItem(new ComboItem(profile.id(), profile.name()));
+            }
+            data.addItem(new ComboItem("", ""));
+            for (DataProfile profile : accessController.dataProfiles()) {
+                data.addItem(new ComboItem(profile.id(), profile.name()));
+            }
+            expected.setSelectedItem(ExpectedResult.REVIEW);
+            add(new JLabel("Target Auth"));
+            add(auth);
+            add(new JLabel("Data Profile"));
+            add(data);
+            add(new JLabel("Expected"));
+            add(expected);
+        }
+
+        private String authProfileId() {
+            ComboItem item = (ComboItem) auth.getSelectedItem();
+            return item == null ? "" : item.id();
+        }
+
+        private String dataProfileId() {
+            ComboItem item = (ComboItem) data.getSelectedItem();
+            return item == null ? "" : item.id();
+        }
+
+        private ExpectedResult expected() {
+            return (ExpectedResult) expected.getSelectedItem();
+        }
+    }
+
+    private record ComboItem(String id, String label) {
+        @Override
+        public String toString() {
+            return label == null || label.isBlank() ? id : label;
+        }
     }
 }
