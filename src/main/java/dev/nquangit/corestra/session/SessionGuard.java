@@ -3,9 +3,9 @@ package dev.nquangit.corestra.session;
 /**
  * Thread-local depth counter used to signal "session refresh is in progress on this thread."
  *
- * <p>Both {@code SessionAwareHttpClient} and {@code SessionManager} enter/exit this guard
- * around session-refresh work so that re-entrant session application is skipped, preventing
- * infinite recursion when auto-trigger prerequisite steps fire session handling again.
+ * <p>Callers enter/exit this guard around session-refresh work so that re-entrant
+ * session application is skipped, preventing infinite recursion when prerequisite
+ * steps trigger session handling again.
  *
  * <p>Uses a depth counter (not a boolean flag) so that nested enter/exit calls from different
  * callers on the same thread are tracked correctly.
