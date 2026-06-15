@@ -4,12 +4,15 @@ import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
+import dev.nquangit.corestra.session.SessionGuard;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -63,6 +66,22 @@ class CorestraSessionHandlingActionTest {
         CorestraSessionHandlingAction action = action(List.of(flow("f1", true, false)), ran::add);
         action.runApplicableFlows();
         assertTrue(ran.isEmpty());
+    }
+
+    @Test
+    void runApplicableFlows_setsSessionGuardDuringFlowExecution() {
+        FlowDefinition sessionFlow = flow("s1", true, true);
+        AtomicBoolean guardActiveOnRun = new AtomicBoolean(false);
+
+        CorestraSessionHandlingAction action = new CorestraSessionHandlingAction(
+                () -> List.of(sessionFlow),
+                flow -> guardActiveOnRun.set(SessionGuard.isActive()),
+                new SessionHandlingFlowMapper());
+
+        action.runApplicableFlows();
+
+        assertTrue(guardActiveOnRun.get(), "SessionGuard must be active when flowRunner.accept() is called");
+        assertFalse(SessionGuard.isActive(), "SessionGuard must be inactive after runApplicableFlows() completes");
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

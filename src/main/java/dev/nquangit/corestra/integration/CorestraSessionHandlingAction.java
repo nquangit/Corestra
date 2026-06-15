@@ -4,6 +4,7 @@ import burp.api.montoya.http.sessions.ActionResult;
 import burp.api.montoya.http.sessions.SessionHandlingAction;
 import burp.api.montoya.http.sessions.SessionHandlingActionData;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.session.SessionGuard;
 
 import java.util.List;
 import java.util.Objects;
@@ -67,10 +68,13 @@ public final class CorestraSessionHandlingAction implements SessionHandlingActio
      */
     void runApplicableFlows() {
         for (FlowDefinition flow : mapper.applicableFlows(flowsSupplier.get())) {
+            SessionGuard.enter();
             try {
                 flowRunner.accept(flow);
             } catch (RuntimeException ignored) {
                 // A prerequisite flow failure must not break the user's live request.
+            } finally {
+                SessionGuard.exit();
             }
         }
     }
