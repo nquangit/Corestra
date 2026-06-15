@@ -16,7 +16,6 @@ import dev.nquangit.corestra.session.SessionTrafficContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 /**
  * Decorates an {@link HttpClient} with session-token injection before every {@link #send}.
@@ -66,6 +65,9 @@ public final class SessionAwareHttpClient implements HttpClient {
      */
     @Override
     public HttpResponse send(HttpRequest request) {
+        // 0. Null guard — forward null requests to the delegate unchanged.
+        if (request == null) return delegate.send(request);
+
         // 1. Recursion guard — we're already inside a session-refresh on this thread.
         if (SessionGuard.isActive()) {
             return delegate.send(request);
@@ -88,8 +90,8 @@ public final class SessionAwareHttpClient implements HttpClient {
         }
 
         // 5–9. Run with guard active so any auth-refresh HTTP calls don't loop back here.
-        SessionGuard.enter();
         try {
+            SessionGuard.enter();
             SessionProfile profile = manager.ensureAuthenticated(selection.profile().orElseThrow(), context);
             List<InjectRule> rules = manager.renderedInjectionRules(profile, context.toolTypeName());
             if (rules.isEmpty()) {
@@ -109,40 +111,36 @@ public final class SessionAwareHttpClient implements HttpClient {
     private static SessionTrafficContext buildContext(HttpRequest request) {
         boolean burpInScope;
         try {
-            burpInScope = request != null && request.isInScope();
+            burpInScope = request.isInScope();
         } catch (RuntimeException ignored) {
             burpInScope = false;
         }
 
-        String method = (request != null && request.method() != null) ? request.method() : "";
-        String host = (request != null && request.httpService() != null) ? request.httpService().host() : "";
+        String method = request.method() != null ? request.method() : "";
+        String host = request.httpService() != null ? request.httpService().host() : "";
 
-        String rawPath = (request != null && request.path() != null) ? request.path() : "/";
+        String rawPath = request.path() != null ? request.path() : "/";
         int queryStart = rawPath.indexOf('?');
         String pathWithoutQuery = queryStart >= 0 ? rawPath.substring(0, queryStart) : rawPath;
 
-        List<String> headers = (request != null)
-                ? request.headers().stream()
-                        .map(h -> h.name() + ": " + h.value())
-                        .collect(Collectors.toList())
-                : List.of();
+        List<String> headers = request.headers().stream()
+                .map(h -> h.name() + ": " + h.value())
+                .toList();
 
-        String body = (request != null && request.bodyToString() != null) ? request.bodyToString() : "";
+        String body = request.bodyToString() != null ? request.bodyToString() : "";
 
         return new SessionTrafficContext("PROXY", burpInScope, method, host, pathWithoutQuery, headers, body);
     }
 
     private HttpRequest applyRules(HttpRequest request, List<InjectRule> rules) {
-        String method = (request != null && request.method() != null) ? request.method() : "";
-        String fullPath = (request != null && request.path() != null) ? request.path() : "/";
-        String body = (request != null && request.bodyToString() != null) ? request.bodyToString() : "";
+        String method = request.method() != null ? request.method() : "";
+        String fullPath = request.path() != null ? request.path() : "/";
+        String body = request.bodyToString() != null ? request.bodyToString() : "";
 
-        List<String> headersWithoutHost = (request != null)
-                ? request.headers().stream()
-                        .map(h -> h.name() + ": " + h.value())
-                        .filter(line -> !line.toLowerCase().startsWith("host:"))
-                        .collect(Collectors.toList())
-                : List.of();
+        List<String> headersWithoutHost = request.headers().stream()
+                .map(h -> h.name() + ": " + h.value())
+                .filter(line -> !line.toLowerCase().startsWith("host:"))
+                .toList();
 
         MutableHttpRequest mutable = new MutableHttpRequest(
                 method + " " + fullPath + " HTTP/1.1",

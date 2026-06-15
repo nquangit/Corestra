@@ -221,9 +221,8 @@ class SessionAwareHttpClientTest {
 
     /**
      * Builds a {@link SessionManager} backed by an in-memory repository that has the default
-     * General profile with one PROXY injection rule (header Authorization: Bearer test-token),
-     * but the session state has no value for {{session.token}} — so rules render empty and
-     * selectProfile still returns the General profile.
+     * General profile with no injection rules. {@code selectProfile} will still return the
+     * General profile for in-scope requests, but no rules are rendered.
      */
     private static SessionManager managerWithInjectionRule() {
         SessionProfileRepository repository = new SessionProfileRepository();
