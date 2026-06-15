@@ -8,17 +8,27 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
+import dev.nquangit.corestra.flow.execution.ThreadSleeper;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.integration.AutoTriggerHttpHandler;
+import dev.nquangit.corestra.integration.CorestraSessionHttpHandler;
 import dev.nquangit.corestra.integration.CorestraSessionHandlingAction;
+import dev.nquangit.corestra.integration.HttpClient;
 import dev.nquangit.corestra.integration.MontoyaHttpClient;
+import dev.nquangit.corestra.integration.ProxyPipelineHttpClient;
+import dev.nquangit.corestra.integration.RoutingHttpClient;
+import dev.nquangit.corestra.integration.SessionAwareHttpClient;
 import dev.nquangit.corestra.integration.SessionHandlingFlowMapper;
 import dev.nquangit.corestra.persistence.FlowRepository;
 import dev.nquangit.corestra.persistence.FlowSerializer;
 import dev.nquangit.corestra.persistence.PersistenceMigrationService;
 import dev.nquangit.corestra.persistence.ProjectMetadataRepository;
 import dev.nquangit.corestra.persistence.ProjectSerializer;
+import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
+import dev.nquangit.corestra.session.SessionManager;
+import dev.nquangit.corestra.session.SessionProfileRepository;
+import dev.nquangit.corestra.session.SessionSchedulerService;
 import dev.nquangit.corestra.access.auth.runtime.AuthFlowExecutor;
 import dev.nquangit.corestra.access.auth.runtime.AuthManager;
 import dev.nquangit.corestra.access.auth.runtime.AuthRuleEvaluator;
@@ -46,10 +56,12 @@ import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
 import dev.nquangit.corestra.ui.project.ProjectPanel;
+import dev.nquangit.corestra.ui.session.SessionHandlerPanel;
 
 import java.time.Clock;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Creates the shared runtime wiring for the Corestra extension and registers the root Burp tab.
@@ -72,9 +84,25 @@ public final class CorestraBootstrap {
         // Flow execution engine wired to the Montoya HTTP transport.
         ExtractionService extractionService = new ExtractionService();
         InjectionService injectionService = new InjectionService();
-        MontoyaHttpClient httpClient = new MontoyaHttpClient(api);
+        ProjectSettingsRepository settingsRepo = new ProjectSettingsRepository(api.persistence());
+        HttpClient routingHttpClient = new RoutingHttpClient(
+                settingsRepo::load,
+                new MontoyaHttpClient(api),
+                new ProxyPipelineHttpClient(settingsRepo::load));
+
+        // Break the circular dependency (FlowEngine ↔ SessionManager) via a late-bound ref.
+        AtomicReference<SessionManager> sessionManagerRef = new AtomicReference<>();
+        SessionAwareHttpClient sessionAwareHttpClient = new SessionAwareHttpClient(
+                routingHttpClient, sessionManagerRef::get, injectionService);
+
         FlowEngine flowEngine = new FlowEngine(
-                extractionService, injectionService, httpClient);
+                extractionService,
+                injectionService,
+                sessionAwareHttpClient,
+                flowId -> flowRepository.loadAll().stream()
+                        .filter(flow -> flow.id().equals(flowId))
+                        .findFirst(),
+                new ThreadSleeper());
 
         ServiceRegistry registry = new ServiceRegistry(api, flowRepository, flowEngine);
 
@@ -84,6 +112,18 @@ public final class CorestraBootstrap {
 
         ProjectMetadataRepository metadataRepo = new ProjectMetadataRepository(api.persistence());
         ProjectSerializer projectSerializer = new ProjectSerializer(serializer);
+        SessionProfileRepository sessionProfileRepository = new SessionProfileRepository(api.persistence());
+        SessionManager sessionManager = new SessionManager(
+                sessionProfileRepository,
+                flowRepository::loadAll,
+                flowEngine,
+                extractionService,
+                Clock.systemUTC());
+        sessionManagerRef.set(sessionManager);  // close the loop — SessionAwareHttpClient can now resolve the manager
+        SessionSchedulerService sessionSchedulerService = new SessionSchedulerService(sessionManager, Clock.systemUTC());
+        registry.registerCloseable(sessionSchedulerService);
+        api.extension().registerUnloadingHandler(registry::close);
+        sessionSchedulerService.start();
         AccessWorkspaceProjectRepository accessProjectRepository = new AccessWorkspaceProjectRepository(api.persistence());
         InMemoryAccessRepository accessRepository = new InMemoryAccessRepository(
                 accessProjectRepository.load(),
@@ -111,7 +151,7 @@ public final class CorestraBootstrap {
                 flowRepository::loadAll,
                 extractionService,
                 injectionService,
-                httpClient,
+                sessionAwareHttpClient,
                 requestAdapter,
                 redactionService,
                 authClock);
@@ -123,7 +163,7 @@ public final class CorestraBootstrap {
         SingleAccessTestRunner accessRunner = new SingleAccessTestRunner(
                 accessRequestTemplateRenderer,
                 accessStoreFactory,
-                httpClient,
+                sessionAwareHttpClient,
                 new BasicResultEvaluator(),
                 redactionService,
                 new ManualAuthApplier(accessTemplateRenderer),
@@ -137,7 +177,7 @@ public final class CorestraBootstrap {
                 accessRepository,
                 raceRequestPreparer,
                 requestAdapter,
-                httpClient,
+                sessionAwareHttpClient,
                 new BasicResultEvaluator(),
                 redactionService,
                 new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
@@ -158,9 +198,14 @@ public final class CorestraBootstrap {
                 raceRunner);
         AccessTestingPanel accessTestingPanel = new AccessTestingPanel(accessUiController);
         FlowisePanel flowisePanel = new FlowisePanel(controller, api, accessUiController);
+        SessionHandlerPanel sessionHandlerPanel = new SessionHandlerPanel(sessionManager, flowRepository::loadAll);
         ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer,
-                accessRepository, accessTestingPanel::refreshUi);
-        CorestraRootPanel rootPanel = new CorestraRootPanel(flowisePanel, projectPanel, accessTestingPanel, api);
+                settingsRepo, accessRepository, sessionProfileRepository, () -> {
+                    accessTestingPanel.refreshUi();
+                    sessionHandlerPanel.refreshProfiles();
+                });
+        CorestraRootPanel rootPanel = new CorestraRootPanel(
+                flowisePanel, projectPanel, sessionHandlerPanel, accessTestingPanel, api);
 
         api.userInterface().registerSuiteTab("Corestra", rootPanel);
         api.userInterface().registerContextMenuItemsProvider(
@@ -170,6 +215,9 @@ public final class CorestraBootstrap {
         RunFlowAction runFlowAction = new RunFlowAction(flowEngine);
         api.http().registerSessionHandlingAction(new CorestraSessionHandlingAction(
                 controller::flows, runFlowAction::run, new SessionHandlingFlowMapper()));
+
+        // Project-level Session Handler: scoped extraction/injection for live Burp/Corestra traffic.
+        api.http().registerHttpHandler(new CorestraSessionHttpHandler(sessionManager, injectionService));
 
         // Auto-trigger: per-step trigger rules inject flow context into matching live requests.
         api.http().registerHttpHandler(new AutoTriggerHttpHandler(
