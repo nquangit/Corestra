@@ -66,11 +66,33 @@ class MontoyaHttpClientTest {
     @Test
     void send_throwsIllegalStateException_whenTransportReturnsNullRequestResponse() {
         // Http stub: sendRequest(HttpRequest) returns null
-        Http nullRrHttp = new StubHttp(null);
+        Http nullRrHttp = new StubHttp((HttpRequestResponse) null);
         MontoyaApi api = new StubMontoyaApi(nullRrHttp);
         MontoyaHttpClient client = new MontoyaHttpClient(api);
 
         assertThrows(IllegalStateException.class, () -> client.send(null));
+    }
+
+    @Test
+    void send_throwsClearIllegalStateException_whenHttpApiIsUnavailable() {
+        MontoyaApi api = new StubMontoyaApi(null);
+        MontoyaHttpClient client = new MontoyaHttpClient(api);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> client.send(null));
+
+        assertTrue(exception.getMessage().contains("Montoya HTTP API is unavailable"));
+    }
+
+    @Test
+    void send_wrapsRuntimeFailureFromMontoyaSendRequest() {
+        RuntimeException failure = new NullPointerException("burp delegate");
+        MontoyaApi api = new StubMontoyaApi(new StubHttp(failure));
+        MontoyaHttpClient client = new MontoyaHttpClient(api);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> client.send(null));
+
+        assertTrue(exception.getMessage().contains("Montoya HTTP send failed"));
+        assertSame(failure, exception.getCause());
     }
 
     @Test
@@ -121,11 +143,25 @@ class MontoyaHttpClientTest {
     /** Stub Http that returns a fixed HttpRequestResponse from sendRequest(HttpRequest). */
     private static final class StubHttp implements Http {
         private final HttpRequestResponse fixedResult;
+        private final RuntimeException failure;
 
-        StubHttp(HttpRequestResponse fixedResult) { this.fixedResult = fixedResult; }
+        StubHttp(HttpRequestResponse fixedResult) {
+            this.fixedResult = fixedResult;
+            this.failure = null;
+        }
+
+        StubHttp(RuntimeException failure) {
+            this.fixedResult = null;
+            this.failure = failure;
+        }
 
         @Override
-        public HttpRequestResponse sendRequest(HttpRequest request) { return fixedResult; }
+        public HttpRequestResponse sendRequest(HttpRequest request) {
+            if (failure != null) {
+                throw failure;
+            }
+            return fixedResult;
+        }
 
         @Override
         public HttpRequestResponse sendRequest(HttpRequest request, HttpMode mode) {

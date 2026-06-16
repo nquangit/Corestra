@@ -1,6 +1,7 @@
 package dev.nquangit.corestra.integration;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.Http;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -32,7 +33,24 @@ public final class MontoyaHttpClient implements HttpClient {
      */
     @Override
     public HttpResponse send(HttpRequest request) {
-        HttpRequestResponse reqRes = api.http().sendRequest(request);
+        Http http;
+        try {
+            http = api.http();
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("Montoya HTTP API is unavailable; Burp may still be starting, "
+                    + "closing the project, or unloading the extension.", exception);
+        }
+        if (http == null) {
+            throw new IllegalStateException("Montoya HTTP API is unavailable; Burp may still be starting, "
+                    + "closing the project, or unloading the extension.");
+        }
+        HttpRequestResponse reqRes;
+        try {
+            reqRes = http.sendRequest(request);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("Montoya HTTP send failed; Burp HTTP API may be unavailable during "
+                    + "startup, project close, or extension unload.", exception);
+        }
 
         if (reqRes == null) {
             throw new IllegalStateException("sendRequest returned null for request: " + request);

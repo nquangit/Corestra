@@ -1,6 +1,7 @@
 package dev.nquangit.corestra.ui.flowise;
 
 import burp.api.montoya.MontoyaApi;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.StyledButton;
 
 import javax.swing.Box;
@@ -40,11 +41,26 @@ public final class FlowisePanel extends JPanel {
      * @throws NullPointerException if either argument is {@code null}
      */
     public FlowisePanel(FlowWorkspaceController controller, MontoyaApi api) {
+        this(controller, api, null);
+    }
+
+    /**
+     * Creates the Flowise editor panel wired to the supplied controllers.
+     *
+     * @param controller the workspace controller that owns flow state
+     * @param api the Montoya API used to create Burp-native editors
+     * @param accessController optional Access Testing controller for workflow actions
+     * @throws NullPointerException if controller or api is {@code null}
+     */
+    public FlowisePanel(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            AccessUiController accessController) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
         Objects.requireNonNull(api, "api");
 
-        flowTabsPanel = new FlowTabsPanel(controller, api);
+        flowTabsPanel = new FlowTabsPanel(controller, api, accessController);
         cardLayout = new CardLayout();
         cardPanel  = new JPanel(cardLayout);
         cardPanel.add(buildEmptyState(), CARD_EMPTY);

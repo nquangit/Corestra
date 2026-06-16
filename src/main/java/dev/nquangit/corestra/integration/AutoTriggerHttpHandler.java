@@ -44,7 +44,8 @@ import dev.nquangit.corestra.http.inject.RequestMutationResult;
  *   <li>When a match is found, prerequisite steps run (Phase 1) and their execution context
  *       is stored in a correlation map keyed by the triggering request.</li>
  *   <li>The matched step's extract/inject rules apply to the live request (Phase 2).</li>
- *   <li>Post-trigger steps run asynchronously if the scope requires it (Phase 3).</li>
+ *   <li>Post-trigger steps run asynchronously once the live response arrives (Phase 3), so that
+ *       response-extracted variables are available to downstream steps.</li>
  * </ol>
  *
  * <p>When the response arrives ({@link #handleHttpResponseReceived}), the handler looks up
@@ -94,6 +95,9 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
 
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent req) {
+        if (hasProxyPipelineMarker(req)) {
+            return RequestToBeSentAction.continueWith(req.withRemovedHeader(ProxyPipelineHttpClient.MARKER_HEADER));
+        }
         if (req.toolSource().toolType() == ToolType.EXTENSIONS) {
             return RequestToBeSentAction.continueWith(req);
         }
@@ -140,6 +144,9 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
             }
 
             burp.api.montoya.http.message.requests.HttpRequest initiating = responseReceived.initiatingRequest();
+            if (hasProxyPipelineMarker(initiating)) {
+                return ResponseReceivedAction.continueWith(responseReceived);
+            }
             String toolTypeName = responseReceived.toolSource().toolType().name();
             String host = initiating.httpService() != null ? initiating.httpService().host() : "";
             String method = initiating.method() != null ? initiating.method() : "";
@@ -168,15 +175,49 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
                 }
                 if (triggeredStep == null) continue;
 
+                ExecutionContext resolvedCtx = null;
+
+                // Apply the trigger step's extract rules to the live response, then fire Phase 3
+                // with the fully populated context (request-side + response-side variables).
+                if (pending != null && pending.flow.id().equals(flow.id())) {
+                    String statusLine = "HTTP/1.1 " + responseReceived.statusCode();
+                    List<String> responseHeaders = responseReceived.headers().stream()
+                            .map(h -> h.name() + ": " + h.value())
+                            .collect(Collectors.toList());
+                    HttpMessageSnapshot liveResponseSnapshot = new HttpMessageSnapshot(
+                            statusLine, responseHeaders, responseReceived.bodyToString());
+
+                    ExecutionContext updatedCtx = applyExtractRulesToContext(
+                            triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx);
+
+                    resolvedCtx = updatedCtx;
+
+                    if (pending.stopIdx > pending.matchedStepIndex) {
+                        final ExecutionContext phase3Ctx = updatedCtx;
+                        final FlowDefinition phase3Flow = pending.flow;
+                        final List<FlowStep> phase3Steps = phase3Flow.steps();
+                        final int phase3Start = pending.matchedStepIndex + 1;
+                        final int phase3Stop = pending.stopIdx;
+                        CompletableFuture.runAsync(() -> {
+                            try {
+                                runStepRange(phase3Flow, phase3Steps, phase3Start, phase3Stop, phase3Ctx);
+                            } catch (Exception e) {
+                                System.err.println("[Corestra] Auto-trigger Phase 3 failed: " + e.getMessage());
+                            }
+                        });
+                    }
+                }
+
                 AggregationPlan agg = flow.aggregation();
                 StringBuilder aggregated = new StringBuilder();
 
                 // Append prerequisite responses for steps that opt in.
-                if (pending != null && pending.flowId.equals(flow.id())) {
+                if (pending != null && pending.flow.id().equals(flow.id())) {
                     for (int idx = 0; idx < Math.min(pending.matchedStepIndex, steps.size()); idx++) {
                         FlowStep prereq = steps.get(idx);
                         if (!prereq.includeInAggregation()) continue;
-                        List<StepExecutionRecord> recs = pending.ctx.stepHistory().get(prereq.id());
+                        ExecutionContext ctxForHistory = resolvedCtx != null ? resolvedCtx : pending.ctx;
+                        List<StepExecutionRecord> recs = ctxForHistory.stepHistory().get(prereq.id());
                         if (recs == null || recs.isEmpty()) continue;
                         StepExecutionRecord rec = recs.get(recs.size() - 1);
                         appendAggregatedEntry(aggregated, extractBodyFromRaw(rec.receivedResponse()),
@@ -202,6 +243,10 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
         return ResponseReceivedAction.continueWith(responseReceived);
     }
 
+    static boolean hasProxyPipelineMarker(HttpRequest request) {
+        return request != null && request.hasHeader(ProxyPipelineHttpClient.MARKER_HEADER);
+    }
+
     // ── Implementation ────────────────────────────────────────────────────────
 
     private HttpRequest processMatch(
@@ -224,22 +269,21 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
                 UUID.randomUUID().toString(), flow.id(), Map.of(), System.currentTimeMillis());
         ctx = runStepRange(flow, steps, 0, matchedIndex - 1, ctx);
 
-        // Store Phase-1 context so the response handler can include prereq responses in aggregation.
-        String method = req.method() != null ? req.method() : "";
-        pendingTriggers.put(triggerKey(toolTypeName, host, method, path),
-                new PendingTrigger(flow.id(), matchedIndex, ctx));
-
-        // Phase 2: apply matched step's rules to the live incoming request.
+        // Build the request snapshot before storing the pending trigger — it is needed later
+        // by handleHttpResponseReceived to apply the trigger step's response-side extract rules.
         String requestLine = req.method() + " " + (req.path() != null ? req.path() : "/") + " HTTP/1.1";
         HttpMessageSnapshot requestSnapshot = new HttpMessageSnapshot(requestLine, allHeaders, body);
-        HttpMessageSnapshot emptyResponse = new HttpMessageSnapshot("", List.of(), "");
 
-        for (var extractRule : matchedStep.extractRules()) {
-            ExtractionResult result = extractionService.extract(extractRule, requestSnapshot, emptyResponse);
-            if (result.isSuccess()) {
-                ctx = ctx.withVariable(result.targetVariable(), result.value());
-            }
-        }
+        // Store Phase-1 context so the response handler can complete extraction and fire Phase 3.
+        String method = req.method() != null ? req.method() : "";
+        pendingTriggers.put(triggerKey(toolTypeName, host, method, path),
+                new PendingTrigger(flow, matchedIndex, stopIdx, ctx, requestSnapshot));
+
+        // Phase 2: apply the trigger step's extract rules to the live request.
+        // Response-side rules will silently fail here (no live response yet); they are
+        // re-applied in handleHttpResponseReceived once the real response arrives.
+        HttpMessageSnapshot emptyResponse = new HttpMessageSnapshot("", List.of(), "");
+        ctx = applyExtractRulesToContext(matchedStep, requestSnapshot, emptyResponse, ctx);
 
         List<String> headersWithoutHost = allHeaders.stream()
                 .filter(h -> !h.toLowerCase().startsWith("host:"))
@@ -248,19 +292,28 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
         RequestMutationResult mutated = injectionService.apply(
                 matchedStep.injectRules(), ctx.variables(), mutable);
 
-        // Phase 3: run post-trigger steps asynchronously (fire-and-forget).
-        if (stopIdx > matchedIndex) {
-            final ExecutionContext phase3Ctx = ctx;
-            CompletableFuture.runAsync(() -> {
-                try {
-                    runStepRange(flow, steps, matchedIndex + 1, stopIdx, phase3Ctx);
-                } catch (Exception e) {
-                    System.err.println("[Corestra] Auto-trigger Phase 3 failed: " + e.getMessage());
-                }
-            });
-        }
+        // Phase 3 is deferred to handleHttpResponseReceived so that response-extracted variables
+        // are available to downstream steps before they execute.
 
         return rebuildRequest(req, mutated);
+    }
+
+    /**
+     * Runs all extract rules in {@code step} against the provided message snapshots and returns
+     * an updated context. Successful extractions are merged; failures are silently skipped.
+     */
+    ExecutionContext applyExtractRulesToContext(
+            FlowStep step,
+            HttpMessageSnapshot requestSnapshot,
+            HttpMessageSnapshot responseSnapshot,
+            ExecutionContext ctx) {
+        for (var rule : step.extractRules()) {
+            ExtractionResult result = extractionService.extract(rule, requestSnapshot, responseSnapshot);
+            if (result.isSuccess()) {
+                ctx = ctx.withVariable(result.targetVariable(), result.value());
+            }
+        }
+        return ctx;
     }
 
     ExecutionContext runStepRange(FlowDefinition flow, List<FlowStep> steps,
@@ -399,14 +452,19 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
     // ── Inner types ───────────────────────────────────────────────────────────
 
     private static final class PendingTrigger {
-        final String flowId;
+        final FlowDefinition flow;
         final int matchedStepIndex;
+        final int stopIdx;
         final ExecutionContext ctx;
+        final HttpMessageSnapshot requestSnapshot;
 
-        PendingTrigger(String flowId, int matchedStepIndex, ExecutionContext ctx) {
-            this.flowId = flowId;
+        PendingTrigger(FlowDefinition flow, int matchedStepIndex, int stopIdx,
+                       ExecutionContext ctx, HttpMessageSnapshot requestSnapshot) {
+            this.flow = flow;
             this.matchedStepIndex = matchedStepIndex;
+            this.stopIdx = stopIdx;
             this.ctx = ctx;
+            this.requestSnapshot = requestSnapshot;
         }
     }
 }

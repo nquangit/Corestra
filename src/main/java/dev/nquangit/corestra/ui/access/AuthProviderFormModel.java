@@ -1,0 +1,147 @@
+package dev.nquangit.corestra.ui.access;
+
+import dev.nquangit.corestra.access.auth.AuthFailureRule;
+import dev.nquangit.corestra.access.auth.AuthFallbackPolicy;
+import dev.nquangit.corestra.access.auth.AuthInjectionRule;
+import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
+import dev.nquangit.corestra.access.auth.AuthSuccessRule;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+final class AuthProviderFormModel {
+    private final String name;
+    private final String description;
+    private final boolean enabled;
+    private final String loginFlowId;
+    private final String refreshFlowId;
+    private final String validateFlowId;
+    private final AuthFallbackPolicy fallbackPolicy;
+    private final AuthRetryPolicy targetRetryPolicy;
+    private final List<AuthInjectionRule> injectionRules;
+    private final List<AuthSuccessRule> successRules;
+    private final List<AuthFailureRule> failureRules;
+
+    AuthProviderFormModel(
+            String name,
+            String description,
+            boolean enabled,
+            String loginFlowId,
+            String refreshFlowId,
+            String validateFlowId,
+            AuthFallbackPolicy fallbackPolicy,
+            AuthRetryPolicy targetRetryPolicy,
+            List<AuthInjectionRule> injectionRules,
+            List<AuthSuccessRule> successRules,
+            List<AuthFailureRule> failureRules) {
+        this.name = normalizeRequiredText(name, "name");
+        this.description = normalizeOptionalText(description);
+        this.enabled = enabled;
+        this.loginFlowId = normalizeOptionalText(loginFlowId);
+        this.refreshFlowId = normalizeOptionalText(refreshFlowId);
+        this.validateFlowId = normalizeOptionalText(validateFlowId);
+        this.fallbackPolicy = Objects.requireNonNullElse(fallbackPolicy, AuthFallbackPolicy.MANUAL_ONLY);
+        this.targetRetryPolicy = Objects.requireNonNullElse(targetRetryPolicy, AuthRetryPolicy.NO_RETRY);
+        this.injectionRules = copyList(injectionRules, "injectionRules");
+        this.successRules = copyList(successRules, "successRules");
+        this.failureRules = copyList(failureRules, "failureRules");
+    }
+
+    static AuthProviderFormModel from(AuthProvider provider) {
+        Objects.requireNonNull(provider, "provider");
+        return new AuthProviderFormModel(
+                provider.name(),
+                provider.description(),
+                provider.enabled(),
+                provider.loginFlowId(),
+                provider.refreshFlowId(),
+                provider.validateFlowId(),
+                provider.fallbackPolicy(),
+                provider.targetRetryPolicy(),
+                provider.injectionRules(),
+                provider.successRules(),
+                provider.failureRules());
+    }
+
+    AuthProvider toAuthProvider(String id) {
+        return new AuthProvider(
+                id,
+                name,
+                description,
+                enabled,
+                loginFlowId,
+                refreshFlowId,
+                validateFlowId,
+                injectionRules,
+                successRules,
+                failureRules,
+                fallbackPolicy,
+                targetRetryPolicy);
+    }
+
+    String name() {
+        return name;
+    }
+
+    String description() {
+        return description;
+    }
+
+    boolean enabled() {
+        return enabled;
+    }
+
+    String loginFlowId() {
+        return loginFlowId;
+    }
+
+    String refreshFlowId() {
+        return refreshFlowId;
+    }
+
+    String validateFlowId() {
+        return validateFlowId;
+    }
+
+    AuthFallbackPolicy fallbackPolicy() {
+        return fallbackPolicy;
+    }
+
+    AuthRetryPolicy targetRetryPolicy() {
+        return targetRetryPolicy;
+    }
+
+    List<AuthInjectionRule> injectionRules() {
+        return injectionRules;
+    }
+
+    List<AuthSuccessRule> successRules() {
+        return successRules;
+    }
+
+    List<AuthFailureRule> failureRules() {
+        return failureRules;
+    }
+
+    private static <T> List<T> copyList(List<T> values, String fieldName) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<T> copied = new ArrayList<>();
+        values.forEach(value -> copied.add(Objects.requireNonNull(value, fieldName + " value")));
+        return List.copyOf(copied);
+    }
+
+    private static String normalizeRequiredText(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank");
+        }
+        return value.strip();
+    }
+
+    private static String normalizeOptionalText(String value) {
+        return value == null ? "" : value.strip();
+    }
+}

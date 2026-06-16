@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dev.nquangit.corestra.flow.control.StepConditionActionRule;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
 
@@ -31,6 +32,7 @@ public final class FlowStep {
     private final String lastResponseRaw;
     private final StepTriggerRule triggerRule;
     private final boolean includeInAggregation;
+    private final List<StepConditionActionRule> conditionActionRules;
 
     /** Convenience constructor used by most internal code (no stored response, no trigger rule). */
     public FlowStep(
@@ -39,7 +41,7 @@ public final class FlowStep {
             List<InjectRule> injectRules, List<StepPrecondition> preconditions,
             StepErrorStrategy errorStrategy) {
         this(id, name, enabled, notes, requestTemplate, extractRules,
-             injectRules, preconditions, errorStrategy, null, null, false);
+             injectRules, preconditions, errorStrategy, null, null, false, List.of());
     }
 
     /** Convenience constructor with stored response but no trigger rule. */
@@ -49,7 +51,7 @@ public final class FlowStep {
             List<InjectRule> injectRules, List<StepPrecondition> preconditions,
             StepErrorStrategy errorStrategy, String lastResponseRaw) {
         this(id, name, enabled, notes, requestTemplate, extractRules,
-             injectRules, preconditions, errorStrategy, lastResponseRaw, null, false);
+             injectRules, preconditions, errorStrategy, lastResponseRaw, null, false, List.of());
     }
 
     /** Backward-compatible 11-arg constructor — {@code includeInAggregation} defaults to {@code false}. */
@@ -60,7 +62,19 @@ public final class FlowStep {
             StepErrorStrategy errorStrategy, String lastResponseRaw,
             StepTriggerRule triggerRule) {
         this(id, name, enabled, notes, requestTemplate, extractRules,
-             injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, false);
+             injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, false, List.of());
+    }
+
+    /** Backward-compatible 12-arg constructor — condition/action rules default to empty. */
+    public FlowStep(
+            String id, String name, boolean enabled, String notes,
+            StoredRequestTemplate requestTemplate, List<ExtractRule> extractRules,
+            List<InjectRule> injectRules, List<StepPrecondition> preconditions,
+            StepErrorStrategy errorStrategy, String lastResponseRaw,
+            StepTriggerRule triggerRule, boolean includeInAggregation) {
+        this(id, name, enabled, notes, requestTemplate, extractRules,
+             injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule,
+             includeInAggregation, List.of());
     }
 
     @JsonCreator
@@ -76,7 +90,8 @@ public final class FlowStep {
             @JsonProperty("errorStrategy") StepErrorStrategy errorStrategy,
             @JsonProperty("lastResponseRaw") String lastResponseRaw,
             @JsonProperty("triggerRule") StepTriggerRule triggerRule,
-            @JsonProperty("includeInAggregation") boolean includeInAggregation) {
+            @JsonProperty("includeInAggregation") boolean includeInAggregation,
+            @JsonProperty("conditionActionRules") List<StepConditionActionRule> conditionActionRules) {
         this.id = normalizeRequiredText(id, "id");
         this.name = normalizeRequiredText(name, "name");
         this.enabled = enabled;
@@ -89,61 +104,78 @@ public final class FlowStep {
         this.lastResponseRaw = lastResponseRaw;
         this.triggerRule = triggerRule != null ? triggerRule : StepTriggerRule.disabled();
         this.includeInAggregation = includeInAggregation;
+        this.conditionActionRules = copyList(conditionActionRules, "conditionActionRules");
     }
 
     /** Returns a copy of this step with the given Base64-encoded raw response stored. */
     public FlowStep withLastResponseRaw(String raw) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            extractRules, injectRules, preconditions, errorStrategy, raw, triggerRule, includeInAggregation);
+                            extractRules, injectRules, preconditions, errorStrategy, raw, triggerRule,
+                            includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the given trigger rule. */
     public FlowStep withTriggerRule(StepTriggerRule rule) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            rule != null ? rule : StepTriggerRule.disabled(), includeInAggregation);
+                            rule != null ? rule : StepTriggerRule.disabled(), includeInAggregation,
+                            conditionActionRules);
     }
 
     /** Returns a copy of this step with the display name changed. */
     public FlowStep withName(String name) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation);
+                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the enabled flag changed. */
     public FlowStep withEnabled(boolean enabled) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation);
+                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the notes text changed. */
     public FlowStep withNotes(String notes) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation);
+                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the request template changed. */
     public FlowStep withRequestTemplate(StoredRequestTemplate template) {
         return new FlowStep(id, name, enabled, notes, template,
-                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation);
+                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the extract rules replaced. */
     public FlowStep withExtractRules(List<ExtractRule> rules) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            rules, injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation);
+                            rules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the inject rules replaced. */
     public FlowStep withInjectRules(List<InjectRule> rules) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            extractRules, rules, preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation);
+                            extractRules, rules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, conditionActionRules);
     }
 
     /** Returns a copy of this step with the includeInAggregation flag changed. */
     public FlowStep withIncludeInAggregation(boolean include) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
-                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw, triggerRule, include);
+                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, include, conditionActionRules);
+    }
+
+    /** Returns a copy of this step with condition/action rules replaced. */
+    public FlowStep withConditionActionRules(List<StepConditionActionRule> rules) {
+        return new FlowStep(id, name, enabled, notes, requestTemplate,
+                            extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
+                            triggerRule, includeInAggregation, rules);
     }
 
     /**
@@ -258,6 +290,15 @@ public final class FlowStep {
     }
 
     /**
+     * Returns the post-step condition/action rules.
+     *
+     * @return the post-step condition/action rules
+     */
+    public List<StepConditionActionRule> conditionActionRules() {
+        return conditionActionRules;
+    }
+
+    /**
      * Compares this step to another object.
      *
      * @param other the candidate object
@@ -281,7 +322,8 @@ public final class FlowStep {
                 && Objects.equals(injectRules, that.injectRules)
                 && Objects.equals(preconditions, that.preconditions)
                 && errorStrategy == that.errorStrategy
-                && Objects.equals(triggerRule, that.triggerRule);
+                && Objects.equals(triggerRule, that.triggerRule)
+                && Objects.equals(conditionActionRules, that.conditionActionRules);
     }
 
     /**
@@ -291,7 +333,7 @@ public final class FlowStep {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(id, name, enabled, includeInAggregation, notes, requestTemplate, extractRules, injectRules, preconditions, errorStrategy, triggerRule);
+        return Objects.hash(id, name, enabled, includeInAggregation, notes, requestTemplate, extractRules, injectRules, preconditions, errorStrategy, triggerRule, conditionActionRules);
     }
 
     /**
@@ -311,6 +353,7 @@ public final class FlowStep {
                 ", injectRules=" + injectRules +
                 ", preconditions=" + preconditions +
                 ", errorStrategy=" + errorStrategy +
+                ", conditionActionRules=" + conditionActionRules +
                 '}';
     }
 

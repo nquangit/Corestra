@@ -1,8 +1,11 @@
 package dev.nquangit.corestra.flow.execution;
 
+import dev.nquangit.corestra.flow.control.StepActionExecutionRecord;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Represents the final outcome of running a complete flow.
@@ -19,19 +22,28 @@ public final class ExecutionResult {
     private final String flowName;
     private final boolean success;
     private final List<StepExecutionRecord> stepRecords;
+    private final List<StepActionExecutionRecord> actionRecords;
     private final String failureMessage;
+    private final ExecutionContext finalContext;
+    private final String completionReason;
 
     private ExecutionResult(
             String flowId,
             String flowName,
             boolean success,
             List<StepExecutionRecord> stepRecords,
-            String failureMessage) {
+            List<StepActionExecutionRecord> actionRecords,
+            String failureMessage,
+            ExecutionContext finalContext,
+            String completionReason) {
         this.flowId = Objects.requireNonNull(flowId, "flowId");
         this.flowName = Objects.requireNonNull(flowName, "flowName");
         this.success = success;
         this.stepRecords = List.copyOf(Objects.requireNonNull(stepRecords, "stepRecords"));
+        this.actionRecords = List.copyOf(Objects.requireNonNull(actionRecords, "actionRecords"));
         this.failureMessage = failureMessage;
+        this.finalContext = finalContext;
+        this.completionReason = completionReason == null ? "" : completionReason;
     }
 
     /**
@@ -43,7 +55,28 @@ public final class ExecutionResult {
      * @return a successful {@code ExecutionResult}
      */
     public static ExecutionResult success(String flowId, String flowName, List<StepExecutionRecord> stepRecords) {
-        return new ExecutionResult(flowId, flowName, true, stepRecords, null);
+        return success(flowId, flowName, stepRecords, List.of(), null, "COMPLETED");
+    }
+
+    /**
+     * Creates a successful execution result with action diagnostics and final context.
+     *
+     * @param flowId the flow definition identifier
+     * @param flowName the flow display name
+     * @param stepRecords ordered step execution records
+     * @param actionRecords ordered action execution records
+     * @param finalContext final execution context, or {@code null}
+     * @param completionReason diagnostic completion reason
+     * @return a successful {@code ExecutionResult}
+     */
+    public static ExecutionResult success(
+            String flowId,
+            String flowName,
+            List<StepExecutionRecord> stepRecords,
+            List<StepActionExecutionRecord> actionRecords,
+            ExecutionContext finalContext,
+            String completionReason) {
+        return new ExecutionResult(flowId, flowName, true, stepRecords, actionRecords, null, finalContext, completionReason);
     }
 
     /**
@@ -60,7 +93,28 @@ public final class ExecutionResult {
             String flowName,
             List<StepExecutionRecord> stepRecords,
             String failureMessage) {
-        return new ExecutionResult(flowId, flowName, false, stepRecords, failureMessage);
+        return failure(flowId, flowName, stepRecords, List.of(), failureMessage, null);
+    }
+
+    /**
+     * Creates a failed execution result with action diagnostics and final context.
+     *
+     * @param flowId the flow definition identifier
+     * @param flowName the flow display name
+     * @param stepRecords ordered step execution records
+     * @param actionRecords ordered action execution records
+     * @param failureMessage human-readable failure message
+     * @param finalContext final execution context, or {@code null}
+     * @return a failed {@code ExecutionResult}
+     */
+    public static ExecutionResult failure(
+            String flowId,
+            String flowName,
+            List<StepExecutionRecord> stepRecords,
+            List<StepActionExecutionRecord> actionRecords,
+            String failureMessage,
+            ExecutionContext finalContext) {
+        return new ExecutionResult(flowId, flowName, false, stepRecords, actionRecords, failureMessage, finalContext, "FAILED");
     }
 
     /**
@@ -100,12 +154,39 @@ public final class ExecutionResult {
     }
 
     /**
+     * Returns ordered action execution records.
+     *
+     * @return action execution records as an unmodifiable list
+     */
+    public List<StepActionExecutionRecord> actionRecords() {
+        return actionRecords;
+    }
+
+    /**
      * Returns the failure message, or {@code null} when the flow succeeded.
      *
      * @return the failure message, or {@code null}
      */
     public String failureMessage() {
         return failureMessage;
+    }
+
+    /**
+     * Returns the final execution context when available.
+     *
+     * @return the final execution context
+     */
+    public Optional<ExecutionContext> finalContext() {
+        return Optional.ofNullable(finalContext);
+    }
+
+    /**
+     * Returns a diagnostic completion reason.
+     *
+     * @return the completion reason, or an empty string
+     */
+    public String completionReason() {
+        return completionReason;
     }
 
     /**
@@ -120,7 +201,9 @@ public final class ExecutionResult {
                 ", flowName='" + flowName + '\'' +
                 ", success=" + success +
                 ", stepRecords=" + stepRecords +
+                ", actionRecords=" + actionRecords +
                 ", failureMessage='" + failureMessage + '\'' +
+                ", completionReason='" + completionReason + '\'' +
                 '}';
     }
 
@@ -142,7 +225,10 @@ public final class ExecutionResult {
                 && Objects.equals(flowId, that.flowId)
                 && Objects.equals(flowName, that.flowName)
                 && Objects.equals(stepRecords, that.stepRecords)
-                && Objects.equals(failureMessage, that.failureMessage);
+                && Objects.equals(actionRecords, that.actionRecords)
+                && Objects.equals(failureMessage, that.failureMessage)
+                && Objects.equals(finalContext, that.finalContext)
+                && Objects.equals(completionReason, that.completionReason);
     }
 
     /**
@@ -152,6 +238,6 @@ public final class ExecutionResult {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(flowId, flowName, success, stepRecords, failureMessage);
+        return Objects.hash(flowId, flowName, success, stepRecords, actionRecords, failureMessage, finalContext, completionReason);
     }
 }
