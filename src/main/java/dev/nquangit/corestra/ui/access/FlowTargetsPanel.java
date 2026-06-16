@@ -3,7 +3,11 @@ package dev.nquangit.corestra.ui.access;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.access.flow.AccessFlowTarget;
+import dev.nquangit.corestra.access.flow.FlowMatrixRowsFromFlowRequest;
+import dev.nquangit.corestra.access.flow.FlowMatrixRowsFromFlowResult;
+import dev.nquangit.corestra.access.flow.FlowStepMatrixSelection;
 import dev.nquangit.corestra.access.flow.FlowTargetHasher;
+import dev.nquangit.corestra.access.flow.FlowTargetRunMode;
 import dev.nquangit.corestra.access.matrix.ExpectedResult;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
@@ -20,9 +24,12 @@ import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.ListSelectionModel;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellEditor;
 import java.awt.BorderLayout;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -41,7 +48,7 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
         super(new BorderLayout(8, 8));
         this.controller = Objects.requireNonNull(controller, "controller");
         this.tableModel = new DefaultTableModel(
-                new Object[]{"Name", "Source Flow", "Target Step", "Steps", "Stale", "Enabled", "Id"},
+                new Object[]{"Name", "Source Flow", "Target Step", "Run Mode", "Steps", "Stale", "Enabled", "Id"},
                 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
@@ -51,7 +58,7 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
         this.table = new JTable(tableModel);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);
-        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(6));
+        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(7));
         table.getSelectionModel().addListSelectionListener(event -> {
             if (!event.getValueIsAdjusting()) {
                 showPreview();
@@ -72,15 +79,19 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
     private JPanel toolbar() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 6));
         JButton add = StyledButton.primary("Add Flow Target");
+        JButton createRows = StyledButton.neutral("Create Matrix Rows from Flow");
         JButton matrix = StyledButton.neutral("Add as Matrix Target");
         JButton delete = StyledButton.danger("Delete");
         add.setToolTipText("Snapshot a Flowise flow for Access Testing. No HTTP request is sent.");
+        createRows.setToolTipText("Create disabled Matrix rows for multiple selected steps in a Flowise flow.");
         matrix.setToolTipText("Create a disabled Matrix row from the selected flow target.");
         delete.setToolTipText("Delete the selected flow target.");
         add.addActionListener(event -> showAddDialog());
+        createRows.addActionListener(event -> showCreateRowsFromFlowDialog());
         matrix.addActionListener(event -> selectedTarget().ifPresent(this::showMatrixDialog));
         delete.addActionListener(event -> selectedTarget().ifPresent(this::deleteTarget));
         panel.add(add);
+        panel.add(createRows);
         panel.add(matrix);
         panel.add(delete);
         panel.add(new JLabel("Flow targets are saved snapshots; source-flow edits do not auto-refresh them."));
@@ -104,6 +115,7 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
                     target.name(),
                     target.sourceFlowName().isBlank() ? target.sourceFlowId() : target.sourceFlowName(),
                     stepName(target),
+                    target.runMode(),
                     enabledStepsThroughTarget(target),
                     stale(target) ? "Yes" : "No",
                     target.enabled(),
@@ -119,7 +131,7 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
             return Optional.empty();
         }
         int modelRow = table.convertRowIndexToModel(row);
-        String id = (String) tableModel.getValueAt(modelRow, 6);
+        String id = (String) tableModel.getValueAt(modelRow, 7);
         return controller.flowTargets().stream().filter(target -> target.id().equals(id)).findFirst();
     }
 
@@ -133,6 +145,7 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
         if (stale(target)) {
             text.append("Warning: source flow has changed since this snapshot was created.").append('\n');
         }
+        text.append("Run mode: ").append(target.runMode()).append('\n');
         for (FlowStep step : target.flowSnapshot().steps()) {
             if (!step.enabled()) {
                 continue;
@@ -141,7 +154,8 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
             text.append(step.name()).append("  ")
                     .append(step.requestTemplate().method()).append(' ')
                     .append(step.requestTemplate().pathAndQuery()).append('\n');
-            if (step.id().equals(target.targetStepId())) {
+            if (step.id().equals(target.targetStepId())
+                    && target.runMode() == FlowTargetRunMode.STOP_AT_STEP) {
                 break;
             }
         }
@@ -174,6 +188,43 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
             refresh();
         } catch (RuntimeException exception) {
             JOptionPane.showMessageDialog(this, exception.getMessage(), "Add Flow Target", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void showCreateRowsFromFlowDialog() {
+        FlowRowsFromFlowPanel form = new FlowRowsFromFlowPanel(controller);
+        if (form.empty()) {
+            JOptionPane.showMessageDialog(this,
+                    "Create at least one Flowise flow and one Auth Profile before creating Matrix rows.",
+                    "Create Matrix Rows from Flow",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        int result = JOptionPane.showConfirmDialog(
+                this,
+                form,
+                "Create Matrix Rows from Flow",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            FlowMatrixRowsFromFlowResult created = controller.createMatrixRowsFromFlow(form.toRequest());
+            refresh();
+            StringBuilder message = new StringBuilder();
+            message.append("Created ").append(created.rows().size()).append(" disabled Matrix row(s).");
+            if (created.duplicateCount() > 0) {
+                message.append('\n').append("Skipped duplicates: ").append(created.duplicateCount());
+            }
+            if (!created.warnings().isEmpty()) {
+                message.append('\n').append(String.join("\n", created.warnings()));
+            }
+            JOptionPane.showMessageDialog(this, message.toString(),
+                    "Matrix Rows Created", JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    "Create Matrix Rows from Flow", JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -291,6 +342,196 @@ final class FlowTargetsPanel extends JPanel implements AccessTabPanel {
                     step.setSelectedIndex(step.getItemCount() - 1);
                 }
             }
+        }
+    }
+
+    private static final class FlowRowsFromFlowPanel extends JPanel {
+        private static final String[] COLUMNS = {"Use", "Step", "Method", "Path", "Expected", "Run Mode", "Step Id"};
+
+        private final JComboBox<FlowOption> flow = new JComboBox<>();
+        private final JComboBox<ComboItem> auth = new JComboBox<>();
+        private final JComboBox<ComboItem> data = new JComboBox<>();
+        private final JComboBox<ExpectedResult> defaultExpected = new JComboBox<>(ExpectedResult.values());
+        private final JComboBox<FlowTargetRunMode> defaultRunMode = new JComboBox<>(FlowTargetRunMode.values());
+        private final DefaultTableModel model = new DefaultTableModel(COLUMNS, 0) {
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 0 ? Boolean.class : Object.class;
+            }
+
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0 || column == 4 || column == 5;
+            }
+        };
+        private final JTable table = new JTable(model);
+
+        private FlowRowsFromFlowPanel(AccessUiController controller) {
+            super(new BorderLayout(8, 8));
+            setPreferredSize(new Dimension(900, 600));
+            for (FlowDefinition item : controller.flows()) {
+                flow.addItem(new FlowOption(item));
+            }
+            for (AuthProfile profile : controller.authProfiles()) {
+                auth.addItem(new ComboItem(profile.id(), profile.name()));
+            }
+            data.addItem(new ComboItem("", ""));
+            for (DataProfile profile : controller.dataProfiles()) {
+                data.addItem(new ComboItem(profile.id(), profile.name()));
+            }
+            defaultExpected.setSelectedItem(ExpectedResult.REVIEW);
+            defaultRunMode.setSelectedItem(FlowTargetRunMode.STOP_AT_STEP);
+            flow.addActionListener(event -> refreshSteps());
+
+            table.setFillsViewportHeight(true);
+            table.getColumnModel().getColumn(4).setCellEditor(new javax.swing.DefaultCellEditor(
+                    new JComboBox<>(ExpectedResult.values())));
+            table.getColumnModel().getColumn(5).setCellEditor(new javax.swing.DefaultCellEditor(
+                    new JComboBox<>(FlowTargetRunMode.values())));
+            hideColumn(table, 6);
+
+            add(topPanel(), BorderLayout.NORTH);
+            add(new JScrollPane(table), BorderLayout.CENTER);
+            add(buttonPanel(), BorderLayout.SOUTH);
+            refreshSteps();
+        }
+
+        private boolean empty() {
+            return flow.getItemCount() == 0 || auth.getItemCount() == 0;
+        }
+
+        private JPanel topPanel() {
+            JPanel top = new JPanel(new GridLayout(0, 2, 6, 6));
+            top.add(new JLabel("Flow"));
+            top.add(flow);
+            top.add(new JLabel("Target Auth"));
+            top.add(auth);
+            top.add(new JLabel("Data Profile"));
+            top.add(data);
+            top.add(new JLabel("Default Expected"));
+            top.add(defaultExpected);
+            top.add(new JLabel("Default Run Mode"));
+            top.add(defaultRunMode);
+            return top;
+        }
+
+        private JPanel buttonPanel() {
+            JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 6));
+            JButton selectAll = StyledButton.neutral("Select All");
+            JButton clear = StyledButton.neutral("Clear");
+            JButton applyDefaults = StyledButton.neutral("Apply Defaults");
+            selectAll.addActionListener(event -> setSelectedForAll(true));
+            clear.addActionListener(event -> setSelectedForAll(false));
+            applyDefaults.addActionListener(event -> applyDefaults());
+            buttons.add(selectAll);
+            buttons.add(clear);
+            buttons.add(applyDefaults);
+            buttons.add(new JLabel("Rows are created disabled by default; no HTTP is sent."));
+            return buttons;
+        }
+
+        private void refreshSteps() {
+            stopEditing();
+            model.setRowCount(0);
+            if (!(flow.getSelectedItem() instanceof FlowOption selected)) {
+                return;
+            }
+            ExpectedResult expected = (ExpectedResult) defaultExpected.getSelectedItem();
+            FlowTargetRunMode runMode = (FlowTargetRunMode) defaultRunMode.getSelectedItem();
+            for (FlowStep step : selected.flow().steps()) {
+                if (!step.enabled()) {
+                    continue;
+                }
+                model.addRow(new Object[]{
+                        true,
+                        step.name(),
+                        step.requestTemplate().method(),
+                        step.requestTemplate().pathAndQuery(),
+                        expected == null ? ExpectedResult.REVIEW : expected,
+                        runMode == null ? FlowTargetRunMode.STOP_AT_STEP : runMode,
+                        step.id()});
+            }
+        }
+
+        private void setSelectedForAll(boolean selected) {
+            stopEditing();
+            for (int row = 0; row < model.getRowCount(); row++) {
+                model.setValueAt(selected, row, 0);
+            }
+        }
+
+        private void applyDefaults() {
+            stopEditing();
+            ExpectedResult expected = (ExpectedResult) defaultExpected.getSelectedItem();
+            FlowTargetRunMode runMode = (FlowTargetRunMode) defaultRunMode.getSelectedItem();
+            for (int row = 0; row < model.getRowCount(); row++) {
+                model.setValueAt(expected == null ? ExpectedResult.REVIEW : expected, row, 4);
+                model.setValueAt(runMode == null ? FlowTargetRunMode.STOP_AT_STEP : runMode, row, 5);
+            }
+        }
+
+        private FlowMatrixRowsFromFlowRequest toRequest() {
+            stopEditing();
+            FlowOption flowOption = (FlowOption) flow.getSelectedItem();
+            ComboItem authOption = (ComboItem) auth.getSelectedItem();
+            ComboItem dataOption = (ComboItem) data.getSelectedItem();
+            if (flowOption == null) {
+                throw new IllegalArgumentException("Flow is required");
+            }
+            if (authOption == null || authOption.id().isBlank()) {
+                throw new IllegalArgumentException("Target auth profile is required");
+            }
+            ArrayList<FlowStepMatrixSelection> selections = new ArrayList<>();
+            for (int row = 0; row < model.getRowCount(); row++) {
+                selections.add(new FlowStepMatrixSelection(
+                        Objects.toString(model.getValueAt(row, 6), ""),
+                        expectedAt(row),
+                        runModeAt(row),
+                        Boolean.TRUE.equals(model.getValueAt(row, 0))));
+            }
+            return new FlowMatrixRowsFromFlowRequest(
+                    flowOption.flow().id(),
+                    authOption.id(),
+                    dataOption == null ? "" : dataOption.id(),
+                    selections,
+                    true);
+        }
+
+        private ExpectedResult expectedAt(int row) {
+            Object value = model.getValueAt(row, 4);
+            if (value instanceof ExpectedResult expected) {
+                return expected;
+            }
+            try {
+                return ExpectedResult.valueOf(Objects.toString(value, ExpectedResult.REVIEW.name()));
+            } catch (IllegalArgumentException exception) {
+                return ExpectedResult.REVIEW;
+            }
+        }
+
+        private FlowTargetRunMode runModeAt(int row) {
+            Object value = model.getValueAt(row, 5);
+            if (value instanceof FlowTargetRunMode mode) {
+                return mode;
+            }
+            try {
+                return FlowTargetRunMode.valueOf(Objects.toString(value, FlowTargetRunMode.STOP_AT_STEP.name()));
+            } catch (IllegalArgumentException exception) {
+                return FlowTargetRunMode.STOP_AT_STEP;
+            }
+        }
+
+        private void stopEditing() {
+            TableCellEditor editor = table.getCellEditor();
+            if (editor != null) {
+                editor.stopCellEditing();
+            }
+        }
+
+        private void hideColumn(JTable table, int column) {
+            table.getColumnModel().getColumn(column).setMinWidth(0);
+            table.getColumnModel().getColumn(column).setMaxWidth(0);
+            table.getColumnModel().getColumn(column).setPreferredWidth(0);
         }
     }
 

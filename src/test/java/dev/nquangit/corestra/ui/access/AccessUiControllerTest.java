@@ -22,6 +22,10 @@ import dev.nquangit.corestra.access.evaluate.ResponseIndicator;
 import dev.nquangit.corestra.access.evaluate.SensitiveFieldRule;
 import dev.nquangit.corestra.access.flow.AccessFlowTarget;
 import dev.nquangit.corestra.access.flow.AccessTargetType;
+import dev.nquangit.corestra.access.flow.FlowMatrixRowsFromFlowRequest;
+import dev.nquangit.corestra.access.flow.FlowMatrixRowsFromFlowResult;
+import dev.nquangit.corestra.access.flow.FlowStepMatrixSelection;
+import dev.nquangit.corestra.access.flow.FlowTargetRunMode;
 import dev.nquangit.corestra.access.id.AccessIdGenerator;
 import dev.nquangit.corestra.access.importer.ImportFormat;
 import dev.nquangit.corestra.access.importer.ImportOptions;
@@ -701,6 +705,70 @@ class AccessUiControllerTest {
         assertEquals(authProfile.id(), row.target().targetAuthProfileId());
         assertEquals(1, controller.templates().size());
         assertFalse(controller.templates().getFirst().enabled());
+    }
+
+    @Test
+    void createMatrixRowsFromFlowCreatesDisabledRowsForSelectedStepsAndSkipsDuplicates() {
+        InMemoryAccessRepository repository = new InMemoryAccessRepository();
+        FlowDefinition flow = flow(List.of(
+                flowStep("prepare", "/prepare", List.of()),
+                flowStep("read", "/accounts", List.of()),
+                flowStep("update", "/accounts/update", List.of())));
+        AccessUiController controller = controller(repository, List.of(flow));
+        repository.saveAuthProfile(AuthProfile.manual("auth-1", "Owner", "admin"));
+        repository.saveDataProfile(DataProfile.enabled("data-1", "Owner data", "auth-1",
+                Map.of("accountId", "acct-1")));
+        FlowMatrixRowsFromFlowRequest request = new FlowMatrixRowsFromFlowRequest(
+                flow.id(),
+                "auth-1",
+                "data-1",
+                List.of(
+                        new FlowStepMatrixSelection("prepare", ExpectedResult.REVIEW,
+                                FlowTargetRunMode.STOP_AT_STEP, false),
+                        new FlowStepMatrixSelection("read", ExpectedResult.DENY,
+                                FlowTargetRunMode.STOP_AT_STEP, true),
+                        new FlowStepMatrixSelection("update", ExpectedResult.ALLOW,
+                                FlowTargetRunMode.FULL_FLOW_EVALUATE_STEP, true)),
+                true);
+
+        FlowMatrixRowsFromFlowResult created = controller.createMatrixRowsFromFlow(request);
+
+        assertEquals(2, created.rows().size());
+        assertEquals(0, created.duplicateCount());
+        assertTrue(created.warnings().isEmpty());
+        assertEquals(2, repository.testCases().size());
+        assertEquals(2, repository.flowTargets().size());
+
+        AccessTestCase readRow = repository.testCases().stream()
+                .filter(row -> row.targetStepId().equals("read"))
+                .findFirst()
+                .orElseThrow();
+        AccessTestCase updateRow = repository.testCases().stream()
+                .filter(row -> row.targetStepId().equals("update"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(AccessTargetType.FLOW_TARGET, readRow.targetType());
+        assertEquals(ExpectedResult.DENY, readRow.expected());
+        assertEquals("auth-1", readRow.target().targetAuthProfileId());
+        assertEquals("data-1", readRow.target().dataProfileId());
+        assertEquals(SetupMode.NONE, readRow.setup().mode());
+        assertFalse(readRow.enabled());
+        assertEquals(ExpectedResult.ALLOW, updateRow.expected());
+        assertFalse(updateRow.enabled());
+
+        AccessFlowTarget readTarget = repository.flowTarget(readRow.flowTargetId()).orElseThrow();
+        AccessFlowTarget updateTarget = repository.flowTarget(updateRow.flowTargetId()).orElseThrow();
+        assertEquals(FlowTargetRunMode.STOP_AT_STEP, readTarget.runMode());
+        assertEquals(FlowTargetRunMode.FULL_FLOW_EVALUATE_STEP, updateTarget.runMode());
+        assertEquals("read", readTarget.targetStepId());
+        assertEquals("update", updateTarget.targetStepId());
+
+        FlowMatrixRowsFromFlowResult duplicate = controller.createMatrixRowsFromFlow(request);
+
+        assertEquals(0, duplicate.rows().size());
+        assertEquals(2, duplicate.duplicateCount());
+        assertEquals(2, repository.testCases().size());
+        assertEquals(2, repository.flowTargets().size());
     }
 
     @Test

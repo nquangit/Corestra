@@ -29,6 +29,15 @@ import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
 import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.flow.rule.ExtractRule;
+import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.session.SessionAuthConfig;
+import dev.nquangit.corestra.session.SessionExtractionRule;
+import dev.nquangit.corestra.session.SessionInjectionRule;
+import dev.nquangit.corestra.session.SessionProfile;
+import dev.nquangit.corestra.session.SessionSchedulerConfig;
+import dev.nquangit.corestra.session.SessionScope;
+import dev.nquangit.corestra.session.SessionState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -56,8 +65,24 @@ class ProjectSerializerTest {
         assertEquals("flow-1", restored.flows().get(0).id());
         assertEquals("Login", restored.flows().get(0).name());
         assertEquals(1, restored.schemaVersion());
+        assertEquals(ProjectSettings.defaults(), restored.settings());
         assertEquals(AccessWorkspace.empty(), restored.accessWorkspace());
         assertEquals(List.of(), restored.accessEvidence());
+        assertEquals(SessionProfile.GENERAL_ID, restored.sessionProfiles().getFirst().id());
+    }
+
+    @Test
+    void serializeProjectRoundTripPreservesSettings() {
+        ProjectMetadata meta = new ProjectMetadata("MyProj", "desc", "alice", "note", 1000L, 2000L);
+        ProjectSettings settings = new ProjectSettings(HttpSendMode.PROXY_PIPELINE, "127.0.0.2", 9090);
+        ProjectDocument doc = new ProjectDocument(1, meta, settings, List.of(sampleFlow("flow-1", "Login")),
+                AccessWorkspace.empty(), List.of());
+
+        String json = serializer.serializeProject(doc);
+        ProjectDocument restored = serializer.deserializeProject(json);
+
+        assertTrue(json.contains("\"settings\""));
+        assertEquals(settings, restored.settings());
     }
 
     @Test
@@ -122,6 +147,62 @@ class ProjectSerializerTest {
     }
 
     @Test
+    void serializeProjectDefaultSanitizesSessionState() {
+        ProjectMetadata meta = new ProjectMetadata("MyProj", "desc", "alice", "note", 1000L, 2000L);
+        ProjectDocument doc = new ProjectDocument(
+                1,
+                meta,
+                ProjectSettings.defaults(),
+                List.of(),
+                AccessWorkspace.empty(),
+                List.of(),
+                null,
+                Map.of(),
+                sessionProfiles());
+
+        String json = serializer.serializeProject(doc);
+        ProjectDocument restored = serializer.deserializeProject(json);
+
+        assertTrue(json.contains("\"sessions\""));
+        assertFalse(json.contains("session-secret"));
+        assertFalse(json.contains("plain-session-secret"));
+        SessionProfile restoredProfile = restored.sessionProfiles().stream()
+                .filter(profile -> profile.id().equals("session-1"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("<redacted>", restoredProfile.state().values().get("accessToken"));
+        assertEquals("<redacted>", restoredProfile.state().values().get("plainValue"));
+    }
+
+    @Test
+    void serializeProjectFullExportKeepsSessionState() {
+        ProjectMetadata meta = new ProjectMetadata("MyProj", "desc", "alice", "note", 1000L, 2000L);
+        ProjectDocument doc = new ProjectDocument(
+                1,
+                meta,
+                ProjectSettings.defaults(),
+                List.of(),
+                AccessWorkspace.empty(),
+                List.of(),
+                null,
+                Map.of(),
+                sessionProfiles());
+
+        String json = serializer.serializeProject(doc, ExportMode.FULL_EXPORT);
+        ProjectDocument restored = serializer.deserializeProject(json);
+
+        assertTrue(json.contains("session-secret"));
+        assertTrue(json.contains("plain-session-secret"));
+        SessionProfile restoredProfile = restored.sessionProfiles().stream()
+                .filter(profile -> profile.id().equals("session-1"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("session-secret", restoredProfile.state().values().get("accessToken"));
+        assertEquals(1, restoredProfile.injectionRules().size());
+        assertEquals(1, restoredProfile.extractionRules().size());
+    }
+
+    @Test
     void deserializeProjectWithoutAccessSectionUsesEmptyAccessWorkspace() {
         String json = """
                 {
@@ -140,8 +221,37 @@ class ProjectSerializerTest {
 
         ProjectDocument restored = serializer.deserializeProject(json);
 
+        assertEquals(ProjectSettings.defaults(), restored.settings());
         assertEquals(AccessWorkspace.empty(), restored.accessWorkspace());
         assertEquals(List.of(), restored.accessEvidence());
+        assertEquals(SessionProfile.GENERAL_ID, restored.sessionProfiles().getFirst().id());
+    }
+
+    @Test
+    void deserializeProjectWithInvalidSettingsUsesDefaults() {
+        String json = """
+                {
+                  "schemaVersion": 1,
+                  "metadata": {
+                    "name": "Invalid Settings",
+                    "description": "",
+                    "owner": "",
+                    "note": "",
+                    "createdAtEpochMillis": 1,
+                    "updatedAtEpochMillis": 1
+                  },
+                  "settings": {
+                    "sendMode": "PROXY_PIPELINE",
+                    "proxyHost": "127.0.0.1",
+                    "proxyPort": 70000
+                  },
+                  "flows": []
+                }
+                """;
+
+        ProjectDocument restored = serializer.deserializeProject(json);
+
+        assertEquals(ProjectSettings.defaults(), restored.settings());
     }
 
     @Test
@@ -239,6 +349,36 @@ class ProjectSerializerTest {
 
     private static SavedFindingDraft draft(String markdown) {
         return new SavedFindingDraft("case-1", "result-1", markdown, 3L);
+    }
+
+    private static List<SessionProfile> sessionProfiles() {
+        return List.of(new SessionProfile(
+                "session-1",
+                "Session User",
+                true,
+                false,
+                SessionScope.custom(List.of()),
+                new SessionAuthConfig("flow-1", 3600L, List.of()),
+                SessionSchedulerConfig.disabled(),
+                new SessionState(Map.of(
+                        "accessToken", "session-secret",
+                        "plainValue", "plain-session-secret"), 10L, 20L, 30L),
+                List.of(new SessionInjectionRule(
+                        "inject-1",
+                        true,
+                        InjectRule.Target.REQUEST_HEADER,
+                        "Authorization",
+                        "Bearer {{session.accessToken}}",
+                        InjectRule.WriteStrategy.OVERWRITE,
+                        List.of("PROXY"))),
+                List.of(new SessionExtractionRule(
+                        "extract-1",
+                        true,
+                        ExtractRule.SourceSide.RESPONSE,
+                        ExtractRule.ExtractorType.HEADER,
+                        "X-Token",
+                        "accessToken",
+                        List.of("PROXY")))));
     }
 
     private static AccessWorkspace accessWorkspace() {

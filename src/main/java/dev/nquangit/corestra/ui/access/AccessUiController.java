@@ -8,8 +8,12 @@ import dev.nquangit.corestra.access.dependency.SetupSuggestionResult;
 import dev.nquangit.corestra.access.evaluate.EvaluationProfile;
 import dev.nquangit.corestra.access.flow.AccessFlowTarget;
 import dev.nquangit.corestra.access.flow.AccessTargetType;
+import dev.nquangit.corestra.access.flow.FlowMatrixRowsFromFlowRequest;
+import dev.nquangit.corestra.access.flow.FlowMatrixRowsFromFlowResult;
 import dev.nquangit.corestra.access.flow.FlowInjectionOverride;
+import dev.nquangit.corestra.access.flow.FlowStepMatrixSelection;
 import dev.nquangit.corestra.access.flow.FlowTargetHasher;
+import dev.nquangit.corestra.access.flow.FlowTargetRunMode;
 import dev.nquangit.corestra.access.id.AccessIdGenerator;
 import dev.nquangit.corestra.access.id.UuidAccessIdGenerator;
 import dev.nquangit.corestra.access.importer.AccessTemplateImportService;
@@ -640,18 +644,27 @@ public final class AccessUiController {
         ensureEditable();
         Objects.requireNonNull(flow, "flow");
         String resolvedStepId = resolveFlowTargetStepId(flow, targetStepId);
-        AccessFlowTarget target = new AccessFlowTarget(
+        AccessFlowTarget target = newFlowTarget(flow, resolvedStepId, FlowTargetRunMode.STOP_AT_STEP, overrides);
+        repository.saveFlowTarget(target);
+        return target;
+    }
+
+    private AccessFlowTarget newFlowTarget(
+            FlowDefinition flow,
+            String resolvedStepId,
+            FlowTargetRunMode runMode,
+            List<FlowInjectionOverride> overrides) {
+        return new AccessFlowTarget(
                 idGenerator.newId("flowtarget"),
-                "Flow Target: " + flow.name(),
+                "Flow Target: " + flow.name() + " / " + stepName(flow, resolvedStepId),
                 flow,
                 flow.id(),
                 flow.name(),
                 flowTargetHasher.hash(flow),
                 resolvedStepId,
+                Objects.requireNonNullElse(runMode, FlowTargetRunMode.STOP_AT_STEP),
                 false,
                 overrides == null ? List.of() : overrides);
-        repository.saveFlowTarget(target);
-        return target;
     }
 
     /**
@@ -714,6 +727,112 @@ public final class AccessUiController {
                 List.of(),
                 dev.nquangit.corestra.access.teardown.TeardownConfig.none(),
                 false));
+    }
+
+    /**
+     * Creates disabled Matrix rows from selected enabled steps in one Flowise flow.
+     *
+     * @param request selected flow-step generation request
+     * @return saved rows, duplicate count, and warnings
+     */
+    public FlowMatrixRowsFromFlowResult createMatrixRowsFromFlow(FlowMatrixRowsFromFlowRequest request) {
+        ensureEditable();
+        Objects.requireNonNull(request, "request");
+        FlowDefinition flow = flows().stream()
+                .filter(candidate -> candidate.id().equals(request.flowId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Flow is required"));
+        if (repository.authProfile(request.targetAuthProfileId()).isEmpty()) {
+            throw new IllegalArgumentException("Target auth profile is required");
+        }
+        if (!request.dataProfileId().isBlank() && repository.dataProfile(request.dataProfileId()).isEmpty()) {
+            throw new IllegalArgumentException("Data profile was not found");
+        }
+
+        java.util.ArrayList<AccessTestCase> savedRows = new java.util.ArrayList<>();
+        java.util.ArrayList<String> warnings = new java.util.ArrayList<>();
+        int duplicates = 0;
+        String flowHash = flowTargetHasher.hash(flow);
+
+        for (FlowStepMatrixSelection selection : request.selections()) {
+            if (!selection.selected()) {
+                continue;
+            }
+            FlowStep step = flow.steps().stream()
+                    .filter(candidate -> candidate.id().equals(selection.stepId()))
+                    .findFirst()
+                    .orElse(null);
+            if (step == null) {
+                warnings.add("Selected step was not found: " + selection.stepId());
+                continue;
+            }
+            if (!step.enabled()) {
+                warnings.add("Selected step is disabled and was skipped: " + step.name());
+                continue;
+            }
+
+            AccessFlowTarget flowTarget = equivalentFlowTarget(flow.id(), flowHash, step.id(), selection.runMode())
+                    .orElseGet(() -> {
+                        AccessFlowTarget created = newFlowTarget(flow, step.id(), selection.runMode(), List.of());
+                        repository.saveFlowTarget(created);
+                        return created;
+                    });
+            AccessTestCase row = flowStepMatrixRow(flow, step, flowTarget, request, selection);
+            if (matrixGenerator.isDuplicate(row, repository.testCases())) {
+                duplicates++;
+                continue;
+            }
+            repository.saveTestCase(row);
+            savedRows.add(row);
+        }
+
+        if (savedRows.isEmpty() && duplicates == 0 && warnings.isEmpty()) {
+            warnings.add("No flow steps were selected.");
+        }
+        return new FlowMatrixRowsFromFlowResult(savedRows, duplicates, warnings);
+    }
+
+    private AccessTestCase flowStepMatrixRow(
+            FlowDefinition flow,
+            FlowStep step,
+            AccessFlowTarget flowTarget,
+            FlowMatrixRowsFromFlowRequest request,
+            FlowStepMatrixSelection selection) {
+        MatrixRowFormModel form = new MatrixRowFormModel(
+                AccessTargetType.FLOW_TARGET,
+                flowTarget.id(),
+                flow.name() + " / " + step.name(),
+                "",
+                request.targetAuthProfileId(),
+                request.dataProfileId(),
+                "",
+                SetupMode.NONE,
+                "",
+                "",
+                dev.nquangit.corestra.access.matrix.SetupAuthBinding.DATA_OWNER,
+                "",
+                dev.nquangit.corestra.access.matrix.ScenarioPolicy.REUSE_EXISTING,
+                "",
+                selection.expected(),
+                "",
+                List.of(),
+                dev.nquangit.corestra.access.teardown.TeardownConfig.none(),
+                !request.createDisabledRows());
+        return form.toTestCase(idGenerator.newId("case"), flow.id(), step.id(), RunStatus.PENDING, 0L);
+    }
+
+    private Optional<AccessFlowTarget> equivalentFlowTarget(
+            String sourceFlowId,
+            String sourceFlowHash,
+            String targetStepId,
+            FlowTargetRunMode runMode) {
+        return repository.flowTargets().stream()
+                .filter(target -> target.sourceFlowId().equals(sourceFlowId))
+                .filter(target -> target.sourceFlowHash().equals(sourceFlowHash))
+                .filter(target -> target.targetStepId().equals(targetStepId))
+                .filter(target -> target.runMode() == Objects.requireNonNullElse(runMode, FlowTargetRunMode.STOP_AT_STEP))
+                .filter(target -> target.injectionOverrides().isEmpty())
+                .findFirst();
     }
 
     /**
@@ -1603,6 +1722,14 @@ public final class AccessUiController {
             }
         }
         throw new IllegalArgumentException("Flow has no enabled steps to target");
+    }
+
+    private String stepName(FlowDefinition flow, String stepId) {
+        return flow.steps().stream()
+                .filter(step -> step.id().equals(stepId))
+                .map(FlowStep::name)
+                .findFirst()
+                .orElse(stepId);
     }
 
     private AccessRequestTemplateFactory templateFactory() {

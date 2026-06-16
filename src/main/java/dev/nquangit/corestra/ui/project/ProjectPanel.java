@@ -4,21 +4,27 @@ import dev.nquangit.corestra.access.repository.InMemoryAccessRepository;
 import dev.nquangit.corestra.access.security.ExportMode;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.persistence.ProjectDocument;
+import dev.nquangit.corestra.persistence.HttpSendMode;
 import dev.nquangit.corestra.persistence.ProjectMetadata;
 import dev.nquangit.corestra.persistence.ProjectMetadataRepository;
 import dev.nquangit.corestra.persistence.ProjectSerializer;
+import dev.nquangit.corestra.persistence.ProjectSettings;
+import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
+import dev.nquangit.corestra.session.SessionProfileRepository;
 import dev.nquangit.corestra.ui.component.StyledButton;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
+import javax.swing.ButtonGroup;
 import javax.swing.JFileChooser;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
 import javax.swing.JTextArea;
@@ -59,10 +65,13 @@ public final class ProjectPanel extends JPanel {
     private final FlowWorkspaceController controller;
     private final ProjectMetadataRepository metadataRepo;
     private final ProjectSerializer projectSerializer;
+    private final ProjectSettingsRepository settingsRepo;
     private final InMemoryAccessRepository accessRepository;
+    private final SessionProfileRepository sessionRepository;
     private final Runnable accessRefreshCallback;
 
     private ProjectMetadata currentMeta;
+    private ProjectSettings currentSettings;
 
     private final JTextField nameField   = new JTextField();
     private final JTextField ownerField  = new JTextField();
@@ -70,8 +79,13 @@ public final class ProjectPanel extends JPanel {
     private final JTextArea  noteArea    = new JTextArea(3, 20);
     private final JLabel timestampsLabel = new JLabel(" ");
     private final JLabel statsLabel      = new JLabel(" ");
+    private final JRadioButton standardSendRadio = new JRadioButton("Standard");
+    private final JRadioButton proxyPipelineRadio = new JRadioButton("Proxy Pipeline");
+    private final JTextField proxyHostField = new JTextField();
+    private final JTextField proxyPortField = new JTextField();
     private final JComboBox<ExportMode> accessExportModeCombo = new JComboBox<>(
             new ExportMode[]{ExportMode.FULL_EXPORT, ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS});
+    private boolean refreshingSettingsControls;
 
     /**
      * Creates a project panel without access repository integration.
@@ -83,7 +97,8 @@ public final class ProjectPanel extends JPanel {
     public ProjectPanel(FlowWorkspaceController controller,
                         ProjectMetadataRepository metadataRepo,
                         ProjectSerializer projectSerializer) {
-        this(controller, metadataRepo, projectSerializer, new InMemoryAccessRepository(), () -> { });
+        this(controller, metadataRepo, projectSerializer, new ProjectSettingsRepository(),
+                new InMemoryAccessRepository(), new SessionProfileRepository(), () -> { });
     }
 
     /**
@@ -92,22 +107,29 @@ public final class ProjectPanel extends JPanel {
      * @param controller flow workspace controller
      * @param metadataRepo project metadata repository
      * @param projectSerializer project serializer
+     * @param settingsRepo project settings repository
      * @param accessRepository access workspace repository
+     * @param sessionRepository session handler profile repository
      * @param accessRefreshCallback callback invoked after access workspace import
      */
     public ProjectPanel(FlowWorkspaceController controller,
                         ProjectMetadataRepository metadataRepo,
                         ProjectSerializer projectSerializer,
+                        ProjectSettingsRepository settingsRepo,
                         InMemoryAccessRepository accessRepository,
+                        SessionProfileRepository sessionRepository,
                         Runnable accessRefreshCallback) {
         super(new BorderLayout());
         this.controller        = Objects.requireNonNull(controller,        "controller");
         this.metadataRepo      = Objects.requireNonNull(metadataRepo,      "metadataRepo");
         this.projectSerializer = Objects.requireNonNull(projectSerializer, "projectSerializer");
+        this.settingsRepo      = Objects.requireNonNull(settingsRepo,      "settingsRepo");
         this.accessRepository  = Objects.requireNonNull(accessRepository,  "accessRepository");
+        this.sessionRepository = Objects.requireNonNull(sessionRepository, "sessionRepository");
         this.accessRefreshCallback = Objects.requireNonNull(accessRefreshCallback, "accessRefreshCallback");
 
         this.currentMeta = metadataRepo.load();
+        this.currentSettings = settingsRepo.load();
 
         styleSecondary(timestampsLabel);
         styleSecondary(statsLabel);
@@ -153,6 +175,12 @@ public final class ProjectPanel extends JPanel {
         gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
         panel.add(new JSeparator(), gbc);
 
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
+        panel.add(buildSettingsSection(), gbc);
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
+        panel.add(new JSeparator(), gbc);
+
         gbc.gridy = row; gbc.insets = new Insets(0, 0, 0, 0);
         panel.add(buildTransferSection(), gbc);
 
@@ -192,6 +220,47 @@ public final class ProjectPanel extends JPanel {
         form.add(new JScrollPane(noteArea), fc);
 
         return form;
+    }
+
+    private JPanel buildSettingsSection() {
+        ButtonGroup sendModeGroup = new ButtonGroup();
+        sendModeGroup.add(standardSendRadio);
+        sendModeGroup.add(proxyPipelineRadio);
+
+        JPanel section = new JPanel(new GridBagLayout());
+        section.setBorder(BorderFactory.createTitledBorder("Settings"));
+
+        GridBagConstraints lc = new GridBagConstraints();
+        lc.anchor = GridBagConstraints.WEST;
+        lc.insets = new Insets(3, 6, 3, 10);
+        lc.gridx = 0;
+
+        GridBagConstraints fc = new GridBagConstraints();
+        fc.fill = GridBagConstraints.HORIZONTAL;
+        fc.weightx = 1;
+        fc.insets = new Insets(3, 0, 3, 8);
+        fc.gridx = 1;
+
+        JPanel modeRow = new JPanel();
+        modeRow.setLayout(new BoxLayout(modeRow, BoxLayout.X_AXIS));
+        modeRow.add(standardSendRadio);
+        modeRow.add(Box.createHorizontalStrut(8));
+        modeRow.add(proxyPipelineRadio);
+        modeRow.add(Box.createHorizontalGlue());
+
+        lc.gridy = 0; fc.gridy = 0;
+        section.add(new JLabel("HTTP send mode:"), lc);
+        section.add(modeRow, fc);
+
+        lc.gridy = 1; fc.gridy = 1;
+        section.add(new JLabel("Proxy host:"), lc);
+        section.add(proxyHostField, fc);
+
+        lc.gridy = 2; fc.gridy = 2;
+        section.add(new JLabel("Proxy port:"), lc);
+        section.add(proxyPortField, fc);
+
+        return section;
     }
 
     private JPanel buildTransferSection() {
@@ -241,10 +310,49 @@ public final class ProjectPanel extends JPanel {
         descField.addFocusListener(onFocusLost(() -> saveField(currentMeta.withDescription(descField.getText().strip()))));
 
         noteArea.addFocusListener(onFocusLost(() -> saveField(currentMeta.withNote(noteArea.getText()))));
+
+        standardSendRadio.addActionListener(e -> saveSettingsFromControls());
+        proxyPipelineRadio.addActionListener(e -> saveSettingsFromControls());
+        proxyHostField.addActionListener(e -> saveSettingsFromControls());
+        proxyHostField.addFocusListener(onFocusLost(this::saveSettingsFromControls));
+        proxyPortField.addActionListener(e -> saveSettingsFromControls());
+        proxyPortField.addFocusListener(onFocusLost(this::saveSettingsFromControls));
     }
 
     private void saveField(ProjectMetadata updated) {
         currentMeta = updated.withUpdatedAtEpochMillis(System.currentTimeMillis());
+        metadataRepo.save(currentMeta);
+        refreshTimestamps();
+    }
+
+    private void saveSettingsFromControls() {
+        if (refreshingSettingsControls) {
+            return;
+        }
+        int proxyPort;
+        try {
+            proxyPort = Integer.parseInt(proxyPortField.getText().strip());
+            if (proxyPort < 1 || proxyPort > 65535) {
+                throw new NumberFormatException("out of range");
+            }
+        } catch (NumberFormatException exception) {
+            JOptionPane.showMessageDialog(this, "Proxy port must be a number from 1 to 65535.",
+                    "Invalid Project Settings", JOptionPane.ERROR_MESSAGE);
+            refreshSettingsControls();
+            return;
+        }
+
+        currentSettings = new ProjectSettings(
+                proxyPipelineRadio.isSelected() ? HttpSendMode.PROXY_PIPELINE : HttpSendMode.STANDARD,
+                proxyHostField.getText(),
+                proxyPort);
+        settingsRepo.save(currentSettings);
+        touchProject();
+        refreshSettingsControls();
+    }
+
+    private void touchProject() {
+        currentMeta = currentMeta.withUpdatedAtEpochMillis(System.currentTimeMillis());
         metadataRepo.save(currentMeta);
         refreshTimestamps();
     }
@@ -262,8 +370,24 @@ public final class ProjectPanel extends JPanel {
         ownerField.setText(currentMeta.owner());
         descField.setText(currentMeta.description());
         noteArea.setText(currentMeta.note());
+        refreshSettingsControls();
         refreshTimestamps();
         refreshStats();
+    }
+
+    private void refreshSettingsControls() {
+        refreshingSettingsControls = true;
+        try {
+            standardSendRadio.setSelected(currentSettings.sendMode() == HttpSendMode.STANDARD);
+            proxyPipelineRadio.setSelected(currentSettings.sendMode() == HttpSendMode.PROXY_PIPELINE);
+            proxyHostField.setText(currentSettings.proxyHost());
+            proxyPortField.setText(Integer.toString(currentSettings.proxyPort()));
+            boolean proxyEnabled = currentSettings.sendMode() == HttpSendMode.PROXY_PIPELINE;
+            proxyHostField.setEnabled(proxyEnabled);
+            proxyPortField.setEnabled(proxyEnabled);
+        } finally {
+            refreshingSettingsControls = false;
+        }
     }
 
     private void refreshTimestamps() {
@@ -295,8 +419,16 @@ public final class ProjectPanel extends JPanel {
             return;
         }
 
-        ProjectDocument doc = new ProjectDocument(1, currentMeta, controller.flows(),
-                accessRepository.snapshotDocument());
+        ProjectDocument doc = new ProjectDocument(
+                1,
+                currentMeta,
+                currentSettings,
+                controller.flows(),
+                accessRepository.snapshotDocument().workspace(),
+                accessRepository.snapshotDocument().evidence(),
+                accessRepository.snapshotDocument().latestSummary().orElse(null),
+                accessRepository.snapshotDocument().reportDrafts(),
+                sessionRepository.loadProfiles());
         String json;
         try {
             json = projectSerializer.serializeProject(doc, exportMode);
@@ -342,7 +474,9 @@ public final class ProjectPanel extends JPanel {
                 + doc.accessWorkspace().testCases().size() + " matrix row(s), "
                 + doc.accessWorkspace().results().size() + " latest result(s), "
                 + doc.accessEvidence().size() + " evidence item(s), "
-                + doc.accessReportDrafts().size() + " saved report draft(s).\n\n"
+                + doc.accessReportDrafts().size() + " saved report draft(s), "
+                + doc.sessionProfiles().size() + " session profile(s), "
+                + "send mode " + doc.settings().sendMode() + ".\n\n"
                 + "Runtime scenarios are not stored in project files.\n\n"
                 + "How should existing flows be handled?";
         int choice = JOptionPane.showOptionDialog(this, info, "Import Project",
@@ -350,8 +484,13 @@ public final class ProjectPanel extends JPanel {
                 new Object[]{"Merge", "Replace All", "Cancel"}, "Merge");
 
         if (choice == 2 || choice == JOptionPane.CLOSED_OPTION) return;
+        currentSettings = doc.settings();
+        settingsRepo.save(currentSettings);
+        refreshSettingsControls();
+        touchProject();
         applyImportedFlows(doc.flows(), choice == 1);
         accessRepository.replaceWith(doc.accessDocument());
+        sessionRepository.saveProfiles(doc.sessionProfiles());
         accessRefreshCallback.run();
     }
 

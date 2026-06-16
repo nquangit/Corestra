@@ -18,6 +18,7 @@ import dev.nquangit.corestra.access.flow.AccessFlowTarget;
 import dev.nquangit.corestra.access.flow.AccessTargetType;
 import dev.nquangit.corestra.access.flow.FlowInjectionOverride;
 import dev.nquangit.corestra.access.flow.FlowInjectionOverrideTarget;
+import dev.nquangit.corestra.access.flow.FlowTargetRunMode;
 import dev.nquangit.corestra.access.id.AccessIdGenerator;
 import dev.nquangit.corestra.access.id.UuidAccessIdGenerator;
 import dev.nquangit.corestra.access.matrix.AccessTestCase;
@@ -729,7 +730,7 @@ public final class SingleAccessTestRunner {
         ArrayList<String> warnings = new ArrayList<>(Objects.requireNonNullElse(baseWarnings, List.of()));
         ScopedVariableStore store = storeFactory.from(env, authProfile.state(), dataProfile, scenario, legacy);
         FlowDefinition flow = applyFlowOverrides(flowTarget, store, mode, warnings);
-        List<FlowStep> steps = stepsThroughTarget(flow, flowTarget.targetStepId());
+        List<FlowStep> steps = stepsForFlowTarget(flow, flowTarget);
         if (steps.isEmpty()) {
             return FlowTargetExecution.failed(
                     "Flow target has no enabled steps through target step: " + flowTarget.targetStepId(),
@@ -744,6 +745,8 @@ public final class SingleAccessTestRunner {
         ArrayList<FlowStepEvidence> evidence = new ArrayList<>();
         SentTargetRequest targetSent = null;
         boolean requestSent = false;
+        boolean targetRendered = false;
+        boolean fullFlowMode = flowTarget.runMode() == FlowTargetRunMode.FULL_FLOW_EVALUATE_STEP;
 
         for (FlowStep step : steps) {
             boolean isTarget = step.id().equals(flowTarget.targetStepId());
@@ -762,8 +765,11 @@ public final class SingleAccessTestRunner {
                         "Dry run rendered flow step; no HTTP request was sent",
                         Math.max(System.currentTimeMillis(), capturedAt)));
                 if (isTarget) {
-                    return FlowTargetExecution.success(warnings, evidence, Optional.empty(), false,
-                            scenarioVariables, "Dry run rendered flow target through selected target step");
+                    targetRendered = true;
+                    if (!fullFlowMode) {
+                        return FlowTargetExecution.success(warnings, evidence, Optional.empty(), false,
+                                scenarioVariables, "Dry run rendered flow target through selected target step");
+                    }
                 }
                 continue;
             }
@@ -790,7 +796,9 @@ public final class SingleAccessTestRunner {
                         Math.max(System.currentTimeMillis(), capturedAt)));
                 if (isTarget) {
                     targetSent = sent;
-                    break;
+                    if (!fullFlowMode) {
+                        break;
+                    }
                 }
             } catch (RuntimeException exception) {
                 evidence.add(new FlowStepEvidence(
@@ -803,6 +811,11 @@ public final class SingleAccessTestRunner {
                         false,
                         "Flow step request failed: " + exception.getMessage(),
                         Math.max(System.currentTimeMillis(), capturedAt)));
+                if (fullFlowMode && targetSent != null && !isTarget) {
+                    warnings.add("Post-target flow step '" + step.name() + "' failed after selected target: "
+                            + exception.getMessage());
+                    break;
+                }
                 return FlowTargetExecution.failed(
                         "Flow target step '" + step.name() + "' failed: " + exception.getMessage(),
                         warnings,
@@ -812,6 +825,17 @@ public final class SingleAccessTestRunner {
             }
         }
 
+        if (dryRun && targetRendered) {
+            return FlowTargetExecution.success(
+                    warnings,
+                    evidence,
+                    Optional.empty(),
+                    false,
+                    scenarioVariables,
+                    fullFlowMode
+                            ? "Dry run rendered full flow and selected target step"
+                            : "Dry run rendered flow target through selected target step");
+        }
         if (targetSent == null) {
             return FlowTargetExecution.failed(
                     "Flow target step was not executed: " + flowTarget.targetStepId(),
@@ -921,6 +945,20 @@ public final class SingleAccessTestRunner {
             }
         }
         return found ? List.copyOf(steps) : List.of();
+    }
+
+    private List<FlowStep> stepsForFlowTarget(FlowDefinition flow, AccessFlowTarget flowTarget) {
+        if (flowTarget.runMode() == FlowTargetRunMode.FULL_FLOW_EVALUATE_STEP) {
+            boolean targetExists = flow.steps().stream()
+                    .anyMatch(step -> step.id().equals(flowTarget.targetStepId()) && step.enabled());
+            if (!targetExists) {
+                return List.of();
+            }
+            return flow.steps().stream()
+                    .filter(FlowStep::enabled)
+                    .toList();
+        }
+        return stepsThroughTarget(flow, flowTarget.targetStepId());
     }
 
     private StepPreparation prepareFlowStep(

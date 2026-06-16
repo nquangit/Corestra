@@ -21,6 +21,7 @@ public final class AccessFlowTarget {
     private final String sourceFlowName;
     private final String sourceFlowHash;
     private final String targetStepId;
+    private final FlowTargetRunMode runMode;
     private final boolean enabled;
     private final List<FlowInjectionOverride> injectionOverrides;
 
@@ -34,6 +35,7 @@ public final class AccessFlowTarget {
      * @param sourceFlowName source Flowise flow name at capture time
      * @param sourceFlowHash source Flowise flow hash at capture time
      * @param targetStepId selected target step id
+     * @param runMode execution mode around the selected target step
      * @param enabled whether the target is enabled for selection
      * @param injectionOverrides per-run injection override configuration
      */
@@ -46,6 +48,7 @@ public final class AccessFlowTarget {
             @JsonProperty("sourceFlowName") String sourceFlowName,
             @JsonProperty("sourceFlowHash") String sourceFlowHash,
             @JsonProperty("targetStepId") String targetStepId,
+            @JsonProperty("runMode") FlowTargetRunMode runMode,
             @JsonProperty("enabled") boolean enabled,
             @JsonProperty("injectionOverrides") List<FlowInjectionOverride> injectionOverrides) {
         this.id = normalizeRequiredText(id, "id");
@@ -58,8 +61,36 @@ public final class AccessFlowTarget {
         if (!flowSnapshot.hasStep(this.targetStepId)) {
             throw new IllegalArgumentException("targetStepId must reference a step in flowSnapshot: " + targetStepId);
         }
+        this.runMode = Objects.requireNonNullElse(runMode, FlowTargetRunMode.STOP_AT_STEP);
         this.enabled = enabled;
         this.injectionOverrides = copyOverrides(injectionOverrides);
+    }
+
+    /**
+     * Creates a flow target using the default stop-at-step run mode.
+     *
+     * @param id stable flow target id
+     * @param name display name
+     * @param flowSnapshot saved flow snapshot to execute
+     * @param sourceFlowId source Flowise flow id
+     * @param sourceFlowName source Flowise flow name at capture time
+     * @param sourceFlowHash source Flowise flow hash at capture time
+     * @param targetStepId selected target step id
+     * @param enabled whether the target is enabled for selection
+     * @param injectionOverrides per-run injection override configuration
+     */
+    public AccessFlowTarget(
+            String id,
+            String name,
+            FlowDefinition flowSnapshot,
+            String sourceFlowId,
+            String sourceFlowName,
+            String sourceFlowHash,
+            String targetStepId,
+            boolean enabled,
+            List<FlowInjectionOverride> injectionOverrides) {
+        this(id, name, flowSnapshot, sourceFlowId, sourceFlowName, sourceFlowHash, targetStepId,
+                FlowTargetRunMode.STOP_AT_STEP, enabled, injectionOverrides);
     }
 
     /**
@@ -126,6 +157,15 @@ public final class AccessFlowTarget {
     }
 
     /**
+     * Returns the run mode.
+     *
+     * @return run mode
+     */
+    public FlowTargetRunMode runMode() {
+        return runMode;
+    }
+
+    /**
      * Returns whether this flow target is enabled for selection.
      *
      * @return true when enabled
@@ -151,7 +191,18 @@ public final class AccessFlowTarget {
      */
     public AccessFlowTarget withEnabled(boolean enabled) {
         return new AccessFlowTarget(id, name, flowSnapshot, sourceFlowId, sourceFlowName, sourceFlowHash,
-                targetStepId, enabled, injectionOverrides);
+                targetStepId, runMode, enabled, injectionOverrides);
+    }
+
+    /**
+     * Returns a copy with the run mode changed.
+     *
+     * @param runMode new run mode
+     * @return updated flow target
+     */
+    public AccessFlowTarget withRunMode(FlowTargetRunMode runMode) {
+        return new AccessFlowTarget(id, name, flowSnapshot, sourceFlowId, sourceFlowName, sourceFlowHash,
+                targetStepId, runMode, enabled, injectionOverrides);
     }
 
     /**
@@ -176,6 +227,7 @@ public final class AccessFlowTarget {
                 && Objects.equals(sourceFlowName, that.sourceFlowName)
                 && Objects.equals(sourceFlowHash, that.sourceFlowHash)
                 && Objects.equals(targetStepId, that.targetStepId)
+                && runMode == that.runMode
                 && Objects.equals(injectionOverrides, that.injectionOverrides);
     }
 
@@ -187,7 +239,7 @@ public final class AccessFlowTarget {
     @Override
     public int hashCode() {
         return Objects.hash(id, name, flowSnapshot, sourceFlowId, sourceFlowName, sourceFlowHash,
-                targetStepId, enabled, injectionOverrides);
+                targetStepId, runMode, enabled, injectionOverrides);
     }
 
     /**
@@ -202,6 +254,7 @@ public final class AccessFlowTarget {
                 ", name='" + name + '\'' +
                 ", sourceFlowId='" + sourceFlowId + '\'' +
                 ", targetStepId='" + targetStepId + '\'' +
+                ", runMode=" + runMode +
                 ", enabled=" + enabled +
                 ", injectionOverrides=" + injectionOverrides.size() +
                 '}';

@@ -26,6 +26,7 @@ import dev.nquangit.corestra.access.flow.AccessFlowTarget;
 import dev.nquangit.corestra.access.flow.AccessTargetType;
 import dev.nquangit.corestra.access.flow.FlowInjectionOverride;
 import dev.nquangit.corestra.access.flow.FlowInjectionOverrideTarget;
+import dev.nquangit.corestra.access.flow.FlowTargetRunMode;
 import dev.nquangit.corestra.access.id.AccessIdGenerator;
 import dev.nquangit.corestra.access.matrix.AccessTestCase;
 import dev.nquangit.corestra.access.matrix.ExpectedResult;
@@ -793,6 +794,51 @@ class SingleAccessTestRunnerTest {
     }
 
     @Test
+    void fullFlowTargetExecutesPastSelectedStepButEvaluatesSelectedTargetResponse() {
+        CountingHttpClient httpClient = new CountingHttpClient(200, "{}", 403, 200);
+        AccessFlowTarget flowTarget = flowTarget(flowWithPostTargetStep())
+                .withRunMode(FlowTargetRunMode.FULL_FLOW_EVALUATE_STEP);
+
+        AccessRunResult result = runner(httpClient).run(
+                flowTargetTestCase(flowTarget.id(), ExpectedResult.DENY),
+                workspace(true, true, true).withFlowTarget(flowTarget),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                RenderMode.STRICT);
+
+        assertEquals(3, httpClient.count());
+        assertTrue(httpClient.request(2).contains("/after"));
+        assertEquals(RunStatus.COMPLETED, result.result().runStatus());
+        assertEquals(Verdict.OK, result.result().verdict());
+        assertEquals(3, result.evidence().orElseThrow().flowStepEvidence().size());
+        assertTrue(result.evidence().orElseThrow().flowStepEvidence().get(1).targetStep());
+    }
+
+    @Test
+    void dryRunFullFlowTargetRendersAllEnabledStepsWithoutSendingHttp() {
+        CountingHttpClient httpClient = new CountingHttpClient(200);
+        AccessFlowTarget flowTarget = flowTarget(flowWithPostTargetStep())
+                .withRunMode(FlowTargetRunMode.FULL_FLOW_EVALUATE_STEP);
+
+        AccessRunResult result = runner(httpClient).dryRun(
+                flowTargetTestCase(flowTarget.id(), ExpectedResult.REVIEW),
+                workspace(true, true, true).withFlowTarget(flowTarget),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                RenderMode.STRICT);
+
+        assertEquals(0, httpClient.count());
+        assertFalse(result.requestSent());
+        assertEquals(RunStatus.COMPLETED, result.result().runStatus());
+        assertEquals(3, result.evidence().orElseThrow().flowStepEvidence().size());
+        assertTrue(result.evidence().orElseThrow().flowStepEvidence().get(1).targetStep());
+        assertTrue(result.evidence().orElseThrow().flowStepEvidence().get(2)
+                .redactedRequestRaw().contains("/after"));
+    }
+
+    @Test
     void missingFlowTargetReturnsInvalidAndDoesNotSend() {
         CountingHttpClient httpClient = new CountingHttpClient(200);
 
@@ -1196,6 +1242,38 @@ class SingleAccessTestRunnerTest {
                 FlowRuleSet.empty(),
                 AggregationPlan.disabled(),
                 FlowTriggerConfig.none());
+    }
+
+    private static FlowDefinition flowWithPostTargetStep() {
+        FlowDefinition base = flowWithOverrideableTarget();
+        return new FlowDefinition(
+                base.id(),
+                base.name(),
+                base.description(),
+                base.enabled(),
+                List.of(
+                        base.steps().get(0),
+                        base.steps().get(1),
+                        new FlowStep(
+                                "step-after",
+                                "After",
+                                true,
+                                "",
+                                new StoredRequestTemplate(
+                                        "GET",
+                                        "https",
+                                        "example.test",
+                                        443,
+                                        "/after",
+                                        List.of(),
+                                        ""),
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                StepErrorStrategy.FAIL_FLOW)),
+                base.rules(),
+                base.aggregation(),
+                base.triggerConfig());
     }
 
     private static AccessTestCase testCaseWithTeardown(TeardownConfig teardown) {

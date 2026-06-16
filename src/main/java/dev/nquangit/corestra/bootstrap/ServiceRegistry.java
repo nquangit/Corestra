@@ -5,6 +5,8 @@ import dev.nquangit.corestra.flow.execution.FlowEngine;
 import dev.nquangit.corestra.persistence.FlowRepository;
 
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Holds shared runtime singletons for the Corestra extension.
@@ -12,10 +14,12 @@ import java.util.Objects;
  * <p>No Swing component should construct repositories or services directly; obtain them
  * from this registry instead.</p>
  */
-public final class ServiceRegistry {
+public final class ServiceRegistry implements AutoCloseable {
     private final MontoyaApi montoyaApi;
     private final FlowRepository flowRepository;
     private final FlowEngine flowEngine;
+    private final CopyOnWriteArrayList<AutoCloseable> closeables = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     /**
      * Creates a shared runtime registry.
@@ -29,6 +33,25 @@ public final class ServiceRegistry {
         this.montoyaApi = Objects.requireNonNull(montoyaApi, "montoyaApi");
         this.flowRepository = Objects.requireNonNull(flowRepository, "flowRepository");
         this.flowEngine = Objects.requireNonNull(flowEngine, "flowEngine");
+    }
+
+    /**
+     * Registers a service that should be closed when the extension unloads.
+     *
+     * @param closeable service to close
+     * @return this registry
+     */
+    public ServiceRegistry registerCloseable(AutoCloseable closeable) {
+        AutoCloseable checked = Objects.requireNonNull(closeable, "closeable");
+        if (closed.get()) {
+            closeQuietly(checked);
+            return this;
+        }
+        closeables.add(checked);
+        if (closed.get() && closeables.remove(checked)) {
+            closeQuietly(checked);
+        }
+        return this;
     }
 
     /**
@@ -56,5 +79,27 @@ public final class ServiceRegistry {
      */
     public FlowEngine flowEngine() {
         return flowEngine;
+    }
+
+    /**
+     * Closes registered runtime services. This method is idempotent.
+     */
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        for (int i = closeables.size() - 1; i >= 0; i--) {
+            closeQuietly(closeables.get(i));
+        }
+        closeables.clear();
+    }
+
+    private static void closeQuietly(AutoCloseable closeable) {
+        try {
+            closeable.close();
+        } catch (Exception ignored) {
+            // Extension unload cleanup must not throw back into Burp.
+        }
     }
 }

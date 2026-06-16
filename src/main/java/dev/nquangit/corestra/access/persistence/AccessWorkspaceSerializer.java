@@ -292,6 +292,7 @@ public final class AccessWorkspaceSerializer {
                 flowTarget.sourceFlowName(),
                 flowTarget.sourceFlowHash(),
                 flowTarget.targetStepId(),
+                flowTarget.runMode(),
                 flowTarget.enabled(),
                 flowTarget.injectionOverrides());
     }

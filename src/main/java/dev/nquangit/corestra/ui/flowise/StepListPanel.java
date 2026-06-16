@@ -245,6 +245,12 @@ public final class StepListPanel extends JPanel {
                     dark ? new Color(0x3B1F08) : new Color(0xFEF3C7),
                     dark ? new Color(0xFBBF24) : new Color(0x92400E), base));
         }
+        if (!step.conditionActionRules().isEmpty()) {
+            if (!step.extractRules().isEmpty() || !step.injectRules().isEmpty()) badges.add(Box.createHorizontalStrut(4));
+            badges.add(buildPill("C " + step.conditionActionRules().size(),
+                    dark ? new Color(0x111827) : new Color(0xE0E7FF),
+                    dark ? new Color(0xA5B4FC) : new Color(0x3730A3), base));
+        }
 
         // ── Remove button ─────────────────────────────────────────────────────
         // Plain JButton instead of StyledButton — keeps the row compact and avoids

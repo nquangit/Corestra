@@ -6,6 +6,8 @@ import dev.nquangit.corestra.access.result.AccessEvidence;
 import dev.nquangit.corestra.access.runner.AccessPlanSummary;
 import dev.nquangit.corestra.access.workspace.AccessWorkspace;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.session.SessionProfile;
+import dev.nquangit.corestra.session.SessionProfilesDocument;
 
 import java.util.List;
 import java.util.Map;
@@ -18,11 +20,13 @@ import java.util.Optional;
 public final class ProjectDocument {
     private final int schemaVersion;
     private final ProjectMetadata metadata;
+    private final ProjectSettings settings;
     private final List<FlowDefinition> flows;
     private final AccessWorkspace accessWorkspace;
     private final List<AccessEvidence> accessEvidence;
     private final AccessPlanSummary latestAccessPlanSummary;
     private final Map<String, SavedFindingDraft> accessReportDrafts;
+    private final List<SessionProfile> sessionProfiles;
 
     /**
      * Creates a flow-only project document.
@@ -32,7 +36,7 @@ public final class ProjectDocument {
      * @param flows flow definitions
      */
     public ProjectDocument(int schemaVersion, ProjectMetadata metadata, List<FlowDefinition> flows) {
-        this(schemaVersion, metadata, flows, AccessWorkspace.empty(), List.of());
+        this(schemaVersion, metadata, ProjectSettings.defaults(), flows, AccessWorkspace.empty(), List.of());
     }
 
     /**
@@ -50,7 +54,7 @@ public final class ProjectDocument {
             List<FlowDefinition> flows,
             AccessWorkspace accessWorkspace,
             List<AccessEvidence> accessEvidence) {
-        this(schemaVersion, metadata, flows, accessWorkspace, accessEvidence, null, Map.of());
+        this(schemaVersion, metadata, ProjectSettings.defaults(), flows, accessWorkspace, accessEvidence, null, Map.of());
     }
 
     /**
@@ -58,22 +62,19 @@ public final class ProjectDocument {
      *
      * @param schemaVersion project schema version
      * @param metadata project metadata
+     * @param settings project settings
      * @param flows flow definitions
-     * @param accessDocument access project document
+     * @param accessWorkspace access-testing workspace snapshot
+     * @param accessEvidence optional access evidence entries
      */
     public ProjectDocument(
             int schemaVersion,
             ProjectMetadata metadata,
+            ProjectSettings settings,
             List<FlowDefinition> flows,
-            AccessWorkspaceDocument accessDocument) {
-        this(
-                schemaVersion,
-                metadata,
-                flows,
-                Objects.requireNonNull(accessDocument, "accessDocument").workspace(),
-                accessDocument.evidence(),
-                accessDocument.latestSummary().orElse(null),
-                accessDocument.reportDrafts());
+            AccessWorkspace accessWorkspace,
+            List<AccessEvidence> accessEvidence) {
+        this(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence, null, Map.of());
     }
 
     /**
@@ -95,13 +96,110 @@ public final class ProjectDocument {
             List<AccessEvidence> accessEvidence,
             AccessPlanSummary latestAccessPlanSummary,
             Map<String, SavedFindingDraft> accessReportDrafts) {
+        this(schemaVersion, metadata, ProjectSettings.defaults(), flows, accessWorkspace, accessEvidence,
+                latestAccessPlanSummary, accessReportDrafts);
+    }
+
+    /**
+     * Creates a project document.
+     *
+     * @param schemaVersion project schema version
+     * @param metadata project metadata
+     * @param flows flow definitions
+     * @param accessDocument access project document
+     */
+    public ProjectDocument(
+            int schemaVersion,
+            ProjectMetadata metadata,
+            List<FlowDefinition> flows,
+            AccessWorkspaceDocument accessDocument) {
+        this(schemaVersion, metadata, ProjectSettings.defaults(), flows, accessDocument);
+    }
+
+    /**
+     * Creates a project document.
+     *
+     * @param schemaVersion project schema version
+     * @param metadata project metadata
+     * @param settings project settings
+     * @param flows flow definitions
+     * @param accessDocument access project document
+     */
+    public ProjectDocument(
+            int schemaVersion,
+            ProjectMetadata metadata,
+            ProjectSettings settings,
+            List<FlowDefinition> flows,
+            AccessWorkspaceDocument accessDocument) {
+        this(
+                schemaVersion,
+                metadata,
+                settings,
+                flows,
+                Objects.requireNonNull(accessDocument, "accessDocument").workspace(),
+                accessDocument.evidence(),
+                accessDocument.latestSummary().orElse(null),
+                accessDocument.reportDrafts(),
+                SessionProfilesDocument.defaults().profiles());
+    }
+
+    /**
+     * Creates a project document.
+     *
+     * @param schemaVersion project schema version
+     * @param metadata project metadata
+     * @param settings project settings
+     * @param flows flow definitions
+     * @param accessWorkspace access-testing workspace snapshot
+     * @param accessEvidence optional access evidence entries
+     * @param latestAccessPlanSummary latest access plan summary
+     * @param accessReportDrafts saved report drafts keyed by test case id
+     */
+    public ProjectDocument(
+            int schemaVersion,
+            ProjectMetadata metadata,
+            ProjectSettings settings,
+            List<FlowDefinition> flows,
+            AccessWorkspace accessWorkspace,
+            List<AccessEvidence> accessEvidence,
+            AccessPlanSummary latestAccessPlanSummary,
+            Map<String, SavedFindingDraft> accessReportDrafts) {
+        this(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence,
+                latestAccessPlanSummary, accessReportDrafts, SessionProfilesDocument.defaults().profiles());
+    }
+
+    /**
+     * Creates a project document.
+     *
+     * @param schemaVersion project schema version
+     * @param metadata project metadata
+     * @param settings project settings
+     * @param flows flow definitions
+     * @param accessWorkspace access-testing workspace snapshot
+     * @param accessEvidence optional access evidence entries
+     * @param latestAccessPlanSummary latest access plan summary
+     * @param accessReportDrafts saved report drafts keyed by test case id
+     * @param sessionProfiles session handler profiles
+     */
+    public ProjectDocument(
+            int schemaVersion,
+            ProjectMetadata metadata,
+            ProjectSettings settings,
+            List<FlowDefinition> flows,
+            AccessWorkspace accessWorkspace,
+            List<AccessEvidence> accessEvidence,
+            AccessPlanSummary latestAccessPlanSummary,
+            Map<String, SavedFindingDraft> accessReportDrafts,
+            List<SessionProfile> sessionProfiles) {
         this.schemaVersion = schemaVersion;
         this.metadata = Objects.requireNonNull(metadata, "metadata");
+        this.settings = Objects.requireNonNullElse(settings, ProjectSettings.defaults());
         this.flows = List.copyOf(Objects.requireNonNull(flows, "flows"));
         this.accessWorkspace = Objects.requireNonNull(accessWorkspace, "accessWorkspace");
         this.accessEvidence = List.copyOf(Objects.requireNonNull(accessEvidence, "accessEvidence"));
         this.latestAccessPlanSummary = latestAccessPlanSummary;
         this.accessReportDrafts = Map.copyOf(Objects.requireNonNull(accessReportDrafts, "accessReportDrafts"));
+        this.sessionProfiles = SessionProfilesDocument.ensureGeneral(sessionProfiles);
     }
 
     /**
@@ -117,6 +215,13 @@ public final class ProjectDocument {
      * @return project metadata
      */
     public ProjectMetadata metadata() { return metadata; }
+
+    /**
+     * Returns project settings.
+     *
+     * @return project settings
+     */
+    public ProjectSettings settings() { return settings; }
 
     /**
      * Returns flow definitions.
@@ -158,6 +263,15 @@ public final class ProjectDocument {
     }
 
     /**
+     * Returns Session Handler profiles.
+     *
+     * @return immutable session profiles
+     */
+    public List<SessionProfile> sessionProfiles() {
+        return sessionProfiles;
+    }
+
+    /**
      * Returns the access project document.
      *
      * @return access project document
@@ -168,5 +282,14 @@ public final class ProjectDocument {
                 accessEvidence,
                 latestAccessPlanSummary,
                 accessReportDrafts);
+    }
+
+    /**
+     * Returns the Session Handler project document.
+     *
+     * @return session profiles document
+     */
+    public SessionProfilesDocument sessionsDocument() {
+        return new SessionProfilesDocument(sessionProfiles);
     }
 }

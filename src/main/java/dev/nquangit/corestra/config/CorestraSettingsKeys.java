@@ -20,6 +20,11 @@ public final class CorestraSettingsKeys {
     public static final String PROJECT_METADATA = "corestra.project.metadata";
 
     /**
+     * Stores serialized project settings in Burp project data.
+     */
+    public static final String PROJECT_SETTINGS = "corestra.project.settings";
+
+    /**
      * Stores persisted Access Testing configuration in Burp project data.
      */
     public static final String ACCESS_WORKSPACE_DOCUMENT = "corestra.access.workspace.document";
@@ -28,6 +33,16 @@ public final class CorestraSettingsKeys {
      * Stores the last invalid raw Access Testing configuration payload quarantined during recovery.
      */
     public static final String ACCESS_WORKSPACE_DOCUMENT_QUARANTINE = "corestra.access.workspace.document.quarantine";
+
+    /**
+     * Stores serialized Session Handler profiles in Burp project data.
+     */
+    public static final String SESSION_PROFILES_DOCUMENT = "corestra.session.profiles.document";
+
+    /**
+     * Stores the last invalid Session Handler payload quarantined during recovery.
+     */
+    public static final String SESSION_PROFILES_DOCUMENT_QUARANTINE = "corestra.session.profiles.document.quarantine";
 
     private CorestraSettingsKeys() {
         throw new IllegalStateException("Utility class");

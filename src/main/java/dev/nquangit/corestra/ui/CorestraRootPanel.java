@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.ui.access.AccessTestingPanel;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
 import dev.nquangit.corestra.ui.project.ProjectPanel;
+import dev.nquangit.corestra.ui.session.SessionHandlerPanel;
 
 import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
@@ -23,24 +24,28 @@ public final class CorestraRootPanel extends JPanel {
      *
      * @param flowisePanel the Flowise editor panel to embed as the first tab
      * @param projectPanel the Project panel to embed as the second tab
-     * @param accessTestingPanel the Access Testing panel to embed as the third tab
+     * @param sessionHandlerPanel the Session Handler panel to embed as the third tab
+     * @param accessTestingPanel the Access Testing panel to embed as the fourth tab
      * @param api          the Montoya API instance used for theme application
      * @throws NullPointerException if any argument is {@code null}
      */
     public CorestraRootPanel(
             FlowisePanel flowisePanel,
             ProjectPanel projectPanel,
+            SessionHandlerPanel sessionHandlerPanel,
             AccessTestingPanel accessTestingPanel,
             MontoyaApi api) {
         super(new BorderLayout());
         Objects.requireNonNull(flowisePanel, "flowisePanel");
         Objects.requireNonNull(projectPanel, "projectPanel");
+        Objects.requireNonNull(sessionHandlerPanel, "sessionHandlerPanel");
         Objects.requireNonNull(accessTestingPanel, "accessTestingPanel");
         Objects.requireNonNull(api, "api");
 
         JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
         tabs.addTab("Flowise", flowisePanel);
         tabs.addTab("Project", projectPanel);
+        tabs.addTab("Session Handler", sessionHandlerPanel);
         tabs.addTab("Access Testing", accessTestingPanel);
         add(tabs, BorderLayout.CENTER);
 
