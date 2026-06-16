@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -174,6 +175,39 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
                 }
                 if (triggeredStep == null) continue;
 
+                ExecutionContext resolvedCtx = null;
+
+                // Apply the trigger step's extract rules to the live response, then fire Phase 3
+                // with the fully populated context (request-side + response-side variables).
+                if (pending != null && pending.flow.id().equals(flow.id())) {
+                    String statusLine = "HTTP/1.1 " + responseReceived.statusCode();
+                    List<String> responseHeaders = responseReceived.headers().stream()
+                            .map(h -> h.name() + ": " + h.value())
+                            .collect(Collectors.toList());
+                    HttpMessageSnapshot liveResponseSnapshot = new HttpMessageSnapshot(
+                            statusLine, responseHeaders, responseReceived.bodyToString());
+
+                    ExecutionContext updatedCtx = applyExtractRulesToContext(
+                            triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx);
+
+                    resolvedCtx = updatedCtx;
+
+                    if (pending.stopIdx > pending.matchedStepIndex) {
+                        final ExecutionContext phase3Ctx = updatedCtx;
+                        final FlowDefinition phase3Flow = pending.flow;
+                        final List<FlowStep> phase3Steps = phase3Flow.steps();
+                        final int phase3Start = pending.matchedStepIndex + 1;
+                        final int phase3Stop = pending.stopIdx;
+                        CompletableFuture.runAsync(() -> {
+                            try {
+                                runStepRange(phase3Flow, phase3Steps, phase3Start, phase3Stop, phase3Ctx);
+                            } catch (Exception e) {
+                                System.err.println("[Corestra] Auto-trigger Phase 3 failed: " + e.getMessage());
+                            }
+                        });
+                    }
+                }
+
                 AggregationPlan agg = flow.aggregation();
                 StringBuilder aggregated = new StringBuilder();
 
@@ -182,7 +216,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
                     for (int idx = 0; idx < Math.min(pending.matchedStepIndex, steps.size()); idx++) {
                         FlowStep prereq = steps.get(idx);
                         if (!prereq.includeInAggregation()) continue;
-                        List<StepExecutionRecord> recs = pending.ctx.stepHistory().get(prereq.id());
+                        ExecutionContext ctxForHistory = resolvedCtx != null ? resolvedCtx : pending.ctx;
+                        List<StepExecutionRecord> recs = ctxForHistory.stepHistory().get(prereq.id());
                         if (recs == null || recs.isEmpty()) continue;
                         StepExecutionRecord rec = recs.get(recs.size() - 1);
                         appendAggregatedEntry(aggregated, extractBodyFromRaw(rec.receivedResponse()),
