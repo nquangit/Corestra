@@ -164,6 +164,20 @@ class SessionManagerTest {
     }
 
     @Test
+    void clearAllProfilesRestoresOnlyFreshGeneralProfile() {
+        SessionProfileRepository repository = new SessionProfileRepository();
+        repository.saveProfile(profile("custom", "Custom", SessionScope.custom(List.of()))
+                .withState(new SessionState(Map.of("token", "secret"), 1L, 9_000L, 1L)));
+        SessionManager manager = manager(repository);
+
+        manager.clearAllProfiles();
+
+        assertEquals(1, manager.profiles().size());
+        assertEquals(SessionProfile.GENERAL_ID, manager.profiles().getFirst().id());
+        assertTrue(manager.profiles().getFirst().state().values().isEmpty());
+    }
+
+    @Test
     void listenerFailuresDoNotPreventStatePersistence() {
         SessionProfileRepository repository = new SessionProfileRepository();
         SessionProfile general = generalWithHeaderExtraction();

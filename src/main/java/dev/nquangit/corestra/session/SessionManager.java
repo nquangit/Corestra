@@ -1,5 +1,13 @@
 package dev.nquangit.corestra.session;
 
+import dev.nquangit.corestra.access.auth.AuthProfile;
+import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthState;
+import dev.nquangit.corestra.access.auth.runtime.AuthEnsureResult;
+import dev.nquangit.corestra.access.auth.runtime.AuthInjectionRuleRenderer;
+import dev.nquangit.corestra.access.auth.runtime.AuthManager;
+import dev.nquangit.corestra.access.repository.InMemoryAccessRepository;
+import dev.nquangit.corestra.access.variable.RenderMode;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.execution.ExecutionContext;
 import dev.nquangit.corestra.flow.execution.ExecutionResult;
@@ -38,6 +46,9 @@ public final class SessionManager {
     private final FlowEngine flowEngine;
     private final ExtractionService extractionService;
     private final Clock clock;
+    private final InMemoryAccessRepository accessRepository;
+    private final AuthManager authManager;
+    private final AuthInjectionRuleRenderer authInjectionRuleRenderer;
     private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<Consumer<SessionProfileChangeEvent>> profileChangeListeners =
             new CopyOnWriteArrayList<>();
@@ -57,11 +68,56 @@ public final class SessionManager {
             FlowEngine flowEngine,
             ExtractionService extractionService,
             Clock clock) {
+        this(repository, flowsSupplier, flowEngine, extractionService, clock, null, null,
+                new AuthInjectionRuleRenderer());
+    }
+
+    /**
+     * Creates a session manager that can reuse shared Access Auth Profiles.
+     *
+     * @param repository session profile repository
+     * @param flowsSupplier current Flowise flows
+     * @param flowEngine flow execution engine used for standalone auth flows
+     * @param extractionService extractor used by response-side session rules
+     * @param clock runtime clock
+     * @param accessRepository shared Access Testing repository
+     * @param authManager shared authentication runtime
+     * @param authInjectionRuleRenderer renderer for linked provider injection rules
+     */
+    public SessionManager(
+            SessionProfileRepository repository,
+            Supplier<List<FlowDefinition>> flowsSupplier,
+            FlowEngine flowEngine,
+            ExtractionService extractionService,
+            Clock clock,
+            InMemoryAccessRepository accessRepository,
+            AuthManager authManager,
+            AuthInjectionRuleRenderer authInjectionRuleRenderer) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.flowsSupplier = Objects.requireNonNull(flowsSupplier, "flowsSupplier");
         this.flowEngine = Objects.requireNonNull(flowEngine, "flowEngine");
         this.extractionService = Objects.requireNonNull(extractionService, "extractionService");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.accessRepository = accessRepository;
+        this.authManager = authManager;
+        this.authInjectionRuleRenderer = Objects.requireNonNull(authInjectionRuleRenderer,
+                "authInjectionRuleRenderer");
+    }
+
+    /** Returns enabled and disabled shared Auth Profiles available for Session bindings. */
+    public List<AuthProfile> linkedAuthProfiles() {
+        return accessRepository == null ? List.of() : accessRepository.authProfiles();
+    }
+
+    /** Returns whether this runtime was wired with shared authentication support. */
+    public boolean linkedAuthAvailable() {
+        return accessRepository != null && authManager != null;
+    }
+
+    /** Returns whether a profile has either linked or standalone authentication configured. */
+    public boolean hasAuthentication(SessionProfile profile) {
+        Objects.requireNonNull(profile, "profile");
+        return profile.usesLinkedAuthProfile() || !profile.authConfig().mainAuthFlowId().isBlank();
     }
 
     /**
@@ -118,12 +174,37 @@ public final class SessionManager {
     }
 
     /**
+     * Clears every Session Handler profile while waiting for in-flight authentication runs.
+     * The repository exposes a fresh, non-persisted General profile afterwards.
+     */
+    public void clearAllProfiles() {
+        List<String> ids = repository.loadProfiles().stream().map(SessionProfile::id).sorted().toList();
+        List<ReentrantLock> acquired = new ArrayList<>();
+        try {
+            for (String id : ids) {
+                ReentrantLock lock = locks.computeIfAbsent(id, ignored -> new ReentrantLock());
+                lock.lock();
+                acquired.add(lock);
+            }
+            repository.clear();
+            ids.forEach(id -> notifyProfileChanged(
+                    new SessionProfileChangeEvent(id, SessionProfileChangeType.PROFILE_DELETED)));
+        } finally {
+            for (int index = acquired.size() - 1; index >= 0; index--) {
+                acquired.get(index).unlock();
+            }
+        }
+    }
+
+    /**
      * Clears one profile's state.
      *
      * @param profileId profile id
      * @return updated profile when present
      */
     public Optional<SessionProfile> clearState(String profileId) {
+        Optional<SessionProfile> current = repository.profile(profileId);
+        current.filter(SessionProfile::usesLinkedAuthProfile).ifPresent(this::clearLinkedAuthState);
         Optional<SessionProfile> updated = repository.updateState(profileId, ignored -> SessionState.empty());
         updated.ifPresent(saved -> notifyProfileChanged(
                 new SessionProfileChangeEvent(saved.id(), SessionProfileChangeType.STATE_CLEARED)));
@@ -175,15 +256,18 @@ public final class SessionManager {
     public SessionProfile ensureAuthenticated(SessionProfile profile, SessionTrafficContext context) {
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(context, "context");
-        if (profile.authConfig().mainAuthFlowId().isBlank()) {
-            return profile;
-        }
-        long now = clock.millis();
-        if (!profile.state().missingOrExpired(now)) {
+        if (!hasAuthentication(profile)) {
             return profile;
         }
         if (!profile.authConfig().matchesTrigger(context.method(), context.host(), context.path(),
                 context.headers(), context.body())) {
+            return profile;
+        }
+        if (profile.usesLinkedAuthProfile()) {
+            return runAuthFlowLocked(profile.id(), AuthRunMode.ON_DEMAND);
+        }
+        long now = clock.millis();
+        if (!profile.state().missingOrExpired(now)) {
             return profile;
         }
         return runAuthFlowLocked(profile.id(), AuthRunMode.ON_DEMAND);
@@ -241,6 +325,11 @@ public final class SessionManager {
         if (updates.isEmpty()) {
             return profile;
         }
+        if (profile.usesLinkedAuthProfile() && updateLinkedAuthState(profile, updates)) {
+            SessionProfile latest = synchronizeLinkedStateMarker(profile, false);
+            notifyProfileChanged(new SessionProfileChangeEvent(latest.id(), SessionProfileChangeType.STATE_UPDATED));
+            return latest;
+        }
         Optional<SessionProfile> saved = repository.updateState(profile.id(),
                 state -> state.withExtractedValues(updates, clock.millis()));
         saved.ifPresent(updated -> notifyProfileChanged(
@@ -258,14 +347,50 @@ public final class SessionManager {
     public List<InjectRule> renderedInjectionRules(SessionProfile profile, String toolTypeName) {
         Objects.requireNonNull(profile, "profile");
         ArrayList<InjectRule> rules = new ArrayList<>();
+        SessionState selectedTemplateState = profile.state();
+        if (profile.usesLinkedAuthProfile() && accessRepository != null) {
+            accessRepository.authProfile(profile.linkedAuthProfileId()).ifPresent(authProfile -> {
+                AuthProvider provider = accessRepository.authProvider(authProfile.providerId()).orElse(null);
+                rules.addAll(authInjectionRuleRenderer.render(authProfile, provider));
+            });
+            selectedTemplateState = linkedState(profile).orElse(selectedTemplateState);
+        }
+        SessionState templateState = selectedTemplateState;
         for (SessionInjectionRule rule : profile.injectionRules()) {
             if (!rule.enabled() || !rule.allowsTool(toolTypeName)) {
                 continue;
             }
-            renderSessionTemplate(rule.valueTemplate(), profile.state()).ifPresent(value ->
+            renderSessionTemplate(rule.valueTemplate(), templateState).ifPresent(value ->
                     rules.add(rule.toInjectRule(value)));
         }
         return List.copyOf(rules);
+    }
+
+    /** Returns values displayed in the State tab, including shared actor state when linked. */
+    public Map<String, String> displayStateValues(SessionProfile profile) {
+        Objects.requireNonNull(profile, "profile");
+        if (!profile.usesLinkedAuthProfile() || accessRepository == null) {
+            return profile.state().values();
+        }
+        AuthProfile authProfile = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
+        if (authProfile == null) {
+            return Map.of();
+        }
+        LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        authProfile.state().variables().forEach((key, value) -> values.put("auth." + key, value));
+        authProfile.state().headers().forEach((key, value) -> values.put("header." + key, value));
+        authProfile.state().cookies().forEach((key, value) -> values.put("cookie." + key, value));
+        return Map.copyOf(values);
+    }
+
+    /** Returns the state update time displayed by the Session Handler UI. */
+    public long displayStateUpdatedAt(SessionProfile profile) {
+        if (profile != null && profile.usesLinkedAuthProfile() && accessRepository != null) {
+            return accessRepository.authProfile(profile.linkedAuthProfileId())
+                    .map(authProfile -> authProfile.state().lastUpdatedAtEpochMillis())
+                    .orElse(0L);
+        }
+        return profile == null ? 0L : profile.state().lastUpdatedAtEpochMillis();
     }
 
     /**
@@ -303,7 +428,7 @@ public final class SessionManager {
                 return SessionProfile.general();
             }
             SessionProfile profile = current.orElseThrow();
-            if (profile.authConfig().mainAuthFlowId().isBlank()) {
+            if (!hasAuthentication(profile)) {
                 return profile;
             }
             long now = clock.millis();
@@ -316,7 +441,12 @@ public final class SessionManager {
                 }
             }
             if (mode == AuthRunMode.ON_DEMAND && !profile.state().missingOrExpired(now)) {
-                return profile;
+                if (!profile.usesLinkedAuthProfile()) {
+                    return profile;
+                }
+            }
+            if (profile.usesLinkedAuthProfile()) {
+                return runLinkedAuth(profile, mode);
             }
             Optional<FlowDefinition> flow = flowsSupplier.get().stream()
                     .filter(FlowDefinition::enabled)
@@ -344,6 +474,91 @@ public final class SessionManager {
         } finally {
             lock.unlock();
         }
+    }
+
+    private SessionProfile runLinkedAuth(SessionProfile profile, AuthRunMode mode) {
+        if (!linkedAuthAvailable()) {
+            return profile;
+        }
+        SessionGuard.enter();
+        AuthEnsureResult result;
+        try {
+            result = mode == AuthRunMode.ON_DEMAND
+                    ? authManager.ensureAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT)
+                    : authManager.forceAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT);
+        } finally {
+            SessionGuard.exit();
+        }
+        if (result.failed()) {
+            return profile;
+        }
+        SessionProfile synchronizedProfile = synchronizeLinkedStateMarker(profile, true);
+        notifyProfileChanged(new SessionProfileChangeEvent(
+                synchronizedProfile.id(), SessionProfileChangeType.STATE_UPDATED));
+        return synchronizedProfile;
+    }
+
+    private SessionProfile synchronizeLinkedStateMarker(SessionProfile profile, boolean markAuthenticatedNow) {
+        if (accessRepository == null) {
+            return profile;
+        }
+        AuthProfile authProfile = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
+        if (authProfile == null) {
+            return profile;
+        }
+        AuthState authState = authProfile.state();
+        long updatedAt = authState.lastUpdatedAtEpochMillis();
+        if (updatedAt == 0L && markAuthenticatedNow) {
+            updatedAt = clock.millis();
+        }
+        long lastAuthenticated = updatedAt > 0L ? updatedAt : profile.state().lastAuthenticatedAtEpochMillis();
+        SessionState marker = new SessionState(
+                Map.of(), lastAuthenticated, authState.expiresAtEpochMillis(), updatedAt);
+        if (marker.equals(profile.state())) {
+            return profile;
+        }
+        return repository.updateState(profile.id(), ignored -> marker).orElse(profile);
+    }
+
+    private Optional<SessionState> linkedState(SessionProfile profile) {
+        if (accessRepository == null) {
+            return Optional.empty();
+        }
+        return accessRepository.authProfile(profile.linkedAuthProfileId()).map(authProfile -> {
+            AuthState state = authProfile.state();
+            LinkedHashMap<String, String> values = new LinkedHashMap<>(state.variables());
+            return new SessionState(values, state.lastUpdatedAtEpochMillis(),
+                    state.expiresAtEpochMillis(), state.lastUpdatedAtEpochMillis());
+        });
+    }
+
+    private boolean updateLinkedAuthState(SessionProfile profile, Map<String, String> updates) {
+        if (accessRepository == null) {
+            return false;
+        }
+        AuthProfile authProfile = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
+        if (authProfile == null) {
+            return false;
+        }
+        LinkedHashMap<String, String> variables = new LinkedHashMap<>(authProfile.state().variables());
+        variables.putAll(updates);
+        AuthState old = authProfile.state();
+        AuthState updated = new AuthState(
+                variables, old.headers(), old.cookies(), old.expiresAtEpochMillis(), clock.millis());
+        accessRepository.saveAuthProfile(new AuthProfile(
+                authProfile.id(), authProfile.name(), authProfile.role(), authProfile.providerId(),
+                authProfile.credentials(), updated, authProfile.enabled()));
+        return true;
+    }
+
+    private void clearLinkedAuthState(SessionProfile profile) {
+        if (accessRepository == null) {
+            return;
+        }
+        accessRepository.authProfile(profile.linkedAuthProfileId()).ifPresent(authProfile ->
+                accessRepository.saveAuthProfile(new AuthProfile(
+                        authProfile.id(), authProfile.name(), authProfile.role(), authProfile.providerId(),
+                        authProfile.credentials(), AuthState.empty(), authProfile.enabled())));
     }
 
     private void notifyProfileChanged(SessionProfileChangeEvent event) {

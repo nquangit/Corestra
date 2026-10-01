@@ -157,6 +157,15 @@ public final class SessionProfileRepository {
         return profile(id).map(current -> saveProfile(current.withState(update.apply(current.state()))));
     }
 
+    /** Removes all persisted profiles and restores the in-memory default General profile. */
+    public synchronized void clear() {
+        inMemoryProfiles = SessionProfilesDocument.defaults().profiles();
+        if (extensionData != null) {
+            extensionData.deleteString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT);
+            extensionData.deleteString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT_QUARANTINE);
+        }
+    }
+
     private void quarantineInvalidDocument(String serializedDocument) {
         try {
             extensionData.setString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT_QUARANTINE, serializedDocument);

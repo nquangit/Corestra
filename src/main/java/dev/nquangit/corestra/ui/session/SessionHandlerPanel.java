@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.ui.session;
 
+import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
@@ -81,8 +82,11 @@ public final class SessionHandlerPanel extends JPanel {
     private final JList<SessionProfile> profileList = new JList<>(profileListModel);
     private final JTextField nameField = new JTextField();
     private final JCheckBox enabledCheck = new JCheckBox("Enabled");
+    private final JComboBox<AuthSourceMode> authSourceCombo = new JComboBox<>(AuthSourceMode.values());
+    private final JComboBox<AuthProfileOption> linkedAuthProfileCombo = new JComboBox<>();
     private final JComboBox<FlowOption> authFlowCombo = new JComboBox<>();
     private final JTextField ttlField = new JTextField();
+    private final JLabel authSourceHint = new JLabel(" ");
     private final JComboBox<SessionScopeMode> scopeModeCombo = new JComboBox<>(SessionScopeMode.values());
     private final JCheckBox schedulerEnabledCheck = new JCheckBox("Enabled");
     private final JTextField schedulerIntervalField = new JTextField();
@@ -202,6 +206,8 @@ public final class SessionHandlerPanel extends JPanel {
         tabs.addTab("Extraction", buildRuleTab(extractionTable, this::addExtractionRule, this::removeSelectedExtractionRule));
         tabs.addTab("Scheduler", buildSchedulerTab());
         tabs.addTab("State", buildStateTab());
+        tabs.setToolTipTextAt(2, "Optional traffic-specific rules applied after linked Auth Provider injection rules.");
+        tabs.setToolTipTextAt(3, "Can update standalone state or the linked actor's auth variables from live traffic.");
 
         JButton runAuthButton = new JButton("Run Auth Now");
         runAuthButton.addActionListener(event -> runSelectedAuthFlow());
@@ -224,10 +230,27 @@ public final class SessionHandlerPanel extends JPanel {
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         addLabeled(panel, 0, "Name:", nameField);
         addLabeled(panel, 1, "Enabled:", enabledCheck);
-        addLabeled(panel, 2, "Main auth flow:", authFlowCombo);
-        addLabeled(panel, 3, "TTL seconds:", ttlField);
-        addFiller(panel, 4);
+        addLabeled(panel, 2, "Authentication:", authSourceCombo);
+        addLabeled(panel, 3, "Shared Auth Profile:", buildLinkedAuthProfileSelector());
+        addLabeled(panel, 4, "Standalone auth flow:", authFlowCombo);
+        addLabeled(panel, 5, "Standalone TTL seconds:", ttlField);
+        addLabeled(panel, 6, "", authSourceHint);
+        addFiller(panel, 7);
         return panel;
+    }
+
+    private JPanel buildLinkedAuthProfileSelector() {
+        JButton reload = new JButton("Reload");
+        reload.setToolTipText("Reload Auth Profiles from Access Testing.");
+        reload.addActionListener(event -> {
+            AuthProfileOption selected = (AuthProfileOption) linkedAuthProfileCombo.getSelectedItem();
+            refreshLinkedAuthProfileOptions(selected == null ? "" : selected.id());
+            updateAuthSourceControls();
+        });
+        JPanel row = new JPanel(new BorderLayout(6, 0));
+        row.add(linkedAuthProfileCombo, BorderLayout.CENTER);
+        row.add(reload, BorderLayout.EAST);
+        return row;
     }
 
     private JPanel buildScopeTab() {
@@ -313,6 +336,17 @@ public final class SessionHandlerPanel extends JPanel {
         ttlField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         ttlField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
         enabledCheck.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
+        authSourceCombo.addActionListener(event -> {
+            if (!refreshing
+                    && authSourceCombo.getSelectedItem() == AuthSourceMode.LINKED_AUTH_PROFILE
+                    && linkedAuthProfileCombo.getItemCount() > 1
+                    && ((AuthProfileOption) linkedAuthProfileCombo.getSelectedItem()).id().isBlank()) {
+                linkedAuthProfileCombo.setSelectedIndex(1);
+            }
+            updateAuthSourceControls();
+            saveCurrentProfileAfterStoppingEditors();
+        });
+        linkedAuthProfileCombo.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         authFlowCombo.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         scopeModeCombo.addActionListener(event -> {
             updateCriteriaEditingState();
@@ -388,6 +422,7 @@ public final class SessionHandlerPanel extends JPanel {
         refreshing = true;
         try {
             refreshFlowOptions("");
+            refreshLinkedAuthProfileOptions("");
             profileListModel.clear();
             int selectedIndex = 0;
             List<SessionProfile> profiles = sessionManager.profiles();
@@ -482,6 +517,40 @@ public final class SessionHandlerPanel extends JPanel {
         authFlowCombo.setSelectedIndex(0);
     }
 
+    private void refreshLinkedAuthProfileOptions(String selectedProfileId) {
+        linkedAuthProfileCombo.removeAllItems();
+        linkedAuthProfileCombo.addItem(new AuthProfileOption("", "(select an Auth Profile)", ""));
+        for (AuthProfile profile : sessionManager.linkedAuthProfiles()) {
+            linkedAuthProfileCombo.addItem(new AuthProfileOption(profile.id(), profile.name(), profile.role()));
+        }
+        String id = selectedProfileId == null ? "" : selectedProfileId;
+        for (int i = 0; i < linkedAuthProfileCombo.getItemCount(); i++) {
+            if (linkedAuthProfileCombo.getItemAt(i).id().equals(id)) {
+                linkedAuthProfileCombo.setSelectedIndex(i);
+                return;
+            }
+        }
+        if (!id.isBlank()) {
+            linkedAuthProfileCombo.addItem(new AuthProfileOption(id, "Missing Auth Profile", ""));
+            linkedAuthProfileCombo.setSelectedIndex(linkedAuthProfileCombo.getItemCount() - 1);
+        } else {
+            linkedAuthProfileCombo.setSelectedIndex(0);
+        }
+    }
+
+    private void updateAuthSourceControls() {
+        boolean linked = authSourceCombo.getSelectedItem() == AuthSourceMode.LINKED_AUTH_PROFILE;
+        linkedAuthProfileCombo.setEnabled(linked && sessionManager.linkedAuthAvailable());
+        authFlowCombo.setEnabled(!linked);
+        ttlField.setEnabled(!linked);
+        authSourceHint.setText(linked
+                ? "Uses the selected actor's credentials, auth state, provider flows, and injection rules."
+                : "Uses this Session Profile's flow, state, TTL, and injection rules.");
+        authSourceHint.setToolTipText(linked
+                ? "Local Session injection rules remain available as optional traffic-specific overrides."
+                : "Choose Linked Auth Profile to reuse an actor configured under Access Testing.");
+    }
+
     private void loadSelectedProfile() {
         if (refreshing) {
             return;
@@ -495,6 +564,10 @@ public final class SessionHandlerPanel extends JPanel {
             nameField.setText(profile.name());
             nameField.setEnabled(!profile.isGeneral());
             enabledCheck.setSelected(profile.enabled());
+            AuthSourceMode sourceMode = profile.usesLinkedAuthProfile()
+                    ? AuthSourceMode.LINKED_AUTH_PROFILE : AuthSourceMode.STANDALONE_FLOW;
+            authSourceCombo.setSelectedItem(sourceMode);
+            refreshLinkedAuthProfileOptions(profile.linkedAuthProfileId());
             refreshFlowOptions(profile.authConfig().mainAuthFlowId());
             ttlField.setText(Long.toString(profile.authConfig().ttlSeconds()));
             scopeModeCombo.setSelectedItem(profile.scope().mode());
@@ -506,6 +579,7 @@ public final class SessionHandlerPanel extends JPanel {
             fillExtractionRules(profile);
             fillState(profile);
             loadedProfileId = profile.id();
+            updateAuthSourceControls();
             updateCriteriaEditingState();
             setStatus(" ");
         } finally {
@@ -547,8 +621,8 @@ public final class SessionHandlerPanel extends JPanel {
 
     private void fillState(SessionProfile profile) {
         stateModel.setRowCount(0);
-        String updated = formatStateUpdatedAt(profile.state().lastUpdatedAtEpochMillis());
-        profile.state().values().forEach((key, value) ->
+        String updated = formatStateUpdatedAt(sessionManager.displayStateUpdatedAt(profile));
+        sessionManager.displayStateValues(profile).forEach((key, value) ->
                 stateModel.addRow(new Object[]{key, revealStateCheck.isSelected() ? value : "********", updated}));
     }
 
@@ -560,12 +634,18 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     private void addProfile() {
+        String defaultLinkedProfileId = sessionManager.linkedAuthProfiles().stream()
+                .filter(AuthProfile::enabled)
+                .map(AuthProfile::id)
+                .findFirst()
+                .orElse("");
         SessionProfile profile = new SessionProfile(
                 UUID.randomUUID().toString(),
                 "New Profile",
                 true,
                 false,
                 SessionScope.burpTargetScope(),
+                defaultLinkedProfileId,
                 SessionAuthConfig.defaults(),
                 SessionSchedulerConfig.disabled(),
                 SessionState.empty(),
@@ -632,6 +712,7 @@ public final class SessionHandlerPanel extends JPanel {
                     enabledCheck.isSelected(),
                     existing.systemProfile(),
                     readScope(),
+                    selectedLinkedAuthProfileId(),
                     readAuthConfig(),
                     readSchedulerConfig(),
                     existing.state(),
@@ -668,6 +749,17 @@ public final class SessionHandlerPanel extends JPanel {
     private SessionAuthConfig readAuthConfig() {
         FlowOption option = (FlowOption) authFlowCombo.getSelectedItem();
         return new SessionAuthConfig(option == null ? "" : option.id(), parseLong(ttlField.getText(), 0L), List.of());
+    }
+
+    private String selectedLinkedAuthProfileId() {
+        if (authSourceCombo.getSelectedItem() != AuthSourceMode.LINKED_AUTH_PROFILE) {
+            return "";
+        }
+        AuthProfileOption option = (AuthProfileOption) linkedAuthProfileCombo.getSelectedItem();
+        if (option == null || option.id().isBlank()) {
+            throw new IllegalArgumentException("Select a shared Auth Profile");
+        }
+        return option.id();
     }
 
     private SessionSchedulerConfig readSchedulerConfig() {
@@ -750,7 +842,11 @@ public final class SessionHandlerPanel extends JPanel {
         if (profile == null) {
             return;
         }
-        int choice = JOptionPane.showConfirmDialog(this, "Clear stored values for \"" + profile.name() + "\"?",
+        String detail = profile.usesLinkedAuthProfile()
+                ? "This clears the linked actor's shared auth state while preserving credentials."
+                : "This clears the standalone Session state.";
+        int choice = JOptionPane.showConfirmDialog(this,
+                "Clear stored values for \"" + profile.name() + "\"?\n" + detail,
                 "Clear Session State", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
         if (choice == JOptionPane.OK_OPTION) {
             sessionManager.clearState(profile.id());
@@ -1073,6 +1169,28 @@ public final class SessionHandlerPanel extends JPanel {
         @Override
         public String toString() {
             return id.isBlank() ? name : name + " (" + id + ")";
+        }
+    }
+
+    private enum AuthSourceMode {
+        LINKED_AUTH_PROFILE("Linked Auth Profile (recommended)"),
+        STANDALONE_FLOW("Standalone Flow (legacy)");
+
+        private final String label;
+
+        AuthSourceMode(String label) {
+            this.label = label;
+        }
+
+        @Override public String toString() {
+            return label;
+        }
+    }
+
+    private record AuthProfileOption(String id, String name, String role) {
+        @Override public String toString() {
+            if (id.isBlank()) return name;
+            return role == null || role.isBlank() ? name : name + " — " + role;
         }
     }
 }

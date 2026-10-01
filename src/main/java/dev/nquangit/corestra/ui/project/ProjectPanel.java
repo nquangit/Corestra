@@ -1,11 +1,13 @@
 package dev.nquangit.corestra.ui.project;
 
 import dev.nquangit.corestra.access.repository.InMemoryAccessRepository;
+import dev.nquangit.corestra.access.persistence.AccessWorkspaceDocument;
 import dev.nquangit.corestra.access.security.ExportMode;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.persistence.ProjectDocument;
 import dev.nquangit.corestra.persistence.HttpSendMode;
 import dev.nquangit.corestra.persistence.ProjectMetadata;
+import dev.nquangit.corestra.persistence.ProjectDataMaintenanceService;
 import dev.nquangit.corestra.persistence.ProjectMetadataRepository;
 import dev.nquangit.corestra.persistence.ProjectSerializer;
 import dev.nquangit.corestra.persistence.ProjectSettings;
@@ -68,7 +70,9 @@ public final class ProjectPanel extends JPanel {
     private final ProjectSettingsRepository settingsRepo;
     private final InMemoryAccessRepository accessRepository;
     private final SessionProfileRepository sessionRepository;
+    private final ProjectDataMaintenanceService dataMaintenanceService;
     private final Runnable accessRefreshCallback;
+    private final Runnable beforeProjectDataClear;
 
     private ProjectMetadata currentMeta;
     private ProjectSettings currentSettings;
@@ -79,6 +83,7 @@ public final class ProjectPanel extends JPanel {
     private final JTextArea  noteArea    = new JTextArea(3, 20);
     private final JLabel timestampsLabel = new JLabel(" ");
     private final JLabel statsLabel      = new JLabel(" ");
+    private final JLabel storageUsageLabel = new JLabel(" ");
     private final JRadioButton standardSendRadio = new JRadioButton("Standard");
     private final JRadioButton proxyPipelineRadio = new JRadioButton("Proxy Pipeline");
     private final JTextField proxyHostField = new JTextField();
@@ -98,7 +103,8 @@ public final class ProjectPanel extends JPanel {
                         ProjectMetadataRepository metadataRepo,
                         ProjectSerializer projectSerializer) {
         this(controller, metadataRepo, projectSerializer, new ProjectSettingsRepository(),
-                new InMemoryAccessRepository(), new SessionProfileRepository(), () -> { });
+                new InMemoryAccessRepository(), new SessionProfileRepository(), () -> { },
+                new ProjectDataMaintenanceService(), () -> { });
     }
 
     /**
@@ -119,6 +125,33 @@ public final class ProjectPanel extends JPanel {
                         InMemoryAccessRepository accessRepository,
                         SessionProfileRepository sessionRepository,
                         Runnable accessRefreshCallback) {
+        this(controller, metadataRepo, projectSerializer, settingsRepo, accessRepository,
+                sessionRepository, accessRefreshCallback, new ProjectDataMaintenanceService(), () -> { });
+    }
+
+    /** Creates a project panel with project-data inspection and cleanup support. */
+    public ProjectPanel(FlowWorkspaceController controller,
+                        ProjectMetadataRepository metadataRepo,
+                        ProjectSerializer projectSerializer,
+                        ProjectSettingsRepository settingsRepo,
+                        InMemoryAccessRepository accessRepository,
+                        SessionProfileRepository sessionRepository,
+                        Runnable accessRefreshCallback,
+                        ProjectDataMaintenanceService dataMaintenanceService) {
+        this(controller, metadataRepo, projectSerializer, settingsRepo, accessRepository,
+                sessionRepository, accessRefreshCallback, dataMaintenanceService, () -> { });
+    }
+
+    /** Creates a project panel with runtime coordination for destructive project cleanup. */
+    public ProjectPanel(FlowWorkspaceController controller,
+                        ProjectMetadataRepository metadataRepo,
+                        ProjectSerializer projectSerializer,
+                        ProjectSettingsRepository settingsRepo,
+                        InMemoryAccessRepository accessRepository,
+                        SessionProfileRepository sessionRepository,
+                        Runnable accessRefreshCallback,
+                        ProjectDataMaintenanceService dataMaintenanceService,
+                        Runnable beforeProjectDataClear) {
         super(new BorderLayout());
         this.controller        = Objects.requireNonNull(controller,        "controller");
         this.metadataRepo      = Objects.requireNonNull(metadataRepo,      "metadataRepo");
@@ -127,12 +160,15 @@ public final class ProjectPanel extends JPanel {
         this.accessRepository  = Objects.requireNonNull(accessRepository,  "accessRepository");
         this.sessionRepository = Objects.requireNonNull(sessionRepository, "sessionRepository");
         this.accessRefreshCallback = Objects.requireNonNull(accessRefreshCallback, "accessRefreshCallback");
+        this.dataMaintenanceService = Objects.requireNonNull(dataMaintenanceService, "dataMaintenanceService");
+        this.beforeProjectDataClear = Objects.requireNonNull(beforeProjectDataClear, "beforeProjectDataClear");
 
         this.currentMeta = metadataRepo.load();
         this.currentSettings = settingsRepo.load();
 
         styleSecondary(timestampsLabel);
         styleSecondary(statsLabel);
+        styleSecondary(storageUsageLabel);
         accessExportModeCombo.setSelectedItem(DEFAULT_ACCESS_EXPORT_MODE);
         accessExportModeCombo.setToolTipText(exportModeDescription(currentAccessExportMode()));
         accessExportModeCombo.addActionListener(event ->
@@ -181,8 +217,14 @@ public final class ProjectPanel extends JPanel {
         gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
         panel.add(new JSeparator(), gbc);
 
-        gbc.gridy = row; gbc.insets = new Insets(0, 0, 0, 0);
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
         panel.add(buildTransferSection(), gbc);
+
+        gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
+        panel.add(new JSeparator(), gbc);
+
+        gbc.gridy = row; gbc.insets = new Insets(0, 0, 0, 0);
+        panel.add(buildDangerZone(), gbc);
 
         return panel;
     }
@@ -289,6 +331,32 @@ public final class ProjectPanel extends JPanel {
         row.add(exportFlowsBtn);
         row.add(Box.createHorizontalGlue());
         return row;
+    }
+
+    private JPanel buildDangerZone() {
+        StyledButton cleanButton = StyledButton.danger("Clean Burp Project Data");
+        cleanButton.setToolTipText("Delete every project-scoped value stored by Corestra in this Burp project.");
+        cleanButton.addActionListener(event -> cleanBurpProjectData());
+
+        JLabel description = new JLabel(
+                "Deletes Corestra flows, Access Testing data/evidence, Session Handler profiles/state, metadata and settings.");
+        styleSecondary(description);
+
+        JPanel actionRow = new JPanel();
+        actionRow.setLayout(new BoxLayout(actionRow, BoxLayout.X_AXIS));
+        actionRow.add(storageUsageLabel);
+        actionRow.add(Box.createHorizontalGlue());
+        actionRow.add(cleanButton);
+
+        JPanel section = new JPanel();
+        section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
+        section.setBorder(BorderFactory.createTitledBorder("Danger Zone"));
+        description.setAlignmentX(LEFT_ALIGNMENT);
+        actionRow.setAlignmentX(LEFT_ALIGNMENT);
+        section.add(description);
+        section.add(Box.createVerticalStrut(8));
+        section.add(actionRow);
+        return section;
     }
 
     private void styleSecondary(JLabel lbl) {
@@ -404,6 +472,57 @@ public final class ProjectPanel extends JPanel {
         statsLabel.setText("Flows: " + flows.size()
                 + "   •   Steps: " + stepCount
                 + "   •   Rules: " + ruleCount);
+        refreshProjectDataUsage();
+    }
+
+    /** Refreshes the project-scoped Corestra persistence usage shown in Danger Zone. */
+    public void refreshProjectDataUsage() {
+        ProjectDataMaintenanceService.StorageUsage usage = dataMaintenanceService.storageUsage();
+        storageUsageLabel.setText("Stored by Corestra: "
+                + ProjectDataMaintenanceService.formatBytes(usage.serializedStringBytes())
+                + " in " + usage.entryCount() + " project entr" + (usage.entryCount() == 1 ? "y" : "ies"));
+        storageUsageLabel.setToolTipText(
+                "Exact UTF-8 size of serialized string data. Burp project container overhead is not included.");
+    }
+
+    private void cleanBurpProjectData() {
+        ProjectDataMaintenanceService.StorageUsage usage = dataMaintenanceService.storageUsage();
+        String message = "Permanently delete all Corestra data from this Burp project?\n\n"
+                + "Current serialized data: "
+                + ProjectDataMaintenanceService.formatBytes(usage.serializedStringBytes())
+                + " in " + usage.entryCount() + " entries.\n\n"
+                + "This removes flows, Access Testing configuration/results/evidence, Session Handler profiles/state, "
+                + "project metadata, settings, and recovery quarantine data.\n"
+                + "Export anything you need before continuing.";
+        int choice = JOptionPane.showConfirmDialog(
+                this, message, "Clean Corestra Project Data",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        try {
+            beforeProjectDataClear.run();
+            for (FlowDefinition flow : new ArrayList<>(controller.flows())) {
+                controller.removeFlow(flow);
+            }
+            accessRepository.replaceWith(AccessWorkspaceDocument.empty());
+            sessionRepository.clear();
+            metadataRepo.clear();
+            settingsRepo.clear();
+            dataMaintenanceService.clearAllProjectData();
+
+            currentMeta = ProjectMetadata.createNew();
+            currentSettings = ProjectSettings.defaults();
+            refreshAll();
+            accessRefreshCallback.run();
+            JOptionPane.showMessageDialog(this,
+                    "Corestra project data was removed. UI preferences outside project data were preserved.",
+                    "Project Data Cleaned", JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException exception) {
+            showError("Cleanup failed: " + exception.getMessage());
+            refreshProjectDataUsage();
+        }
     }
 
     // ── Export project ────────────────────────────────────────────────────────

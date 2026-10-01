@@ -82,7 +82,7 @@ Open **Corestra > Flowise**.
 Create a flow:
 
 1. Click **New Flow** or the add-flow control.
-2. Give the flow a clear name, for example `Login - Alice`, `Refresh Token`, `Create Transfer`, or `Read Account`.
+2. Give the flow a clear reusable name, for example `Auth - Login`, `Auth - Refresh`, `Create Transfer`, or `Read Account`.
 3. Add steps from Burp traffic or manually.
 
 Add a step from Burp:
@@ -121,6 +121,19 @@ Keep flows small and purpose-specific. It is usually better to have separate log
 The **Flow Log** sub-tab keeps the newest 1,000 step exchanges in memory. It is searchable and opens the selected request and response in Burp-native viewers. The log is cleared when the extension unloads and can also be cleared manually.
 
 The root **Parameters** tab passively builds a runtime parameter dictionary from Burp traffic. Collection is restricted to Burp scope by default and ignores extension-origin traffic. Example values are disabled by default; when enabled, they remain in memory and keys recognized as sensitive are stored as `<redacted>`. The dictionary is bounded to 5,000 scoped entries and can be filtered or cleared at any time.
+
+### Reuse an Auth Profile in Session Handler
+
+Use one parameterized login flow for Access Testing and normal Burp traffic:
+
+1. Build a generic login flow whose request reads `credentials.*` and whose response extracts auth variables.
+2. Configure that flow under an Access Testing Auth Provider.
+3. Create one Auth Profile per real actor and put username, password, device ID, or other stable login inputs in **Credentials**.
+4. Open **Session Handler**, add or select a Session Profile, and set **Authentication** to **Linked Auth Profile**.
+5. Select the actor. Use **Reload** if the actor was created while the Session Handler tab was already open.
+6. Configure scope and scheduler. Provider injection rules are reused automatically; local Session injection rules remain available as traffic-specific overrides.
+
+Linked mode shares credentials, token/cookie state, provider login/refresh/validate flows, TTL, and injection rules with Access Testing. **Clear State** clears the linked actor's auth state while preserving credentials. **Standalone Flow (legacy)** remains available for existing projects and specialized session-only flows.
 
 ## 6. Scoped Variables
 
@@ -502,6 +515,8 @@ Captured step responses are omitted from sanitized and exclude-secrets project e
 Access Testing sends actor-prepared authentication directly through the selected project transport. Project-wide Session Handler rules are not applied again to Access auth, setup, target, post-check, race, or teardown requests, which prevents an overlapping session profile from replacing the selected actor's credentials.
 
 Use full export only inside trusted storage or when the recipient is authorized to receive secrets.
+
+The **Danger Zone** displays the exact UTF-8 size of Corestra's serialized string documents and the number of extension project entries. Burp container overhead is not included. **Clean Burp Project Data** removes all project-scoped Corestra flows, Access Testing configuration/results/evidence, Session Handler profiles/state, metadata, settings, and quarantine data. Export anything needed before confirming. UI preferences stored outside project data are preserved.
 
 ## 24. Troubleshooting
 

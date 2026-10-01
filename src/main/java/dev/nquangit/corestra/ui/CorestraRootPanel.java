@@ -62,6 +62,11 @@ public final class CorestraRootPanel extends JPanel {
         if (parameterDictionaryPanel != null) {
             tabs.addTab("Parameters", parameterDictionaryPanel);
         }
+        tabs.addChangeListener(event -> {
+            if (tabs.getSelectedComponent() == projectPanel) {
+                projectPanel.refreshProjectDataUsage();
+            }
+        });
         add(tabs, BorderLayout.CENTER);
 
         ThemeCoordinator.applyTheme(this, api);

@@ -74,4 +74,12 @@ public final class ProjectSettingsRepository {
             throw new IllegalStateException("Failed to serialize project settings", e);
         }
     }
+
+    /** Removes persisted settings and restores in-memory defaults. */
+    public void clear() {
+        inMemorySettings = ProjectSettings.defaults();
+        if (extensionData != null) {
+            extensionData.deleteString(CorestraSettingsKeys.PROJECT_SETTINGS);
+        }
+    }
 }

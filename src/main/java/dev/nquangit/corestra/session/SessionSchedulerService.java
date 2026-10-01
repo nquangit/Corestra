@@ -79,7 +79,7 @@ public final class SessionSchedulerService implements AutoCloseable {
                 if (profile.enabled()
                         && profile.scheduler().enabled()
                         && profile.scheduler().runAtStartup()
-                        && !profile.authConfig().mainAuthFlowId().isBlank()) {
+                        && sessionManager.hasAuthentication(profile)) {
                     refreshProfileSafely(profile.id());
                 }
             }
@@ -100,7 +100,7 @@ public final class SessionSchedulerService implements AutoCloseable {
                 }
                 if (!profile.enabled()
                         || !profile.scheduler().enabled()
-                        || profile.authConfig().mainAuthFlowId().isBlank()) {
+                        || !sessionManager.hasAuthentication(profile)) {
                     continue;
                 }
                 long last = profile.state().lastAuthenticatedAtEpochMillis();

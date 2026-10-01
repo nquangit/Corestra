@@ -129,6 +129,50 @@ public final class AuthManager {
     }
 
     /**
+     * Runs the configured provider policy even when the current state is still fresh.
+     * This is used by explicit and scheduled Session Handler refresh actions.
+     *
+     * @param authProfileId auth profile id
+     * @param environmentId environment id
+     * @param env environment variables
+     * @param renderMode render mode for auth flow variables
+     * @return ensure result
+     */
+    public AuthEnsureResult forceAuth(
+            String authProfileId,
+            String environmentId,
+            Map<String, String> env,
+            RenderMode renderMode) {
+        String normalizedId = normalizeRequiredText(authProfileId, "authProfileId");
+        ReentrantLock lock = locksByProfileId.computeIfAbsent(normalizedId, ignored -> new ReentrantLock());
+        lock.lock();
+        try {
+            AuthProfile profile = accessRepository.authProfile(normalizedId).orElse(null);
+            if (profile == null) {
+                return AuthEnsureResult.failed(normalizedId, "Auth profile not found: " + normalizedId,
+                        Optional.empty(), List.of());
+            }
+            if (isManual(profile)) {
+                return AuthEnsureResult.success(normalizedId, AuthEnsureStatus.MANUAL,
+                        "Manual auth profile", profile, List.of());
+            }
+            AuthProvider provider = accessRepository.authProvider(profile.providerId()).orElse(null);
+            if (provider == null) {
+                return AuthEnsureResult.failed(normalizedId,
+                        "Auth provider not found: " + profile.providerId(), Optional.of(profile), List.of());
+            }
+            if (!provider.enabled()) {
+                return AuthEnsureResult.failed(normalizedId,
+                        "Auth provider is disabled: " + provider.id(), Optional.of(profile), List.of());
+            }
+            return ensureWithProvider(profile, provider, environmentVariables(environmentId, env),
+                    Objects.requireNonNullElse(renderMode, RenderMode.STRICT));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * Forces the auth action requested by a target retry policy.
      *
      * <p>Unlike {@link #ensureAuth(String, String, Map, RenderMode)}, this method intentionally does not skip
@@ -225,8 +269,10 @@ public final class AuthManager {
             RenderMode renderMode) {
         FlowAttempt validate = attempt(provider.validateFlowId(), profile, provider, env, AuthFlowPurpose.VALIDATE, renderMode);
         if (validate.success()) {
+            AuthProfile updated = updateAuthState(profile, provider, validate.runResult());
+            accessRepository.saveAuthProfile(updated);
             return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.VALID,
-                    validate.reason(), profile, validate.warnings());
+                    validate.reason(), updated, validate.warnings());
         }
         return refreshThenLogin(profile, provider, env, renderMode, validate.allMessages());
     }

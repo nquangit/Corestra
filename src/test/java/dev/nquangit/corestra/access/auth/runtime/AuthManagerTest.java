@@ -119,8 +119,10 @@ class AuthManagerTest {
                 .then(AuthFlowPurpose.LOGIN, success("accessToken", "token-login"));
 
         AuthEnsureResult result = manager(repository, runner).ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT);
+        AuthEnsureResult second = manager(repository, runner).ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT);
 
         assertEquals(AuthEnsureStatus.VALID, result.status());
+        assertEquals(AuthEnsureStatus.VALID, second.status());
         assertEquals(1, runner.count(AuthFlowPurpose.VALIDATE));
         assertEquals(0, runner.count(AuthFlowPurpose.REFRESH));
         assertEquals(0, runner.count(AuthFlowPurpose.LOGIN));

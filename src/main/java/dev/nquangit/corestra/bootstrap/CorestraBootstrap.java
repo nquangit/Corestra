@@ -28,12 +28,14 @@ import dev.nquangit.corestra.persistence.FlowRepository;
 import dev.nquangit.corestra.persistence.FlowSerializer;
 import dev.nquangit.corestra.persistence.PersistenceMigrationService;
 import dev.nquangit.corestra.persistence.ProjectMetadataRepository;
+import dev.nquangit.corestra.persistence.ProjectDataMaintenanceService;
 import dev.nquangit.corestra.persistence.ProjectSerializer;
 import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
 import dev.nquangit.corestra.session.SessionManager;
 import dev.nquangit.corestra.session.SessionProfileRepository;
 import dev.nquangit.corestra.session.SessionSchedulerService;
 import dev.nquangit.corestra.access.auth.runtime.AuthFlowExecutor;
+import dev.nquangit.corestra.access.auth.runtime.AuthInjectionRuleRenderer;
 import dev.nquangit.corestra.access.auth.runtime.AuthManager;
 import dev.nquangit.corestra.access.auth.runtime.AuthRuleEvaluator;
 import dev.nquangit.corestra.access.evaluate.BasicResultEvaluator;
@@ -133,32 +135,35 @@ public final class CorestraBootstrap {
 
         ProjectMetadataRepository metadataRepo = new ProjectMetadataRepository(api.persistence());
         ProjectSerializer projectSerializer = new ProjectSerializer(serializer);
-        SessionProfileRepository sessionProfileRepository = new SessionProfileRepository(api.persistence());
-        SessionManager sessionManager = new SessionManager(
-                sessionProfileRepository,
-                flowRepository::loadAll,
-                flowEngine,
-                extractionService,
-                Clock.systemUTC());
-        sessionManagerRef.set(sessionManager);  // close the loop — SessionAwareHttpClient can now resolve the manager
-        SessionSchedulerService sessionSchedulerService = new SessionSchedulerService(sessionManager, Clock.systemUTC());
-        registry.registerCloseable(sessionSchedulerService);
-        api.extension().registerUnloadingHandler(registry::close);
-        sessionSchedulerService.start();
         AccessWorkspaceProjectRepository accessProjectRepository = new AccessWorkspaceProjectRepository(api.persistence());
         InMemoryAccessRepository accessRepository = new InMemoryAccessRepository(
                 accessProjectRepository.load(),
                 accessProjectRepository::save);
-        TemplateRenderer accessTemplateRenderer = new TemplateRenderer(
-                new VariableResolver(new DefaultRuntimeValueProvider()));
-        AccessRequestTemplateRenderer accessRequestTemplateRenderer = new AccessRequestTemplateRenderer(accessTemplateRenderer);
-        AccessScopedVariableStoreFactory accessStoreFactory = new AccessScopedVariableStoreFactory();
         Clock authClock = Clock.systemUTC();
         AuthManager authManager = new AuthManager(
                 accessRepository,
                 new AuthFlowExecutor(flowRepository, accessFlowEngine, authClock),
                 new AuthRuleEvaluator(),
                 authClock);
+        SessionProfileRepository sessionProfileRepository = new SessionProfileRepository(api.persistence());
+        SessionManager sessionManager = new SessionManager(
+                sessionProfileRepository,
+                flowRepository::loadAll,
+                flowEngine,
+                extractionService,
+                Clock.systemUTC(),
+                accessRepository,
+                authManager,
+                new AuthInjectionRuleRenderer());
+        sessionManagerRef.set(sessionManager);  // close the loop — SessionAwareHttpClient can now resolve the manager
+        SessionSchedulerService sessionSchedulerService = new SessionSchedulerService(sessionManager, Clock.systemUTC());
+        registry.registerCloseable(sessionSchedulerService);
+        api.extension().registerUnloadingHandler(registry::close);
+        sessionSchedulerService.start();
+        TemplateRenderer accessTemplateRenderer = new TemplateRenderer(
+                new VariableResolver(new DefaultRuntimeValueProvider()));
+        AccessRequestTemplateRenderer accessRequestTemplateRenderer = new AccessRequestTemplateRenderer(accessTemplateRenderer);
+        AccessScopedVariableStoreFactory accessStoreFactory = new AccessScopedVariableStoreFactory();
         ScenarioManager scenarioManager = new ScenarioManager(
                 accessRepository,
                 flowRepository,
@@ -225,6 +230,11 @@ public final class CorestraBootstrap {
                 settingsRepo, accessRepository, sessionProfileRepository, () -> {
                     accessTestingPanel.refreshUi();
                     sessionHandlerPanel.refreshProfiles();
+                }, new ProjectDataMaintenanceService(api.persistence()), () -> {
+                    if (accessUiController.isPlanRunning()) {
+                        throw new IllegalStateException("Stop the active Access Testing plan before cleaning project data");
+                    }
+                    sessionManager.clearAllProfiles();
                 });
         ParameterDictionary parameterDictionary = new ParameterDictionary();
         ParameterDiscoveryHandler parameterDiscoveryHandler =

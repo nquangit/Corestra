@@ -91,6 +91,7 @@ public final class SessionProfilesDocument {
                                 checked.enabled(),
                                 true,
                                 checked.scope(),
+                                checked.linkedAuthProfileId(),
                                 checked.authConfig(),
                                 checked.scheduler(),
                                 checked.state(),

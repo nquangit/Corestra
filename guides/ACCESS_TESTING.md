@@ -137,6 +137,19 @@ Khi chỉnh một profile đã đăng nhập, Corestra giữ credentials, cached
 
 Khi đổi provider, nghi ngờ token/cookie bị sai, hoặc muốn buộc login lại, chọn profile rồi bấm **Clear Auth State**. Credentials được giữ nguyên; lần chạy live kế tiếp sẽ acquire state mới theo provider.
 
+### Dùng cùng actor trong Session Handler
+
+Không cần tạo `Login - Alice`, `Login - Bob` và thêm một bản login khác cho Session Handler. Sau khi provider và các profile Alice/Bob đã hoạt động:
+
+1. Mở **Session Handler** và tạo một Session Profile dùng để xác định scope traffic.
+2. Chọn **Authentication = Linked Auth Profile**.
+3. Chọn Alice, Bob hoặc actor cần dùng trong Burp Proxy/Repeater/Scanner.
+4. Cấu hình Scope và Scheduler của Session Handler.
+
+Session Handler gọi chung auth runtime của Access Testing. Login/refresh/validate flow, credentials, token, cookie, expiry và provider injection rules đều thuộc actor đã chọn. Các Injection Rule cục bộ của Session Handler chạy sau provider rules và phù hợp cho override riêng theo tool hoặc traffic. Extraction Rule từ live response cập nhật Auth Variables của actor được liên kết.
+
+Khi muốn đổi user đang dùng cho traffic thủ công, đổi **Shared Auth Profile** thay vì sao chép flow. Nếu vừa tạo actor ở Access Testing, bấm **Reload** cạnh danh sách profile.
+
 ## 6. Data Profile và bài test nhiều actor
 
 Data Profile mô tả object thuộc về ai. Ví dụ:

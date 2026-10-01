@@ -38,4 +38,9 @@ public final class ProjectMetadataRepository {
             throw new IllegalStateException("Failed to serialize project metadata", e);
         }
     }
+
+    /** Removes project metadata stored by the extension. */
+    public void clear() {
+        extensionData.deleteString(CorestraSettingsKeys.PROJECT_METADATA);
+    }
 }

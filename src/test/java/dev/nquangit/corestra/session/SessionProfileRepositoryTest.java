@@ -72,6 +72,24 @@ class SessionProfileRepositoryTest {
     }
 
     @Test
+    void linkedAuthProfileIdRoundTripsAndOldProfilesRemainStandalone() {
+        FakePersistence persistence = new FakePersistence();
+        SessionProfileRepository repository = new SessionProfileRepository(persistence.persistence());
+        SessionProfile linked = new SessionProfile(
+                "profile-1", "Alice binding", true, false, SessionScope.custom(List.of()),
+                "auth-alice", SessionAuthConfig.defaults(), SessionSchedulerConfig.disabled(),
+                SessionState.empty(), List.of(), List.of());
+
+        repository.saveProfile(linked);
+        SessionProfile reloaded = new SessionProfileRepository(persistence.persistence())
+                .profile(linked.id()).orElseThrow();
+
+        assertEquals("auth-alice", reloaded.linkedAuthProfileId());
+        assertTrue(reloaded.usesLinkedAuthProfile());
+        assertFalse(SessionProfile.general().usesLinkedAuthProfile());
+    }
+
+    @Test
     void invalidStoredJsonIsQuarantinedAndDefaultsAreReturned() {
         FakePersistence persistence = new FakePersistence();
         persistence.state().seed(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT, "not-json{{");

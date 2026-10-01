@@ -24,6 +24,7 @@ public final class SessionProfile {
     private final boolean enabled;
     private final boolean systemProfile;
     private final SessionScope scope;
+    private final String linkedAuthProfileId;
     private final SessionAuthConfig authConfig;
     private final SessionSchedulerConfig scheduler;
     private final SessionState state;
@@ -51,6 +52,7 @@ public final class SessionProfile {
             @JsonProperty("enabled") boolean enabled,
             @JsonProperty("systemProfile") boolean systemProfile,
             @JsonProperty("scope") SessionScope scope,
+            @JsonProperty("linkedAuthProfileId") String linkedAuthProfileId,
             @JsonProperty("authConfig") SessionAuthConfig authConfig,
             @JsonProperty("scheduler") SessionSchedulerConfig scheduler,
             @JsonProperty("state") SessionState state,
@@ -61,11 +63,31 @@ public final class SessionProfile {
         this.enabled = enabled;
         this.systemProfile = systemProfile || GENERAL_ID.equals(this.id);
         this.scope = scope == null ? SessionScope.burpTargetScope() : scope;
+        this.linkedAuthProfileId = normalizeOptionalText(linkedAuthProfileId);
         this.authConfig = authConfig == null ? SessionAuthConfig.defaults() : authConfig;
         this.scheduler = scheduler == null ? SessionSchedulerConfig.disabled() : scheduler;
         this.state = state == null ? SessionState.empty() : state;
         this.injectionRules = copyInjectionRules(injectionRules);
         this.extractionRules = copyExtractionRules(extractionRules);
+    }
+
+    /**
+     * Creates a standalone session profile compatible with project documents written before
+     * linked Access Auth Profiles were supported.
+     */
+    public SessionProfile(
+            String id,
+            String name,
+            boolean enabled,
+            boolean systemProfile,
+            SessionScope scope,
+            SessionAuthConfig authConfig,
+            SessionSchedulerConfig scheduler,
+            SessionState state,
+            List<SessionInjectionRule> injectionRules,
+            List<SessionExtractionRule> extractionRules) {
+        this(id, name, enabled, systemProfile, scope, "", authConfig, scheduler, state,
+                injectionRules, extractionRules);
     }
 
     /**
@@ -80,6 +102,7 @@ public final class SessionProfile {
                 true,
                 true,
                 SessionScope.burpTargetScope(),
+                "",
                 SessionAuthConfig.defaults(),
                 SessionSchedulerConfig.disabled(),
                 SessionState.empty(),
@@ -130,6 +153,25 @@ public final class SessionProfile {
      */
     public SessionScope scope() {
         return scope;
+    }
+
+    /**
+     * Returns the shared Access Auth Profile used by this binding.
+     *
+     * @return auth profile id, or an empty string for standalone flow mode
+     */
+    public String linkedAuthProfileId() {
+        return linkedAuthProfileId;
+    }
+
+    /**
+     * Returns whether this session binding reuses a shared Access Auth Profile.
+     *
+     * @return true when a linked profile id is configured
+     */
+    @JsonIgnore
+    public boolean usesLinkedAuthProfile() {
+        return !linkedAuthProfileId.isBlank();
     }
 
     /**
@@ -209,7 +251,7 @@ public final class SessionProfile {
      * @return updated profile
      */
     public SessionProfile withState(SessionState state) {
-        return new SessionProfile(id, name, enabled, systemProfile, scope, authConfig, scheduler,
+        return new SessionProfile(id, name, enabled, systemProfile, scope, linkedAuthProfileId, authConfig, scheduler,
                 state, injectionRules, extractionRules);
     }
 
@@ -220,7 +262,7 @@ public final class SessionProfile {
      * @return updated profile
      */
     public SessionProfile withEnabled(boolean enabled) {
-        return new SessionProfile(id, name, enabled, systemProfile, scope, authConfig, scheduler,
+        return new SessionProfile(id, name, enabled, systemProfile, scope, linkedAuthProfileId, authConfig, scheduler,
                 state, injectionRules, extractionRules);
     }
 
@@ -242,7 +284,14 @@ public final class SessionProfile {
             SessionSchedulerConfig scheduler,
             List<SessionInjectionRule> injectionRules,
             List<SessionExtractionRule> extractionRules) {
-        return new SessionProfile(id, isGeneral() ? "General" : name, enabled, systemProfile, scope, authConfig,
+        return new SessionProfile(id, isGeneral() ? "General" : name, enabled, systemProfile, scope,
+                linkedAuthProfileId, authConfig,
+                scheduler, state, injectionRules, extractionRules);
+    }
+
+    /** Returns a copy configured to use the supplied shared Access Auth Profile. */
+    public SessionProfile withLinkedAuthProfileId(String authProfileId) {
+        return new SessionProfile(id, name, enabled, systemProfile, scope, authProfileId, authConfig,
                 scheduler, state, injectionRules, extractionRules);
     }
 
@@ -265,6 +314,7 @@ public final class SessionProfile {
                 && Objects.equals(id, that.id)
                 && Objects.equals(name, that.name)
                 && Objects.equals(scope, that.scope)
+                && Objects.equals(linkedAuthProfileId, that.linkedAuthProfileId)
                 && Objects.equals(authConfig, that.authConfig)
                 && Objects.equals(scheduler, that.scheduler)
                 && Objects.equals(state, that.state)
@@ -279,7 +329,7 @@ public final class SessionProfile {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(id, name, enabled, systemProfile, scope, authConfig, scheduler,
+        return Objects.hash(id, name, enabled, systemProfile, scope, linkedAuthProfileId, authConfig, scheduler,
                 state, injectionRules, extractionRules);
     }
 
@@ -316,5 +366,9 @@ public final class SessionProfile {
             throw new IllegalArgumentException(fieldName + " must not be blank");
         }
         return value.strip();
+    }
+
+    private static String normalizeOptionalText(String value) {
+        return value == null ? "" : value.strip();
     }
 }
