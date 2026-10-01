@@ -111,7 +111,7 @@ Add inject rules:
 - Enter any custom variable key when it does not exist in the catalog. Context guidance below the selector explains where that key must be supplied.
 - For a new `credentials.*` or `data.*` key, click **Save value to profile…**. Choose an existing profile or explicitly create one, enter the value, and confirm. Existing profile state and unrelated values are preserved; saving an existing key replaces that key only. Closing the Inject Rule with **OK** never creates or changes a profile by itself.
 - Click **Suggest** above the injection-rule table to scan the current request for header, cookie, query, form, and JSON field names matching earlier extractor variables. Review the suggestions and select only the rules to add.
-- Session Handler value-template cells offer `{{session.key}}` choices from the profile's enabled extraction rules.
+- Session Handler value-template cells are editable dropdowns. A linked Auth Profile offers `{{auth.key}}`, `{{auth.header.Name}}`, and `{{auth.cookie.Name}}` from the selected provider's flow contract and current actor state. A standalone profile offers `{{session.key}}`. Enabled local extractors are included with the matching namespace.
 - Optional transforms run after resolving the variable or static value and before writing it into the request. This is useful for adding/removing prefixes, slicing a value, changing case, URL/Base64 encoding, or regex replacement.
 - Common examples:
   - Inject `{{auth.accessToken}}` into the `Authorization` header.
@@ -145,6 +145,10 @@ Use one parameterized login flow for Access Testing and normal Burp traffic:
 4. Open **Session Handler**, add or select a Session Profile, and set **Authentication** to **Linked Auth Profile**.
 5. Select the actor. Use **Reload** if the actor was created while the Session Handler tab was already open.
 6. Configure scope and scheduler. Provider injection rules are reused automatically; local Session injection rules remain available as traffic-specific overrides.
+
+For a linked profile, use `{{auth.accessToken}}` in a local Injection Rule. The Value Template dropdown suggests outputs from the provider's login/refresh/validate flows even before the first login, then also includes the actor's current Auth Variables, Headers, and Cookies. Header and cookie state use `{{auth.header.Header-Name}}` and `{{auth.cookie.CookieName}}`. Existing linked rules that use `{{session.accessToken}}` remain compatible, but `auth.*` is the clearer form because it matches the State tab and Authentication configuration.
+
+Do not recreate `Authorization`, Cookie, or query injection in Session Handler when the Auth Provider already defines it. Provider rules run first automatically. Add a local rule only for a traffic/tool-specific addition or override.
 
 Linked mode shares credentials, token/cookie state, provider login/refresh/validate flows, TTL, and injection rules with Access Testing. **Clear State** clears the linked actor's auth state while preserving credentials. **Standalone Flow (legacy)** remains available for existing projects and specialized session-only flows.
 

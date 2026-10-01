@@ -151,6 +151,8 @@ Không cần tạo `Login - Alice`, `Login - Bob` và thêm một bản login kh
 
 Session Handler gọi chung auth runtime của Authentication. Login/refresh/validate flow, credentials, token, cookie, expiry và provider injection rules đều thuộc actor đã chọn. Các Injection Rule cục bộ của Session Handler chạy sau provider rules và phù hợp cho override riêng theo tool hoặc traffic. Extraction Rule từ live response cập nhật Auth Variables của actor được liên kết.
 
+Trong Injection Rule cục bộ của linked profile, dùng `{{auth.accessToken}}`. Dropdown **Value Template** gợi ý output của login/refresh/validate flow kể cả trước lần login đầu tiên, đồng thời gợi ý Auth State hiện có như `{{auth.csrfToken}}`, `{{auth.header.Authorization}}` và `{{auth.cookie.SESSION}}`. Không cần tạo lại rule Authorization/Cookie nếu Auth Provider đã có rule tương ứng, vì provider rule được áp dụng tự động trước local Session rule.
+
 Khi muốn đổi user đang dùng cho traffic thủ công, đổi **Shared Auth Profile** thay vì sao chép flow. Nếu vừa tạo actor ở Authentication, bấm **Reload** cạnh danh sách profile.
 
 ## 6. Data Profile và bài test nhiều actor

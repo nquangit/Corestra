@@ -5,6 +5,7 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.session.SessionAuthConfig;
+import dev.nquangit.corestra.session.SessionAuthenticationResult;
 import dev.nquangit.corestra.session.SessionCriterionType;
 import dev.nquangit.corestra.session.SessionExtractionRule;
 import dev.nquangit.corestra.session.SessionInjectionRule;
@@ -62,6 +63,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -104,6 +106,7 @@ public final class SessionHandlerPanel extends JPanel {
     private final JTable extractionTable = new JTable(extractionModel);
     private final JTable stateTable = new JTable(stateModel);
     private final JLabel statusLabel = new JLabel(" ");
+    private final JButton runAuthButton = new JButton("Run Auth Now");
     private final Consumer<SessionProfileChangeEvent> profileChangeListener = this::handleProfileChange;
     private final AtomicBoolean stateRefreshQueued = new AtomicBoolean();
     private JButton addCriterionButton;
@@ -148,7 +151,10 @@ public final class SessionHandlerPanel extends JPanel {
         injectionTable.getColumnModel().getColumn(4)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(InjectRule.WriteStrategy.values())));
         injectionTable.getColumnModel().getColumn(INJECTION_VALUE_COLUMN)
-                .setCellEditor(new SessionVariableTemplateCellEditor(extractionModel));
+                .setCellEditor(new SessionVariableTemplateCellEditor(
+                        extractionModel,
+                        this::selectedInjectionVariableTemplates,
+                        this::selectedInjectionVariableNamespace));
         extractionTable.getColumnModel().getColumn(1)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.SourceSide.values())));
         extractionTable.getColumnModel().getColumn(2)
@@ -209,7 +215,6 @@ public final class SessionHandlerPanel extends JPanel {
         tabs.setToolTipTextAt(2, "Optional traffic-specific rules applied after linked Auth Provider injection rules.");
         tabs.setToolTipTextAt(3, "Can update standalone state or the linked actor's auth variables from live traffic.");
 
-        JButton runAuthButton = new JButton("Run Auth Now");
         runAuthButton.addActionListener(event -> runSelectedAuthFlow());
 
         JPanel actions = new JPanel();
@@ -493,7 +498,9 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     private void setStatus(String message) {
-        statusLabel.setText(message == null || message.isBlank() ? " " : message);
+        String text = message == null || message.isBlank() ? " " : message;
+        statusLabel.setText(text);
+        statusLabel.setToolTipText(text.isBlank() ? null : text);
     }
 
     private void refreshFlowOptions(String selectedFlowId) {
@@ -549,6 +556,10 @@ public final class SessionHandlerPanel extends JPanel {
         authSourceHint.setToolTipText(linked
                 ? "Local Session injection rules remain available as optional traffic-specific overrides."
                 : "Choose Linked Auth Profile to reuse an actor configured under Authentication.");
+        injectionTable.setToolTipText(linked
+                ? "Provider rules run automatically. Local overrides can use {{auth.key}},"
+                        + " {{auth.header.Name}}, or {{auth.cookie.Name}}."
+                : "Use {{session.key}} from standalone Session state or an enabled extractor.");
     }
 
     private void loadSelectedProfile() {
@@ -862,18 +873,45 @@ public final class SessionHandlerPanel extends JPanel {
         if (!saveCurrentProfileAfterStoppingEditors()) {
             return;
         }
-        new SwingWorker<Void, Void>() {
+        runAuthButton.setEnabled(false);
+        setStatus("Authentication is running...");
+        new SwingWorker<SessionAuthenticationResult, Void>() {
             @Override
-            protected Void doInBackground() {
-                sessionManager.forceAuthenticate(profile.id());
-                return null;
+            protected SessionAuthenticationResult doInBackground() {
+                return sessionManager.forceAuthenticateWithResult(profile.id());
             }
 
             @Override
             protected void done() {
-                refreshProfiles(profile.id());
+                try {
+                    SessionAuthenticationResult result = get();
+                    refreshProfiles(profile.id());
+                    setStatus(formatAuthenticationResult(result));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    setStatus("Authentication was interrupted.");
+                } catch (ExecutionException exception) {
+                    Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                    String detail = cause.getMessage() == null || cause.getMessage().isBlank()
+                            ? cause.getClass().getSimpleName() : cause.getMessage();
+                    setStatus("Authentication failed: " + detail);
+                } finally {
+                    runAuthButton.setEnabled(true);
+                }
             }
         }.execute();
+    }
+
+    static String formatAuthenticationResult(SessionAuthenticationResult result) {
+        String prefix = switch (result.outcome()) {
+            case SUCCEEDED -> "Authentication succeeded";
+            case SKIPPED -> "Authentication not run";
+            case FAILED -> "Authentication failed";
+        };
+        String reason = result.reason().isBlank() ? "No details were provided." : result.reason();
+        String warnings = result.warnings().isEmpty()
+                ? "" : " Warnings: " + String.join("; ", result.warnings());
+        return prefix + ": " + reason + warnings;
     }
 
     private static FocusAdapter onFocusLost(Runnable action) {
@@ -1030,7 +1068,21 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     static List<String> availableSessionVariableTemplates(DefaultTableModel extractionModel) {
+        return availableSessionVariableTemplates(extractionModel, List.of(), "session");
+    }
+
+    static List<String> availableSessionVariableTemplates(
+            DefaultTableModel extractionModel,
+            List<String> additionalTemplates,
+            String extractionNamespace) {
         LinkedHashMap<String, String> templates = new LinkedHashMap<>();
+        if (additionalTemplates != null) {
+            additionalTemplates.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::strip)
+                    .filter(value -> !value.isBlank())
+                    .forEach(value -> templates.put(value, value));
+        }
         for (int row = 0; row < extractionModel.getRowCount(); row++) {
             if (!boolAt(extractionModel, row, 0)) {
                 continue;
@@ -1040,11 +1092,22 @@ public final class SessionHandlerPanel extends JPanel {
                 key = key.substring("session.".length());
             }
             if (!key.isBlank()) {
-                String template = "{{session." + key + "}}";
+                String namespace = "auth".equals(extractionNamespace) ? "auth" : "session";
+                String template = "{{" + namespace + "." + key + "}}";
                 templates.put(template, template);
             }
         }
         return List.copyOf(templates.keySet());
+    }
+
+    private List<String> selectedInjectionVariableTemplates() {
+        SessionProfile profile = profileList.getSelectedValue();
+        return profile == null ? List.of() : sessionManager.availableInjectionVariableTemplates(profile);
+    }
+
+    private String selectedInjectionVariableNamespace() {
+        SessionProfile profile = profileList.getSelectedValue();
+        return profile != null && profile.usesLinkedAuthProfile() ? "auth" : "session";
     }
 
     private static <T extends Enum<T>> T enumValue(Class<T> enumType, String raw, T fallback) {
@@ -1139,10 +1202,17 @@ public final class SessionHandlerPanel extends JPanel {
     private static final class SessionVariableTemplateCellEditor extends AbstractCellEditor
             implements TableCellEditor {
         private final DefaultTableModel extractionModel;
+        private final Supplier<List<String>> additionalTemplatesSupplier;
+        private final Supplier<String> extractionNamespaceSupplier;
         private JComboBox<String> combo;
 
-        private SessionVariableTemplateCellEditor(DefaultTableModel extractionModel) {
+        private SessionVariableTemplateCellEditor(
+                DefaultTableModel extractionModel,
+                Supplier<List<String>> additionalTemplatesSupplier,
+                Supplier<String> extractionNamespaceSupplier) {
             this.extractionModel = extractionModel;
+            this.additionalTemplatesSupplier = additionalTemplatesSupplier;
+            this.extractionNamespaceSupplier = extractionNamespaceSupplier;
         }
 
         @Override
@@ -1158,7 +1228,10 @@ public final class SessionHandlerPanel extends JPanel {
                 boolean isSelected,
                 int row,
                 int column) {
-            combo = new JComboBox<>(availableSessionVariableTemplates(extractionModel).toArray(String[]::new));
+            combo = new JComboBox<>(availableSessionVariableTemplates(
+                    extractionModel,
+                    additionalTemplatesSupplier.get(),
+                    extractionNamespaceSupplier.get()).toArray(String[]::new));
             combo.setEditable(true);
             combo.getEditor().setItem(value == null ? "" : value.toString());
             return combo;

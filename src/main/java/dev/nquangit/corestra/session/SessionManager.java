@@ -3,7 +3,9 @@ package dev.nquangit.corestra.session;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.auth.AuthProvider;
 import dev.nquangit.corestra.access.auth.AuthState;
+import dev.nquangit.corestra.access.auth.analysis.AuthProviderFlowAnalyzer;
 import dev.nquangit.corestra.access.auth.runtime.AuthEnsureResult;
+import dev.nquangit.corestra.access.auth.runtime.AuthEnsureStatus;
 import dev.nquangit.corestra.access.auth.runtime.AuthInjectionRuleRenderer;
 import dev.nquangit.corestra.access.auth.runtime.AuthManager;
 import dev.nquangit.corestra.access.repository.InMemoryAccessRepository;
@@ -39,7 +41,8 @@ import java.util.regex.Pattern;
  * Coordinates project-level session profile selection, state updates, and auth refresh.
  */
 public final class SessionManager {
-    private static final Pattern SESSION_PLACEHOLDER = Pattern.compile("\\{\\{\\s*session\\.([A-Za-z0-9_-]+)\\s*}}");
+    private static final Pattern SESSION_OR_AUTH_PLACEHOLDER =
+            Pattern.compile("\\{\\{\\s*(session|auth)\\.([A-Za-z0-9_.-]+)\\s*}}");
 
     private final SessionProfileRepository repository;
     private final Supplier<List<FlowDefinition>> flowsSupplier;
@@ -287,6 +290,20 @@ public final class SessionManager {
     }
 
     /**
+     * Forces authentication and preserves the outcome and reason for an interactive caller.
+     *
+     * @param profileId session profile id
+     * @return detailed authentication result
+     */
+    public SessionAuthenticationResult forceAuthenticateWithResult(String profileId) {
+        if (profileId == null || profileId.isBlank()) {
+            return SessionAuthenticationResult.failed(
+                    "", "Session Profile id is blank.", Optional.empty(), List.of());
+        }
+        return runAuthFlowLockedWithResult(profileId.strip(), AuthRunMode.FORCED);
+    }
+
+    /**
      * Refreshes an enabled scheduled profile if it is still due after acquiring its auth lock.
      *
      * @param profileId profile id
@@ -360,10 +377,36 @@ public final class SessionManager {
             if (!rule.enabled() || !rule.allowsTool(toolTypeName)) {
                 continue;
             }
-            renderSessionTemplate(rule.valueTemplate(), templateState).ifPresent(value ->
+            renderProfileTemplate(rule.valueTemplate(), templateState, profile.usesLinkedAuthProfile()).ifPresent(value ->
                     rules.add(rule.toInjectRule(value)));
         }
         return List.copyOf(rules);
+    }
+
+    /**
+     * Returns variable templates available to local Session Handler injection rules.
+     * Linked profiles use the canonical {@code auth} namespace; standalone profiles use {@code session}.
+     */
+    public List<String> availableInjectionVariableTemplates(SessionProfile profile) {
+        Objects.requireNonNull(profile, "profile");
+        LinkedHashMap<String, String> templates = new LinkedHashMap<>();
+        if (!profile.usesLinkedAuthProfile() || accessRepository == null) {
+            profile.state().values().keySet().forEach(key -> addTemplate(templates, "session", key));
+            return List.copyOf(templates.keySet());
+        }
+        AuthProfile authProfile = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
+        if (authProfile == null) {
+            return List.of();
+        }
+        AuthProvider provider = accessRepository.authProvider(authProfile.providerId()).orElse(null);
+        if (provider != null) {
+            new AuthProviderFlowAnalyzer().analyze(provider, flowsSupplier.get()).outputKeys()
+                    .forEach(key -> addTemplate(templates, "auth", key));
+        }
+        authProfile.state().variables().keySet().forEach(key -> addTemplate(templates, "auth", key));
+        authProfile.state().headers().keySet().forEach(key -> addTemplate(templates, "auth", "header." + key));
+        authProfile.state().cookies().keySet().forEach(key -> addTemplate(templates, "auth", "cookie." + key));
+        return List.copyOf(templates.keySet());
     }
 
     /** Returns values displayed in the State tab, including shared actor state when linked. */
@@ -378,8 +421,8 @@ public final class SessionManager {
         }
         LinkedHashMap<String, String> values = new LinkedHashMap<>();
         authProfile.state().variables().forEach((key, value) -> values.put("auth." + key, value));
-        authProfile.state().headers().forEach((key, value) -> values.put("header." + key, value));
-        authProfile.state().cookies().forEach((key, value) -> values.put("cookie." + key, value));
+        authProfile.state().headers().forEach((key, value) -> values.put("auth.header." + key, value));
+        authProfile.state().cookies().forEach((key, value) -> values.put("auth.cookie." + key, value));
         return Map.copyOf(values);
     }
 
@@ -401,12 +444,19 @@ public final class SessionManager {
      * @return rendered value, or empty when a referenced session key is missing
      */
     public Optional<String> renderSessionTemplate(String template, SessionState state) {
+        return renderProfileTemplate(template, state, false);
+    }
+
+    private Optional<String> renderProfileTemplate(String template, SessionState state, boolean allowAuthNamespace) {
         Objects.requireNonNull(state, "state");
         String source = template == null ? "" : template;
-        Matcher matcher = SESSION_PLACEHOLDER.matcher(source);
+        Matcher matcher = SESSION_OR_AUTH_PLACEHOLDER.matcher(source);
         StringBuilder rendered = new StringBuilder();
         while (matcher.find()) {
-            String key = matcher.group(1);
+            if ("auth".equals(matcher.group(1)) && !allowAuthNamespace) {
+                return Optional.empty();
+            }
+            String key = matcher.group(2);
             String value = state.values().get(key);
             if (value == null) {
                 return Optional.empty();
@@ -417,19 +467,33 @@ public final class SessionManager {
         return Optional.of(rendered.toString());
     }
 
+    private static void addTemplate(Map<String, String> templates, String namespace, String key) {
+        if (key == null || key.isBlank()) {
+            return;
+        }
+        String template = "{{" + namespace + "." + key.strip() + "}}";
+        templates.put(template, template);
+    }
+
     private enum AuthRunMode { ON_DEMAND, FORCED, SCHEDULED }
 
     private SessionProfile runAuthFlowLocked(String profileId, AuthRunMode mode) {
+        return runAuthFlowLockedWithResult(profileId, mode).profile().orElseGet(SessionProfile::general);
+    }
+
+    private SessionAuthenticationResult runAuthFlowLockedWithResult(String profileId, AuthRunMode mode) {
         ReentrantLock lock = locks.computeIfAbsent(profileId, ignored -> new ReentrantLock());
         lock.lock();
         try {
             Optional<SessionProfile> current = repository.profile(profileId);
             if (current.isEmpty()) {
-                return SessionProfile.general();
+                return SessionAuthenticationResult.failed(profileId,
+                        "Session Profile not found: " + profileId, Optional.empty(), List.of());
             }
             SessionProfile profile = current.orElseThrow();
             if (!hasAuthentication(profile)) {
-                return profile;
+                return SessionAuthenticationResult.skipped(profile,
+                        "No linked Auth Profile or standalone auth flow is configured.");
             }
             long now = clock.millis();
             if (mode == AuthRunMode.SCHEDULED) {
@@ -437,23 +501,27 @@ public final class SessionManager {
                 long intervalMillis = profile.scheduler().intervalSeconds() * 1000L;
                 if (!profile.enabled() || !profile.scheduler().enabled()
                         || (last > 0L && now - last < intervalMillis && !profile.state().missingOrExpired(now))) {
-                    return profile;
+                    return SessionAuthenticationResult.skipped(profile,
+                            "Scheduled authentication is disabled or is not due yet.");
                 }
             }
             if (mode == AuthRunMode.ON_DEMAND && !profile.state().missingOrExpired(now)) {
                 if (!profile.usesLinkedAuthProfile()) {
-                    return profile;
+                    return SessionAuthenticationResult.skipped(profile, "Session state is still valid.");
                 }
             }
             if (profile.usesLinkedAuthProfile()) {
-                return runLinkedAuth(profile, mode);
+                return runLinkedAuthWithResult(profile, mode);
             }
             Optional<FlowDefinition> flow = flowsSupplier.get().stream()
                     .filter(FlowDefinition::enabled)
                     .filter(candidate -> candidate.id().equals(profile.authConfig().mainAuthFlowId()))
                     .findFirst();
             if (flow.isEmpty()) {
-                return profile;
+                return SessionAuthenticationResult.failed(profile.id(),
+                        "Standalone auth flow was not found or is disabled: "
+                                + profile.authConfig().mainAuthFlowId(),
+                        Optional.of(profile), List.of());
             }
             SessionGuard.enter();
             Optional<Map<String, String>> updates;
@@ -463,22 +531,32 @@ public final class SessionManager {
                 SessionGuard.exit();
             }
             if (updates.isEmpty()) {
-                return profile;
+                return SessionAuthenticationResult.failed(profile.id(),
+                        "Authentication flow failed or completed without an executable step."
+                                + " Check the flow's last run result.",
+                        Optional.of(profile), List.of());
             }
             Optional<SessionProfile> saved = repository.updateState(profile.id(),
                     state -> state.withAuthenticatedValues(
                             updates.orElseThrow(), clock.millis(), profile.authConfig().ttlSeconds()));
             saved.ifPresent(updated -> notifyProfileChanged(
                     new SessionProfileChangeEvent(updated.id(), SessionProfileChangeType.STATE_UPDATED)));
-            return saved.orElse(profile);
+            if (saved.isEmpty()) {
+                return SessionAuthenticationResult.failed(profile.id(),
+                        "Authentication completed, but the Session Profile no longer exists.",
+                        Optional.empty(), List.of());
+            }
+            return SessionAuthenticationResult.succeeded(saved.orElseThrow(),
+                    "Standalone auth flow completed successfully.", List.of());
         } finally {
             lock.unlock();
         }
     }
 
-    private SessionProfile runLinkedAuth(SessionProfile profile, AuthRunMode mode) {
+    private SessionAuthenticationResult runLinkedAuthWithResult(SessionProfile profile, AuthRunMode mode) {
         if (!linkedAuthAvailable()) {
-            return profile;
+            return SessionAuthenticationResult.failed(profile.id(),
+                    "Shared Authentication runtime is unavailable.", Optional.of(profile), List.of());
         }
         SessionGuard.enter();
         AuthEnsureResult result;
@@ -490,12 +568,17 @@ public final class SessionManager {
             SessionGuard.exit();
         }
         if (result.failed()) {
-            return profile;
+            return SessionAuthenticationResult.failed(profile.id(), result.reason(),
+                    Optional.of(profile), result.warnings());
         }
         SessionProfile synchronizedProfile = synchronizeLinkedStateMarker(profile, true);
         notifyProfileChanged(new SessionProfileChangeEvent(
                 synchronizedProfile.id(), SessionProfileChangeType.STATE_UPDATED));
-        return synchronizedProfile;
+        if (result.status() == AuthEnsureStatus.MANUAL || result.status() == AuthEnsureStatus.SKIPPED) {
+            return new SessionAuthenticationResult(profile.id(), SessionAuthenticationResult.Outcome.SKIPPED,
+                    result.reason(), Optional.of(synchronizedProfile), result.warnings());
+        }
+        return SessionAuthenticationResult.succeeded(synchronizedProfile, result.reason(), result.warnings());
     }
 
     private SessionProfile synchronizeLinkedStateMarker(SessionProfile profile, boolean markAuthenticatedNow) {
@@ -527,6 +610,8 @@ public final class SessionManager {
         return accessRepository.authProfile(profile.linkedAuthProfileId()).map(authProfile -> {
             AuthState state = authProfile.state();
             LinkedHashMap<String, String> values = new LinkedHashMap<>(state.variables());
+            state.headers().forEach((key, value) -> values.put("header." + key, value));
+            state.cookies().forEach((key, value) -> values.put("cookie." + key, value));
             return new SessionState(values, state.lastUpdatedAtEpochMillis(),
                     state.expiresAtEpochMillis(), state.lastUpdatedAtEpochMillis());
         });

@@ -130,6 +130,22 @@ class SessionHandlerPanelTest {
     }
 
     @Test
+    void linkedSessionInjectionChoicesUseAuthNamespaceAndIncludeProfileSuggestions() {
+        javax.swing.table.DefaultTableModel extractionModel = new javax.swing.table.DefaultTableModel(
+                new Object[][]{
+                        {true, "RESPONSE", "HEADER", "X-Token", "BODY", 0, "accessToken", "", ""},
+                        {false, "RESPONSE", "HEADER", "X-Old", "BODY", 0, "oldToken", "", ""}
+                },
+                new Object[]{"Enabled", "Source", "Extractor", "Selector", "Regex Input", "Group",
+                        "Target Key", "Transforms", "Tools"});
+
+        assertEquals(
+                List.of("{{auth.csrfToken}}", "{{auth.accessToken}}"),
+                SessionHandlerPanel.availableSessionVariableTemplates(
+                        extractionModel, List.of("{{auth.csrfToken}}"), "auth"));
+    }
+
+    @Test
     void profileNameAutoSavesWithoutSaveButton() throws Exception {
         SessionProfileRepository repository = new SessionProfileRepository();
         repository.saveProfile(profile("p1", "Owner", true));
@@ -184,6 +200,20 @@ class SessionHandlerPanelTest {
 
         assertTrue(formatted.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} .+"));
         assertFalse(formatted.matches("\\d+"));
+    }
+
+    @Test
+    void runAuthNowKeepsVisibleResultAfterBackgroundRefresh() throws Exception {
+        SessionHandlerPanel panel = panel(new SessionProfileRepository());
+        JButton runAuthButton = field(panel, "runAuthButton", JButton.class);
+        JLabel statusLabel = field(panel, "statusLabel", JLabel.class);
+
+        runOnEdt(runAuthButton::doClick);
+        waitForStatus(runAuthButton, statusLabel, "Authentication not run:");
+
+        assertTrue(runAuthButton.isEnabled());
+        assertTrue(statusLabel.getText().contains("No linked Auth Profile"));
+        assertEquals(statusLabel.getText(), statusLabel.getToolTipText());
     }
 
     @Test
@@ -307,6 +337,19 @@ class SessionHandlerPanelTest {
         if (error.get() != null) {
             throw error.get();
         }
+    }
+
+    private static void waitForStatus(JButton button, JLabel label, String expectedPrefix) throws Exception {
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (System.currentTimeMillis() < deadline) {
+            runOnEdt(() -> {
+            });
+            if (button.isEnabled() && label.getText().startsWith(expectedPrefix)) {
+                return;
+            }
+            Thread.sleep(10L);
+        }
+        throw new AssertionError("Timed out waiting for auth result; current status: " + label.getText());
     }
 
     private static <T> T field(Object target, String fieldName, Class<T> type) throws Exception {
