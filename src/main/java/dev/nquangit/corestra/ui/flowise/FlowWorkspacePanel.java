@@ -3,6 +3,7 @@ package dev.nquangit.corestra.ui.flowise;
 import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.flow.execution.FlowExecutionLog;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.StyledButton;
 
@@ -45,7 +46,7 @@ public final class FlowWorkspacePanel extends JPanel {
      * @throws NullPointerException if either argument is {@code null}
      */
     public FlowWorkspacePanel(FlowWorkspaceController controller, MontoyaApi api) {
-        this(controller, api, null);
+        this(controller, api, null, new FlowExecutionLog());
     }
 
     /**
@@ -60,13 +61,23 @@ public final class FlowWorkspacePanel extends JPanel {
             FlowWorkspaceController controller,
             MontoyaApi api,
             AccessUiController accessController) {
+        this(controller, api, accessController, new FlowExecutionLog());
+    }
+
+    /** Creates a workspace panel with a shared execution timeline. */
+    public FlowWorkspacePanel(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            AccessUiController accessController,
+            FlowExecutionLog executionLog) {
         super(new BorderLayout());
         Objects.requireNonNull(controller, "controller");
         Objects.requireNonNull(api, "api");
 
         StepListPanel stepList = new StepListPanel(controller, accessController);
         RequestResponsePanel reqResp = new RequestResponsePanel(controller, api);
-        JTabbedPane detailTabs = buildDetailTabs(controller);
+        JTabbedPane detailTabs = buildDetailTabs(controller, api, reqResp,
+                Objects.requireNonNull(executionLog, "executionLog"));
 
         JSplitPane rightSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, reqResp, detailTabs);
         rightSplit.setResizeWeight(0.65);
@@ -94,12 +105,17 @@ public final class FlowWorkspacePanel extends JPanel {
     // Internal
     // -------------------------------------------------------------------------
 
-    private static JTabbedPane buildDetailTabs(FlowWorkspaceController controller) {
+    private static JTabbedPane buildDetailTabs(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            RequestResponsePanel requestResponsePanel,
+            FlowExecutionLog executionLog) {
         JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
 
-        tabs.addTab("Rules", new RuleSummaryPanel(controller));
+        tabs.addTab("Rules", new RuleSummaryPanel(controller, requestResponsePanel::responseRegexSelection));
         tabs.addTab("Conditions & Actions", new ConditionActionPanel(controller));
         tabs.addTab("Execution", new ExecutionPanel(controller));
+        tabs.addTab("Flow Log", new FlowLogPanel(controller, executionLog, api));
         tabs.addTab("Auto Trigger Flow", new TriggerPanel(controller));
         tabs.addTab("Aggregation", new AggregationPanel(controller));
         tabs.addTab("Notes", buildNotesPanel(controller));

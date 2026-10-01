@@ -240,7 +240,7 @@ public final class AuthManager {
         FlowAttempt refresh = attempt(provider.refreshFlowId(), profile, provider, env, AuthFlowPurpose.REFRESH, renderMode);
         List<String> messages = combined(priorMessages, refresh.allMessages());
         if (refresh.success()) {
-            AuthProfile updated = updateAuthState(profile, refresh.runResult());
+            AuthProfile updated = updateAuthState(profile, provider, refresh.runResult());
             accessRepository.saveAuthProfile(updated);
             return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.REFRESHED,
                     refresh.reason(), updated, refresh.warnings());
@@ -257,7 +257,7 @@ public final class AuthManager {
         FlowAttempt refresh = attempt(provider.refreshFlowId(), profile, provider, env, AuthFlowPurpose.REFRESH, renderMode);
         List<String> messages = combined(priorMessages, refresh.allMessages());
         if (refresh.success()) {
-            AuthProfile updated = updateAuthState(profile, refresh.runResult());
+            AuthProfile updated = updateAuthState(profile, provider, refresh.runResult());
             accessRepository.saveAuthProfile(updated);
             return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.REFRESHED,
                     refresh.reason(), updated, refresh.warnings());
@@ -275,7 +275,7 @@ public final class AuthManager {
         FlowAttempt login = attempt(provider.loginFlowId(), profile, provider, env, AuthFlowPurpose.LOGIN, renderMode);
         List<String> messages = combined(priorMessages, login.allMessages());
         if (login.success()) {
-            AuthProfile updated = updateAuthState(profile, login.runResult());
+            AuthProfile updated = updateAuthState(profile, provider, login.runResult());
             accessRepository.saveAuthProfile(updated);
             return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.LOGGED_IN,
                     login.reason(), updated, login.warnings());
@@ -296,12 +296,14 @@ public final class AuthManager {
         return new FlowAttempt(runResult, evaluation);
     }
 
-    private AuthProfile updateAuthState(AuthProfile profile, AuthFlowRunResult runResult) {
+    private AuthProfile updateAuthState(
+            AuthProfile profile,
+            AuthProvider provider,
+            AuthFlowRunResult runResult) {
         AuthState oldState = profile.state();
         LinkedHashMap<String, String> variables = new LinkedHashMap<>(oldState.variables());
         variables.putAll(runResult.extractedVariables());
-        long expiresAt = parseExpiresAt(runResult.extractedVariables().get("expiresAt"))
-                .orElse(oldState.expiresAtEpochMillis());
+        long expiresAt = resolvedExpiresAt(runResult.extractedVariables(), provider.stateTtlSeconds());
         AuthState updatedState = new AuthState(
                 variables,
                 oldState.headers(),
@@ -327,6 +329,27 @@ public final class AuthManager {
             return parsed >= 0L ? Optional.of(parsed) : Optional.empty();
         } catch (NumberFormatException ignored) {
             return Optional.empty();
+        }
+    }
+
+    private long resolvedExpiresAt(Map<String, String> extracted, long fallbackTtlSeconds) {
+        Optional<Long> absolute = parseExpiresAt(extracted.get("expiresAt"));
+        if (absolute.isPresent()) return absolute.get();
+        String relative = extracted.containsKey("expiresIn")
+                ? extracted.get("expiresIn") : extracted.get("expires_in");
+        if (relative != null && !relative.isBlank()) {
+            try {
+                long seconds = Long.parseLong(relative.strip());
+                if (seconds >= 0L) return Math.addExact(clock.millis(), Math.multiplyExact(seconds, 1_000L));
+            } catch (NumberFormatException | ArithmeticException ignored) {
+                // Fall through to the provider TTL.
+            }
+        }
+        try {
+            return fallbackTtlSeconds <= 0L ? 0L
+                    : Math.addExact(clock.millis(), Math.multiplyExact(fallbackTtlSeconds, 1_000L));
+        } catch (ArithmeticException ignored) {
+            return Long.MAX_VALUE;
         }
     }
 

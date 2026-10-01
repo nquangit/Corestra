@@ -16,6 +16,7 @@ class RaceRunConfigTest {
         assertTrue(config.synchronizeStart());
         assertEquals(RaceScenarioMode.REUSE_SINGLE_SCENARIO, config.scenarioMode());
         assertEquals(RaceAuthMode.ENSURE_AUTH_BEFORE_GATE, config.authMode());
+        assertEquals(RaceRunConfig.DEFAULT_COMPLETION_TIMEOUT_MILLIS, config.completionTimeoutMillis());
         assertEquals(2, config.totalTargetRequests());
     }
 
@@ -59,5 +60,18 @@ class RaceRunConfigTest {
                         false));
 
         assertTrue(exception.getMessage().contains("iterations"));
+    }
+
+    @Test
+    void rejectsNonPositiveCompletionTimeout() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
+                new RaceRunConfig(
+                        "case-1", 2, 1, true, 0L, 0L,
+                        RaceRunConfig.DEFAULT_PREPARATION_TIMEOUT_MILLIS,
+                        RaceScenarioMode.REUSE_SINGLE_SCENARIO,
+                        RaceAuthMode.ENSURE_AUTH_BEFORE_GATE,
+                        false, true, true, false, 0L));
+
+        assertTrue(exception.getMessage().contains("completionTimeoutMillis"));
     }
 }

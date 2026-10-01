@@ -17,6 +17,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Proxy;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.function.Function;
@@ -60,6 +61,25 @@ class ProxyPipelineHttpClientTest {
     }
 
     @Test
+    void connectRequestKeepsTunnelOpenForTlsHandshake() {
+        String raw = ProxyPipelineHttpClient.buildConnectRequest(service("example.test", 443, true));
+
+        assertTrue(raw.startsWith("CONNECT example.test:443 HTTP/1.1\r\n"));
+        assertTrue(raw.contains("\r\nHost: example.test:443\r\n"));
+        assertTrue(raw.contains("\r\n" + ProxyPipelineHttpClient.MARKER_HEADER + ": "));
+        assertTrue(raw.contains("\r\nProxy-Connection: keep-alive\r\n\r\n"));
+        assertFalse(raw.toLowerCase().contains("connection: close"));
+    }
+
+    @Test
+    void connectRequestFormatsIpv6AuthorityWithRequiredPort() {
+        String raw = ProxyPipelineHttpClient.buildConnectRequest(service("2001:db8::1", 8443, true));
+
+        assertTrue(raw.startsWith("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n"));
+        assertTrue(raw.contains("\r\nHost: [2001:db8::1]:8443\r\n"));
+    }
+
+    @Test
     void sendHttpUsesProxySocketAndConvertsResponse() {
         FakeSocket socket = new FakeSocket("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
         ProjectSettings settings = new ProjectSettings(HttpSendMode.PROXY_PIPELINE, "127.0.0.9", 9090);
@@ -81,6 +101,59 @@ class ProxyPipelineHttpClientTest {
     }
 
     @Test
+    void contentLengthResponseDoesNotWaitForProxySocketClose() throws Exception {
+        InputStream abortAfterResponse = new InputStream() {
+            private final byte[] response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+                    .getBytes(StandardCharsets.ISO_8859_1);
+            private int offset;
+
+            @Override
+            public int read() throws IOException {
+                if (offset >= response.length) {
+                    throw new IOException("An established connection was aborted");
+                }
+                return response[offset++] & 0xff;
+            }
+
+            @Override
+            public int read(byte[] target, int start, int length) throws IOException {
+                if (offset >= response.length) {
+                    throw new IOException("An established connection was aborted");
+                }
+                int count = Math.min(length, response.length - offset);
+                System.arraycopy(response, offset, target, start, count);
+                offset += count;
+                return count;
+            }
+        };
+
+        String raw = ProxyPipelineHttpClient.readHttpResponse(abortAfterResponse, "GET");
+
+        assertTrue(raw.endsWith("\r\n\r\nOK"));
+    }
+
+    @Test
+    void closeDelimitedResponseAcceptsWindowsAbortAfterDeliveredBytes() throws Exception {
+        InputStream resetAfterResponse = abortingInput(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nOK");
+
+        String raw = ProxyPipelineHttpClient.readHttpResponse(resetAfterResponse, "GET");
+
+        assertTrue(raw.endsWith("\r\n\r\nOK"));
+    }
+
+    @Test
+    void chunkedResponseStopsAtFinalChunkWithoutWaitingForSocketClose() throws Exception {
+        String encoded = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "2\r\nOK\r\n0\r\nX-Trailer: done\r\n\r\n";
+
+        String raw = ProxyPipelineHttpClient.readHttpResponse(
+                new ByteArrayInputStream(encoded.getBytes(StandardCharsets.ISO_8859_1)), "GET");
+
+        assertEquals(encoded, raw);
+    }
+
+    @Test
     void sendWrapsProxyConnectionFailures() {
         ProxyPipelineHttpClient client = new ProxyPipelineHttpClient(
                 ProjectSettings::defaults,
@@ -94,6 +167,8 @@ class ProxyPipelineHttpClientTest {
                 () -> client.send(request(false, "example.test", 80, "GET", "/", List.of(), "")));
 
         assertTrue(exception.getMessage().contains("Proxy pipeline send failed"));
+        assertTrue(exception.getMessage().contains("127.0.0.1:8080"));
+        assertTrue(exception.getMessage().contains("http://example.test"));
         assertTrue(exception.getMessage().contains("connection refused"));
     }
 
@@ -111,6 +186,32 @@ class ProxyPipelineHttpClientTest {
                     case "equals" -> proxy == args[0];
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
+    }
+
+    private static InputStream abortingInput(String rawResponse) {
+        return new InputStream() {
+            private final byte[] response = rawResponse.getBytes(StandardCharsets.ISO_8859_1);
+            private int offset;
+
+            @Override
+            public int read() throws IOException {
+                if (offset >= response.length) {
+                    throw new SocketException("An established connection was aborted");
+                }
+                return response[offset++] & 0xff;
+            }
+
+            @Override
+            public int read(byte[] target, int start, int length) throws IOException {
+                if (offset >= response.length) {
+                    throw new SocketException("An established connection was aborted");
+                }
+                int count = Math.min(length, response.length - offset);
+                System.arraycopy(response, offset, target, start, count);
+                offset += count;
+                return count;
+            }
+        };
     }
 
     private static HttpRequest request(

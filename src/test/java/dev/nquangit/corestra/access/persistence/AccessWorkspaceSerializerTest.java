@@ -55,12 +55,23 @@ import dev.nquangit.corestra.access.teardown.TeardownStepEvidence;
 import dev.nquangit.corestra.access.variable.ScopedVariableRef;
 import dev.nquangit.corestra.access.variable.VariableScope;
 import dev.nquangit.corestra.access.workspace.AccessWorkspace;
+import dev.nquangit.corestra.access.flow.AccessFlowTarget;
+import dev.nquangit.corestra.access.flow.FlowInjectionOverride;
+import dev.nquangit.corestra.access.flow.FlowInjectionOverrideTarget;
+import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.flow.control.StepConditionActionRule;
+import dev.nquangit.corestra.flow.control.StepAction;
+import dev.nquangit.corestra.flow.control.StepActionType;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
+import dev.nquangit.corestra.flow.rule.InjectRule;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -71,6 +82,81 @@ class AccessWorkspaceSerializerTest {
     private static final String REDACTED = "<redacted>";
 
     private final AccessWorkspaceSerializer serializer = new AccessWorkspaceSerializer();
+
+    @Test
+    void safeExportPreservesFlowTargetConditionActions() {
+        StepConditionActionRule rule = new StepConditionActionRule("stop", "Stop", true, null,
+                List.of(), List.of(new StepAction("break", "Break", true, StepActionType.BREAK_FLOW, Map.of())));
+        FlowStep step = new FlowStep("step", "Step", true, "",
+                new StoredRequestTemplate("GET", "https", "example.com", 443, "/", List.of(), ""),
+                List.of(), List.of(), List.of(), FlowStep.StepErrorStrategy.FAIL_FLOW)
+                .withConditionActionRules(List.of(rule));
+        FlowDefinition flow = new FlowDefinition("flow", "Flow", "", true, List.of(step), null, null, null);
+        AccessFlowTarget target = new AccessFlowTarget("target", "Target", flow, "flow", "Flow", "hash",
+                "step", true, List.of());
+        AccessWorkspaceDocument document = new AccessWorkspaceDocument(
+                AccessWorkspace.builder().flowTarget(target).build(), List.of());
+        for (ExportMode mode : List.of(ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS)) {
+            AccessWorkspaceSerializer serializer = new AccessWorkspaceSerializer();
+            AccessWorkspaceDocument restored = serializer.deserialize(serializer.serialize(document, mode));
+            assertEquals(List.of(rule), restored.workspace().flowTargets().get("target")
+                    .flowSnapshot().steps().getFirst().conditionActionRules());
+        }
+    }
+
+    @Test
+    void safeExportRemovesHardcodedSecretsFromRulesOverridesAndCapturedResponses() {
+        AuthProvider provider = new AuthProvider(
+                "provider", "Provider", "", true, "", "", "",
+                List.of(new AuthInjectionRule(
+                        "auth-inject", "Authorization", true, AuthInjectionLocation.HEADER,
+                        "X-Private-Credential", "auth-rule-secret", AuthInjectionMode.OVERRIDE)),
+                List.of(), List.of(), AuthFallbackPolicy.MANUAL_ONLY, AuthRetryPolicy.NO_RETRY);
+        InjectRule injectRule = new InjectRule(
+                "inject", "Static auth", true, InjectRule.Target.REQUEST_HEADER, "X-Flow-Credential",
+                InjectRule.ValueSourceType.STATIC, "", "step-rule-secret",
+                InjectRule.WriteStrategy.OVERWRITE);
+        String captured = Base64.getEncoder().encodeToString(
+                "HTTP/1.1 200 OK\r\nAuthorization: captured-response-secret\r\n\r\n{}"
+                        .getBytes(StandardCharsets.ISO_8859_1));
+        FlowStep step = new FlowStep(
+                "step", "Step", true, "",
+                new StoredRequestTemplate("GET", "https", "example.test", 443, "/", List.of(), ""),
+                List.of(), List.of(injectRule), List.of(), FlowStep.StepErrorStrategy.FAIL_FLOW, captured);
+        FlowDefinition flow = new FlowDefinition("flow", "Flow", "", true, List.of(step), null, null, null);
+        AccessFlowTarget target = new AccessFlowTarget(
+                "target", "Target", flow, "flow", "Flow", "hash", "step", true,
+                List.of(new FlowInjectionOverride(
+                        "override", "Override", true, FlowInjectionOverrideTarget.RULE_ID,
+                        "inject", "override-rule-secret")));
+        AccessTestCase testCase = new AccessTestCase(
+                "case", "Case", "", "flow", "step", SetupConfig.none(), TargetBinding.empty(),
+                ExpectedResult.REVIEW,
+                List.of(new ResponseAssertion(
+                        "assert", "Token assertion", AssertionType.BODY_CONTAINS,
+                        "accessToken", "assertion-secret", true)),
+                true, RunStatus.PENDING, 0L);
+        AccessWorkspace workspace = AccessWorkspace.builder()
+                .authProvider(provider)
+                .flowTarget(target)
+                .testCase(testCase)
+                .build();
+
+        for (ExportMode mode : List.of(ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS)) {
+            String json = serializer.writeJson(serializer.serialize(workspace, List.of(), mode));
+            assertFalse(json.contains("auth-rule-secret"));
+            assertFalse(json.contains("step-rule-secret"));
+            assertFalse(json.contains("override-rule-secret"));
+            assertFalse(json.contains("captured-response-secret"));
+            assertFalse(json.contains("assertion-secret"));
+        }
+
+        String full = serializer.writeJson(serializer.serialize(workspace, List.of(), ExportMode.FULL_EXPORT));
+        assertTrue(full.contains("auth-rule-secret"));
+        assertTrue(full.contains("step-rule-secret"));
+        assertTrue(full.contains("override-rule-secret"));
+        assertTrue(full.contains("assertion-secret"));
+    }
 
     @Test
     void fullExportRoundTripsWorkspaceAndEvidence() {

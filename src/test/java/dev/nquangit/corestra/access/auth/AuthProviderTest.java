@@ -1,6 +1,7 @@
 package dev.nquangit.corestra.access.auth;
 
 import org.junit.jupiter.api.Test;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,9 +43,33 @@ class AuthProviderTest {
         assertEquals(List.of(injectionRule), provider.injectionRules());
         assertEquals(List.of(successRule), provider.successRules());
         assertEquals(List.of(failureRule), provider.failureRules());
+        assertEquals(AuthProvider.DEFAULT_STATE_TTL_SECONDS, provider.stateTtlSeconds());
         assertThrows(UnsupportedOperationException.class, () -> provider.injectionRules().add(injectionRule));
         assertThrows(UnsupportedOperationException.class, () -> provider.successRules().add(successRule));
         assertThrows(UnsupportedOperationException.class, () -> provider.failureRules().add(failureRule));
+    }
+
+    @Test
+    void validatesConfiguredFallbackStateTtl() {
+        AuthProvider provider = new AuthProvider(
+                "provider-1", "Auth", "", true, "login", "", "", List.of(), List.of(), List.of(),
+                AuthFallbackPolicy.LOGIN_ONLY, AuthRetryPolicy.NO_RETRY, 180L);
+        assertEquals(180L, provider.stateTtlSeconds());
+        assertThrows(IllegalArgumentException.class, () -> new AuthProvider(
+                "provider-1", "Auth", "", true, "login", "", "", List.of(), List.of(), List.of(),
+                AuthFallbackPolicy.LOGIN_ONLY, AuthRetryPolicy.NO_RETRY, -1L));
+    }
+
+    @Test
+    void oldJsonWithoutStateTtlUsesCompatibleDefault() throws Exception {
+        String json = """
+                {"id":"provider-1","name":"Auth","description":"","enabled":true,
+                 "loginFlowId":"login","refreshFlowId":"","validateFlowId":"",
+                 "injectionRules":[],"successRules":[],"failureRules":[],
+                 "fallbackPolicy":"LOGIN_ONLY","targetRetryPolicy":"NO_RETRY"}
+                """;
+        AuthProvider provider = new ObjectMapper().readValue(json, AuthProvider.class);
+        assertEquals(AuthProvider.DEFAULT_STATE_TTL_SECONDS, provider.stateTtlSeconds());
     }
 
     @Test

@@ -887,6 +887,7 @@ public final class SingleAccessTestRunner {
                             "",
                             rendered.rendered(),
                             current.writeStrategy(),
+                            current.transformChain(),
                             current.ruleType());
                 }
                 rules.add(current);

@@ -19,6 +19,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -41,6 +43,7 @@ public final class ProxyPipelineHttpClient implements HttpClient {
 
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 30_000;
+    private static final int MAX_HEADER_BYTES = 1024 * 1024;
     private static final byte[] EMPTY_BYTES = new byte[0];
 
     private final Supplier<ProjectSettings> settingsSupplier;
@@ -88,7 +91,15 @@ public final class ProxyPipelineHttpClient implements HttpClient {
             }
             return responseFactory.apply(rawResponse);
         } catch (Exception exception) {
-            throw new IllegalStateException("Proxy pipeline send failed: " + exception.getMessage(), exception);
+            HttpService service = request.httpService();
+            String target = (service.secure() ? "https://" : "http://") + hostHeader(service);
+            String detail = exception.getMessage() == null || exception.getMessage().isBlank()
+                    ? exception.getClass().getSimpleName()
+                    : exception.getMessage();
+            throw new IllegalStateException(
+                    "Proxy pipeline send failed via " + settings.proxyHost() + ":" + settings.proxyPort()
+                            + " to " + target + ": " + detail,
+                    exception);
         }
     }
 
@@ -98,7 +109,7 @@ public final class ProxyPipelineHttpClient implements HttpClient {
             OutputStream output = socket.getOutputStream();
             output.write(requestBytes(request, absoluteUri(request)));
             output.flush();
-            return readFully(socket.getInputStream());
+            return readHttpResponse(socket.getInputStream(), method(request));
         }
     }
 
@@ -108,7 +119,7 @@ public final class ProxyPipelineHttpClient implements HttpClient {
             proxySocket.setSoTimeout(READ_TIMEOUT_MS);
             HttpService service = request.httpService();
             OutputStream proxyOutput = proxySocket.getOutputStream();
-            proxyOutput.write(connectRequest(service).getBytes(StandardCharsets.ISO_8859_1));
+            proxyOutput.write(buildConnectRequest(service).getBytes(StandardCharsets.ISO_8859_1));
             proxyOutput.flush();
 
             String connectResponse = readHeaders(proxySocket.getInputStream());
@@ -121,11 +132,16 @@ public final class ProxyPipelineHttpClient implements HttpClient {
                     proxySocket, service.host(), service.port(), true)) {
                 tlsSocket.setUseClientMode(true);
                 tlsSocket.setSoTimeout(READ_TIMEOUT_MS);
-                tlsSocket.startHandshake();
+                try {
+                    tlsSocket.startHandshake();
+                } catch (IOException exception) {
+                    throw new IOException("TLS handshake after proxy CONNECT failed: "
+                            + exception.getMessage(), exception);
+                }
                 OutputStream tlsOutput = tlsSocket.getOutputStream();
                 tlsOutput.write(requestBytes(request, originFormPath(request)));
                 tlsOutput.flush();
-                return readFully(tlsSocket.getInputStream());
+                return readHttpResponse(tlsSocket.getInputStream(), method(request));
             }
         } finally {
             try {
@@ -171,11 +187,12 @@ public final class ProxyPipelineHttpClient implements HttpClient {
         return combined;
     }
 
-    private static String connectRequest(HttpService service) {
-        String authority = hostHeader(service);
+    static String buildConnectRequest(HttpService service) {
+        String authority = connectAuthority(service);
         return "CONNECT " + authority + " HTTP/1.1\r\n"
                 + "Host: " + authority + "\r\n"
-                + "Connection: close\r\n\r\n";
+                + MARKER_HEADER + ": " + UUID.randomUUID() + "\r\n"
+                + "Proxy-Connection: keep-alive\r\n\r\n";
     }
 
     private static String absoluteUri(HttpRequest request) {
@@ -200,7 +217,19 @@ public final class ProxyPipelineHttpClient implements HttpClient {
     private static String hostHeader(HttpService service) {
         boolean defaultPort = (service.secure() && service.port() == 443)
                 || (!service.secure() && service.port() == 80);
-        return defaultPort ? service.host() : service.host() + ":" + service.port();
+        String host = bracketIpv6Host(service.host());
+        return defaultPort ? host : host + ":" + service.port();
+    }
+
+    private static String connectAuthority(HttpService service) {
+        return bracketIpv6Host(service.host()) + ":" + service.port();
+    }
+
+    private static String bracketIpv6Host(String host) {
+        String normalized = Objects.requireNonNullElse(host, "");
+        return normalized.indexOf(':') >= 0 && !normalized.startsWith("[")
+                ? "[" + normalized + "]"
+                : normalized;
     }
 
     private static String method(HttpRequest request) {
@@ -237,14 +266,30 @@ public final class ProxyPipelineHttpClient implements HttpClient {
         }
     }
 
-    private static String readFully(InputStream input) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] chunk = new byte[8192];
-        int read;
-        while ((read = input.read(chunk)) != -1) {
-            buffer.write(chunk, 0, read);
+    static String readHttpResponse(InputStream input, String requestMethod) throws IOException {
+        String headers = readHeaders(input);
+        int status = statusCode(headers);
+        while (status >= 100 && status < 200 && status != 101) {
+            headers = readHeaders(input);
+            status = statusCode(headers);
         }
-        return buffer.toString(StandardCharsets.ISO_8859_1);
+
+        ByteArrayOutputStream response = new ByteArrayOutputStream();
+        response.write(headers.getBytes(StandardCharsets.ISO_8859_1));
+        if ("HEAD".equalsIgnoreCase(requestMethod)
+                || status == 101 || status == 204 || status == 205 || status == 304) {
+            return response.toString(StandardCharsets.ISO_8859_1);
+        }
+
+        long contentLength = contentLength(headers);
+        if (isChunked(headers)) {
+            copyChunked(input, response);
+        } else if (contentLength >= 0L) {
+            copyExactly(input, response, contentLength);
+        } else {
+            copyUntilClosed(input, response);
+        }
+        return response.toString(StandardCharsets.ISO_8859_1);
     }
 
     private static String readHeaders(InputStream input) throws IOException {
@@ -255,6 +300,9 @@ public final class ProxyPipelineHttpClient implements HttpClient {
         int current;
         while ((current = input.read()) != -1) {
             buffer.write(current);
+            if (buffer.size() > MAX_HEADER_BYTES) {
+                throw new IOException("proxy response headers exceed " + MAX_HEADER_BYTES + " bytes");
+            }
             if (previous3 == '\r' && previous2 == '\n' && previous1 == '\r' && current == '\n') {
                 break;
             }
@@ -262,7 +310,122 @@ public final class ProxyPipelineHttpClient implements HttpClient {
             previous2 = previous1;
             previous1 = current;
         }
-        return buffer.toString(StandardCharsets.ISO_8859_1);
+        String headers = buffer.toString(StandardCharsets.ISO_8859_1);
+        if (!headers.endsWith("\r\n\r\n")) {
+            throw new IOException("incomplete proxy response headers");
+        }
+        return headers;
+    }
+
+    private static long contentLength(String headers) throws IOException {
+        for (String line : headers.split("\\r\\n")) {
+            int colon = line.indexOf(':');
+            if (colon > 0 && line.substring(0, colon).strip().equalsIgnoreCase("Content-Length")) {
+                try {
+                    long length = Long.parseLong(line.substring(colon + 1).strip());
+                    if (length < 0L) {
+                        throw new NumberFormatException("negative");
+                    }
+                    return length;
+                } catch (NumberFormatException exception) {
+                    throw new IOException("invalid proxy response Content-Length", exception);
+                }
+            }
+        }
+        return -1L;
+    }
+
+    private static boolean isChunked(String headers) {
+        for (String line : headers.split("\\r\\n")) {
+            int colon = line.indexOf(':');
+            if (colon > 0 && line.substring(0, colon).strip().equalsIgnoreCase("Transfer-Encoding")) {
+                for (String encoding : line.substring(colon + 1).split(",")) {
+                    if (encoding.strip().equalsIgnoreCase("chunked")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void copyExactly(InputStream input, ByteArrayOutputStream output, long byteCount)
+            throws IOException {
+        byte[] chunk = new byte[8192];
+        long remaining = byteCount;
+        while (remaining > 0L) {
+            int read = input.read(chunk, 0, (int) Math.min(chunk.length, remaining));
+            if (read == -1) {
+                throw new IOException("proxy response ended before its declared Content-Length");
+            }
+            output.write(chunk, 0, read);
+            remaining -= read;
+        }
+    }
+
+    private static void copyChunked(InputStream input, ByteArrayOutputStream output) throws IOException {
+        while (true) {
+            String sizeLine = readLine(input);
+            output.write((sizeLine + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+            String sizeToken = sizeLine.split(";", 2)[0].strip();
+            final long chunkSize;
+            try {
+                chunkSize = Long.parseLong(sizeToken, 16);
+            } catch (NumberFormatException exception) {
+                throw new IOException("invalid chunk size in proxy response", exception);
+            }
+            if (chunkSize < 0L) {
+                throw new IOException("negative chunk size in proxy response");
+            }
+            if (chunkSize == 0L) {
+                String trailer;
+                do {
+                    trailer = readLine(input);
+                    output.write((trailer + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+                } while (!trailer.isEmpty());
+                return;
+            }
+            copyExactly(input, output, chunkSize);
+            byte[] terminator = input.readNBytes(2);
+            if (terminator.length != 2 || terminator[0] != '\r' || terminator[1] != '\n') {
+                throw new IOException("invalid chunk terminator in proxy response");
+            }
+            output.write(terminator);
+        }
+    }
+
+    private static String readLine(InputStream input) throws IOException {
+        ByteArrayOutputStream line = new ByteArrayOutputStream();
+        int previous = -1;
+        int current;
+        while ((current = input.read()) != -1) {
+            if (previous == '\r' && current == '\n') {
+                byte[] bytes = line.toByteArray();
+                return new String(bytes, 0, Math.max(0, bytes.length - 1), StandardCharsets.ISO_8859_1);
+            }
+            line.write(current);
+            previous = current;
+            if (line.size() > MAX_HEADER_BYTES) {
+                throw new IOException("proxy response line exceeds " + MAX_HEADER_BYTES + " bytes");
+            }
+        }
+        throw new IOException("incomplete line in proxy response");
+    }
+
+    private static void copyUntilClosed(InputStream input, ByteArrayOutputStream output) throws IOException {
+        byte[] chunk = new byte[8192];
+        try {
+            int read;
+            while ((read = input.read(chunk)) != -1) {
+                output.write(chunk, 0, read);
+            }
+        } catch (SocketTimeoutException exception) {
+            throw exception;
+        } catch (SocketException exception) {
+            // Some proxy/socket combinations on Windows report an abort/reset instead of EOF
+            // after delivering a close-delimited response. The bytes already received are the
+            // complete response available for this framing mode.
+        }
     }
 
     private static int statusCode(String responseHeaders) throws IOException {

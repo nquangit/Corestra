@@ -1,19 +1,23 @@
 package dev.nquangit.corestra.integration;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import burp.api.montoya.core.ToolType;
-import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.http.handler.HttpRequestToBeSent;
 import burp.api.montoya.http.handler.HttpResponseReceived;
@@ -60,19 +64,26 @@ import dev.nquangit.corestra.http.inject.RequestMutationResult;
  * <p>At most one matching step is processed per request (first match wins).
  * Failures in prerequisite execution never block the live request.
  */
-public final class AutoTriggerHttpHandler implements HttpHandler {
+public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable {
+    static final int DEFAULT_MAX_PENDING_TRIGGERS = 2_048;
+    static final long DEFAULT_PENDING_TTL_MILLIS = 5 * 60_000L;
 
     private final Supplier<List<FlowDefinition>> flowsSupplier;
     private final FlowEngine flowEngine;
     private final ExtractionService extractionService;
     private final InjectionService injectionService;
+    private final Clock clock;
+    private final ExecutorService phase3Executor;
+    private final int maxPendingTriggers;
+    private final long pendingTtlMillis;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     /**
      * Holds the Phase-1 execution context for an in-flight triggered request so that
      * {@link #handleHttpResponseReceived} can combine prerequisite and live responses.
-     * Keyed by {@link #triggerKey(String, String, String, String)}.
+     * Keyed by the Montoya message ID shared by a request and its response.
      */
-    private final ConcurrentHashMap<String, PendingTrigger> pendingTriggers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, PendingTrigger> pendingTriggers = new ConcurrentHashMap<>();
 
     /**
      * Creates an auto-trigger handler.
@@ -87,14 +98,42 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
             FlowEngine flowEngine,
             ExtractionService extractionService,
             InjectionService injectionService) {
+        this(flowsSupplier, flowEngine, extractionService, injectionService, Clock.systemUTC(),
+                Executors.newFixedThreadPool(2, daemonThreadFactory()),
+                DEFAULT_MAX_PENDING_TRIGGERS, DEFAULT_PENDING_TTL_MILLIS);
+    }
+
+    AutoTriggerHttpHandler(
+            Supplier<List<FlowDefinition>> flowsSupplier,
+            FlowEngine flowEngine,
+            ExtractionService extractionService,
+            InjectionService injectionService,
+            Clock clock,
+            ExecutorService phase3Executor,
+            int maxPendingTriggers,
+            long pendingTtlMillis) {
         this.flowsSupplier = Objects.requireNonNull(flowsSupplier);
         this.flowEngine = Objects.requireNonNull(flowEngine);
         this.extractionService = Objects.requireNonNull(extractionService);
         this.injectionService = Objects.requireNonNull(injectionService);
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.phase3Executor = Objects.requireNonNull(phase3Executor, "phase3Executor");
+        if (maxPendingTriggers < 1) {
+            throw new IllegalArgumentException("maxPendingTriggers must be positive");
+        }
+        if (pendingTtlMillis < 1L) {
+            throw new IllegalArgumentException("pendingTtlMillis must be positive");
+        }
+        this.maxPendingTriggers = maxPendingTriggers;
+        this.pendingTtlMillis = pendingTtlMillis;
     }
 
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent req) {
+        if (closed.get()) {
+            return RequestToBeSentAction.continueWith(req);
+        }
+        cleanupExpired();
         if (hasProxyPipelineMarker(req)) {
             return RequestToBeSentAction.continueWith(req.withRemovedHeader(ProxyPipelineHttpClient.MARKER_HEADER));
         }
@@ -124,7 +163,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
                 if (!rule.matches(toolTypeName, host, path, allHeaders, body)) continue;
 
                 try {
-                    HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body, toolTypeName, host, path);
+                    HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body);
                     return RequestToBeSentAction.continueWith(modified);
                 } catch (RuntimeException ignored) {
                     // Never block the live request due to a trigger failure.
@@ -139,6 +178,10 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived responseReceived) {
         try {
+            if (closed.get()) {
+                return ResponseReceivedAction.continueWith(responseReceived);
+            }
+            cleanupExpired();
             if (responseReceived.toolSource().toolType() == ToolType.EXTENSIONS) {
                 return ResponseReceivedAction.continueWith(responseReceived);
             }
@@ -147,94 +190,57 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
             if (hasProxyPipelineMarker(initiating)) {
                 return ResponseReceivedAction.continueWith(responseReceived);
             }
-            String toolTypeName = responseReceived.toolSource().toolType().name();
-            String host = initiating.httpService() != null ? initiating.httpService().host() : "";
-            String method = initiating.method() != null ? initiating.method() : "";
-            String pathAndQuery = initiating.path() != null ? initiating.path() : "";
-            int qIdx = pathAndQuery.indexOf('?');
-            String path = qIdx >= 0 ? pathAndQuery.substring(0, qIdx) : pathAndQuery;
-            List<String> allHeaders = initiating.headers().stream()
-                    .map(h -> h.name() + ": " + h.value())
-                    .collect(Collectors.toList());
-            String reqBody = initiating.bodyToString();
+            PendingTrigger pending = pendingTriggers.remove(responseReceived.messageId());
+            if (pending == null) {
+                return ResponseReceivedAction.continueWith(responseReceived);
+            }
 
-            PendingTrigger pending = pendingTriggers.remove(triggerKey(toolTypeName, host, method, path));
+            // Use the exact flow/step matched before sending, even if request fields or the
+            // workspace changed in flight. Endpoint keys cannot distinguish concurrent scans.
+            FlowDefinition flow = pending.flow;
+            List<FlowStep> steps = flow.steps();
+            FlowStep triggeredStep = steps.get(pending.matchedStepIndex);
+            HttpMessageSnapshot liveResponseSnapshot = new HttpMessageSnapshot(
+                    responseVersion(responseReceived) + " " + responseReceived.statusCode(),
+                    responseReceived.headers().stream()
+                            .map(h -> h.name() + ": " + h.value()).toList(),
+                    responseReceived.bodyToString());
+            ExecutionContext updatedCtx = applyExtractRulesToContext(
+                    triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx);
 
-            for (FlowDefinition flow : flowsSupplier.get()) {
-                if (!flow.enabled()) continue;
-
-                List<FlowStep> steps = flow.steps();
-                FlowStep triggeredStep = null;
-                for (FlowStep s : steps) {
-                    if (!s.enabled()) continue;
-                    StepTriggerRule rule = s.triggerRule();
-                    if (!rule.enabled()) continue;
-                    if (!rule.matches(toolTypeName, host, path, allHeaders, reqBody)) continue;
-                    triggeredStep = s;
-                    break;
-                }
-                if (triggeredStep == null) continue;
-
-                ExecutionContext resolvedCtx = null;
-
-                // Apply the trigger step's extract rules to the live response, then fire Phase 3
-                // with the fully populated context (request-side + response-side variables).
-                if (pending != null && pending.flow.id().equals(flow.id())) {
-                    String statusLine = "HTTP/1.1 " + responseReceived.statusCode();
-                    List<String> responseHeaders = responseReceived.headers().stream()
-                            .map(h -> h.name() + ": " + h.value())
-                            .collect(Collectors.toList());
-                    HttpMessageSnapshot liveResponseSnapshot = new HttpMessageSnapshot(
-                            statusLine, responseHeaders, responseReceived.bodyToString());
-
-                    ExecutionContext updatedCtx = applyExtractRulesToContext(
-                            triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx);
-
-                    resolvedCtx = updatedCtx;
-
-                    if (pending.stopIdx > pending.matchedStepIndex) {
-                        final ExecutionContext phase3Ctx = updatedCtx;
-                        final FlowDefinition phase3Flow = pending.flow;
-                        final List<FlowStep> phase3Steps = phase3Flow.steps();
-                        final int phase3Start = pending.matchedStepIndex + 1;
-                        final int phase3Stop = pending.stopIdx;
-                        CompletableFuture.runAsync(() -> {
-                            try {
-                                runStepRange(phase3Flow, phase3Steps, phase3Start, phase3Stop, phase3Ctx);
-                            } catch (Exception e) {
-                                System.err.println("[Corestra] Auto-trigger Phase 3 failed: " + e.getMessage());
-                            }
-                        });
+            if (pending.stopIdx > pending.matchedStepIndex) {
+                try {
+                    phase3Executor.execute(() -> {
+                    try {
+                        runStepRange(flow, steps, pending.matchedStepIndex + 1, pending.stopIdx, updatedCtx);
+                    } catch (Exception e) {
+                        System.err.println("[Corestra] Auto-trigger Phase 3 failed: " + e.getMessage());
                     }
+                    });
+                } catch (RejectedExecutionException ignored) {
+                    // Extension unload raced this callback; downstream work is intentionally cancelled.
                 }
+            }
 
-                AggregationPlan agg = flow.aggregation();
-                StringBuilder aggregated = new StringBuilder();
-
-                // Append prerequisite responses for steps that opt in.
-                if (pending != null && pending.flow.id().equals(flow.id())) {
-                    for (int idx = 0; idx < Math.min(pending.matchedStepIndex, steps.size()); idx++) {
-                        FlowStep prereq = steps.get(idx);
-                        if (!prereq.includeInAggregation()) continue;
-                        ExecutionContext ctxForHistory = resolvedCtx != null ? resolvedCtx : pending.ctx;
-                        List<StepExecutionRecord> recs = ctxForHistory.stepHistory().get(prereq.id());
-                        if (recs == null || recs.isEmpty()) continue;
-                        StepExecutionRecord rec = recs.get(recs.size() - 1);
-                        appendAggregatedEntry(aggregated, extractBodyFromRaw(rec.receivedResponse()),
-                                rec.responseStatusCode(), agg.mode(), prereq.id());
-                    }
-                }
-
-                // Append the triggered step's live response if it opts in.
-                if (triggeredStep.includeInAggregation()) {
-                    appendAggregatedEntry(aggregated, responseReceived.bodyToString(),
-                            responseReceived.statusCode(), agg.mode(), triggeredStep.id());
-                }
-
-                if (aggregated.length() == 0) break;
-
-                // Return the aggregated content as the live Burp response.
-                // The flow's stored step data (lastResponseRaw, templates) is not modified.
+            AggregationPlan agg = flow.aggregation();
+            if (!agg.enabled() || (!agg.useTriggeredStep() && !triggeredStep.id().equals(agg.finalStepId()))) {
+                return ResponseReceivedAction.continueWith(responseReceived);
+            }
+            StringBuilder aggregated = new StringBuilder();
+            for (int idx = 0; idx < pending.matchedStepIndex; idx++) {
+                FlowStep prereq = steps.get(idx);
+                if (!prereq.includeInAggregation()) continue;
+                List<StepExecutionRecord> recs = updatedCtx.stepHistory().get(prereq.id());
+                if (recs == null || recs.isEmpty()) continue;
+                StepExecutionRecord rec = recs.getLast();
+                appendAggregatedEntry(aggregated, extractBodyFromRaw(rec.receivedResponse()),
+                        rec.responseStatusCode(), agg.mode(), prereq.id());
+            }
+            if (triggeredStep.includeInAggregation()) {
+                appendAggregatedEntry(aggregated, responseReceived.bodyToString(),
+                        responseReceived.statusCode(), agg.mode(), triggeredStep.id());
+            }
+            if (!aggregated.isEmpty()) {
                 return ResponseReceivedAction.continueWith(responseReceived.withBody(aggregated.toString()));
             }
         } catch (Exception ignored) {
@@ -255,10 +261,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
             int matchedIndex,
             HttpRequestToBeSent req,
             List<String> allHeaders,
-            String body,
-            String toolTypeName,
-            String host,
-            String path) {
+            String body) {
 
         FlowStep matchedStep = steps.get(matchedIndex);
         StepTriggerRule rule = matchedStep.triggerRule();
@@ -271,13 +274,9 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
 
         // Build the request snapshot before storing the pending trigger — it is needed later
         // by handleHttpResponseReceived to apply the trigger step's response-side extract rules.
-        String requestLine = req.method() + " " + (req.path() != null ? req.path() : "/") + " HTTP/1.1";
+        String requestLine = req.method() + " " + (req.path() != null ? req.path() : "/")
+                + " " + requestVersion(req);
         HttpMessageSnapshot requestSnapshot = new HttpMessageSnapshot(requestLine, allHeaders, body);
-
-        // Store Phase-1 context so the response handler can complete extraction and fire Phase 3.
-        String method = req.method() != null ? req.method() : "";
-        pendingTriggers.put(triggerKey(toolTypeName, host, method, path),
-                new PendingTrigger(flow, matchedIndex, stopIdx, ctx, requestSnapshot));
 
         // Phase 2: apply the trigger step's extract rules to the live request.
         // Response-side rules will silently fail here (no live response yet); they are
@@ -285,17 +284,61 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
         HttpMessageSnapshot emptyResponse = new HttpMessageSnapshot("", List.of(), "");
         ctx = applyExtractRulesToContext(matchedStep, requestSnapshot, emptyResponse, ctx);
 
-        List<String> headersWithoutHost = allHeaders.stream()
-                .filter(h -> !h.toLowerCase().startsWith("host:"))
-                .collect(Collectors.toList());
-        MutableHttpRequest mutable = new MutableHttpRequest(requestLine, headersWithoutHost, body);
+        MutableHttpRequest mutable = new MutableHttpRequest(requestLine, allHeaders, body);
         RequestMutationResult mutated = injectionService.apply(
                 matchedStep.injectRules(), ctx.variables(), mutable);
 
         // Phase 3 is deferred to handleHttpResponseReceived so that response-extracted variables
         // are available to downstream steps before they execute.
 
-        return rebuildRequest(req, mutated);
+        HttpRequest modified = HttpRequestMutationAdapter.apply(req, mutated);
+        // Publish only after prerequisite execution and request preparation both succeed.
+        storePending(req.messageId(), new PendingTrigger(
+                flow, matchedIndex, stopIdx, ctx, requestSnapshot, clock.millis()));
+        return modified;
+    }
+
+    /**
+     * Clears in-flight state and interrupts queued downstream execution during extension unload.
+     */
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            pendingTriggers.clear();
+            phase3Executor.shutdownNow();
+        }
+    }
+
+    int pendingTriggerCount() {
+        cleanupExpired();
+        return pendingTriggers.size();
+    }
+
+    private synchronized void storePending(int messageId, PendingTrigger pending) {
+        cleanupExpired();
+        while (pendingTriggers.size() >= maxPendingTriggers) {
+            Map.Entry<Integer, PendingTrigger> oldest = pendingTriggers.entrySet().stream()
+                    .min(java.util.Comparator.comparingLong(entry -> entry.getValue().createdAtEpochMillis))
+                    .orElse(null);
+            if (oldest == null) {
+                break;
+            }
+            pendingTriggers.remove(oldest.getKey(), oldest.getValue());
+        }
+        pendingTriggers.put(messageId, pending);
+    }
+
+    private void cleanupExpired() {
+        long cutoff = clock.millis() - pendingTtlMillis;
+        pendingTriggers.entrySet().removeIf(entry -> entry.getValue().createdAtEpochMillis <= cutoff);
+    }
+
+    private static ThreadFactory daemonThreadFactory() {
+        return runnable -> {
+            Thread thread = new Thread(runnable, "corestra-auto-trigger-phase3");
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     /**
@@ -324,11 +367,18 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
                 flow.id(), flow.name(), flow.description(), flow.enabled(),
                 slice, flow.rules(), AggregationPlan.disabled(), flow.triggerConfig());
         ExecutionResult result = flowEngine.execute(sliceFlow, ctx);
+        if (!result.success()) {
+            throw new IllegalStateException("Auto-trigger prerequisite execution failed: " + result.failureMessage());
+        }
+        ctx = result.finalContext().orElse(ctx);
         for (StepExecutionRecord rec : result.stepRecords()) {
             for (Map.Entry<String, String> e : rec.extractedVariables().entrySet()) {
                 ctx = ctx.withVariable(e.getKey(), e.getValue());
             }
-            ctx = ctx.withStepRecord(rec);
+            List<StepExecutionRecord> history = ctx.stepHistory().get(rec.stepId());
+            if (history == null || !history.contains(rec)) {
+                ctx = ctx.withStepRecord(rec);
+            }
         }
         return ctx;
     }
@@ -426,27 +476,14 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
         };
     }
 
-    private static HttpRequest rebuildRequest(HttpRequestToBeSent original, RequestMutationResult mutated) {
-        HttpService service = original.httpService();
-        String host = service != null ? service.host() : "";
-        int port = service != null ? service.port() : 443;
-        boolean secure = service != null && service.secure();
-        boolean defaultPort = (secure && port == 443) || (!secure && port == 80);
-
-        StringBuilder raw = new StringBuilder();
-        raw.append(mutated.requestLine()).append("\r\n");
-        raw.append("Host: ").append(host);
-        if (!defaultPort) raw.append(":").append(port);
-        raw.append("\r\n");
-        for (String h : mutated.headers()) raw.append(h).append("\r\n");
-        raw.append("\r\n");
-        if (mutated.body() != null && !mutated.body().isEmpty()) raw.append(mutated.body());
-
-        return HttpRequest.httpRequest(service, raw.toString());
+    private static String requestVersion(HttpRequest request) {
+        String version = request.httpVersion();
+        return version == null || version.isBlank() ? "HTTP/1.1" : version;
     }
 
-    private static String triggerKey(String toolTypeName, String host, String method, String path) {
-        return toolTypeName + "|" + host + "|" + method + "|" + path;
+    private static String responseVersion(HttpResponseReceived response) {
+        String version = response.httpVersion();
+        return version == null || version.isBlank() ? "HTTP/1.1" : version;
     }
 
     // ── Inner types ───────────────────────────────────────────────────────────
@@ -457,14 +494,17 @@ public final class AutoTriggerHttpHandler implements HttpHandler {
         final int stopIdx;
         final ExecutionContext ctx;
         final HttpMessageSnapshot requestSnapshot;
+        final long createdAtEpochMillis;
 
         PendingTrigger(FlowDefinition flow, int matchedStepIndex, int stopIdx,
-                       ExecutionContext ctx, HttpMessageSnapshot requestSnapshot) {
+                       ExecutionContext ctx, HttpMessageSnapshot requestSnapshot,
+                       long createdAtEpochMillis) {
             this.flow = flow;
             this.matchedStepIndex = matchedStepIndex;
             this.stopIdx = stopIdx;
             this.ctx = ctx;
             this.requestSnapshot = requestSnapshot;
+            this.createdAtEpochMillis = createdAtEpochMillis;
         }
     }
 }

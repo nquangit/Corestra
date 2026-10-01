@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 /**
  * Stores session profiles in Burp project persistence or an in-memory test store.
@@ -142,6 +143,18 @@ public final class SessionProfileRepository {
             saveProfiles(updated);
         }
         return deleted;
+    }
+
+    /**
+     * Atomically updates only the state of an existing profile, preserving its latest configuration.
+     *
+     * @param id profile id
+     * @param update state transformation
+     * @return updated profile, or empty if the profile was deleted
+     */
+    public synchronized Optional<SessionProfile> updateState(String id, UnaryOperator<SessionState> update) {
+        Objects.requireNonNull(update, "update");
+        return profile(id).map(current -> saveProfile(current.withState(update.apply(current.state()))));
     }
 
     private void quarantineInvalidDocument(String serializedDocument) {

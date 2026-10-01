@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.ui.access.AccessTestingPanel;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
 import dev.nquangit.corestra.ui.project.ProjectPanel;
+import dev.nquangit.corestra.ui.project.ParameterDictionaryPanel;
 import dev.nquangit.corestra.ui.session.SessionHandlerPanel;
 
 import javax.swing.JPanel;
@@ -35,6 +36,17 @@ public final class CorestraRootPanel extends JPanel {
             SessionHandlerPanel sessionHandlerPanel,
             AccessTestingPanel accessTestingPanel,
             MontoyaApi api) {
+        this(flowisePanel, projectPanel, sessionHandlerPanel, accessTestingPanel, null, api);
+    }
+
+    /** Creates the root panel with the optional runtime parameter dictionary tab. */
+    public CorestraRootPanel(
+            FlowisePanel flowisePanel,
+            ProjectPanel projectPanel,
+            SessionHandlerPanel sessionHandlerPanel,
+            AccessTestingPanel accessTestingPanel,
+            ParameterDictionaryPanel parameterDictionaryPanel,
+            MontoyaApi api) {
         super(new BorderLayout());
         Objects.requireNonNull(flowisePanel, "flowisePanel");
         Objects.requireNonNull(projectPanel, "projectPanel");
@@ -47,6 +59,9 @@ public final class CorestraRootPanel extends JPanel {
         tabs.addTab("Project", projectPanel);
         tabs.addTab("Session Handler", sessionHandlerPanel);
         tabs.addTab("Access Testing", accessTestingPanel);
+        if (parameterDictionaryPanel != null) {
+            tabs.addTab("Parameters", parameterDictionaryPanel);
+        }
         add(tabs, BorderLayout.CENTER);
 
         ThemeCoordinator.applyTheme(this, api);

@@ -44,13 +44,12 @@ public final class AccessPlanRunner {
         if (!running.compareAndSet(false, true)) {
             throw new IllegalStateException("Access plan is already running");
         }
-        long startedAt = System.currentTimeMillis();
-        AccessWorkspace snapshot = repository.snapshot();
-        List<AccessTestCase> selectedRows = selectedRows(runConfig, snapshot);
-        AccessPlanSummary.Builder summary = new AccessPlanSummary.Builder(selectedRows.size(), startedAt);
-        safeListener.onPlanStarted(selectedRows.size());
-
         try {
+            long startedAt = System.currentTimeMillis();
+            AccessWorkspace snapshot = repository.snapshot();
+            List<AccessTestCase> selectedRows = selectedRows(runConfig, snapshot);
+            AccessPlanSummary.Builder summary = new AccessPlanSummary.Builder(selectedRows.size(), startedAt);
+            safeListener.onPlanStarted(selectedRows.size());
             int index = 0;
             for (AccessTestCase row : selectedRows) {
                 if (stopRequested.get()) {
@@ -85,8 +84,8 @@ public final class AccessPlanRunner {
             }
             return planSummary;
         } finally {
-            running.set(false);
             stopRequested.set(false);
+            running.set(false);
         }
     }
 

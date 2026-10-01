@@ -43,6 +43,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -200,6 +202,52 @@ class ProjectSerializerTest {
         assertEquals("session-secret", restoredProfile.state().values().get("accessToken"));
         assertEquals(1, restoredProfile.injectionRules().size());
         assertEquals(1, restoredProfile.extractionRules().size());
+    }
+
+    @Test
+    void safeProjectExportSanitizesTopLevelFlowsAndSessionInjectionRules() {
+        InjectRule injectRule = new InjectRule(
+                "inject", "Hardcoded auth", true, InjectRule.Target.REQUEST_HEADER, "X-Flow-Credential",
+                InjectRule.ValueSourceType.STATIC, "", "top-flow-secret",
+                InjectRule.WriteStrategy.OVERWRITE);
+        String captured = Base64.getEncoder().encodeToString(
+                "HTTP/1.1 200 OK\r\nSet-Cookie: sessionId=captured-secret\r\n\r\n{}"
+                        .getBytes(StandardCharsets.ISO_8859_1));
+        FlowStep step = new FlowStep(
+                "step", "Step", true, "",
+                new StoredRequestTemplate(
+                        "POST", "https", "example.test", 443, "/",
+                        List.of("Authorization: Bearer request-secret"),
+                        "{\"password\":\"body-secret\"}"),
+                List.of(), List.of(injectRule), List.of(), FlowStep.StepErrorStrategy.FAIL_FLOW, captured);
+        FlowDefinition flow = new FlowDefinition(
+                "flow", "Flow", "", true, List.of(step), FlowRuleSet.empty(),
+                AggregationPlan.disabled(), FlowTriggerConfig.none());
+        SessionProfile session = new SessionProfile(
+                "session-safe", "Session", true, false, SessionScope.custom(List.of()),
+                SessionAuthConfig.defaults(), SessionSchedulerConfig.disabled(), SessionState.empty(),
+                List.of(new SessionInjectionRule(
+                        "session-inject", true, InjectRule.Target.REQUEST_HEADER, "X-Session-Credential",
+                        "session-rule-secret", InjectRule.WriteStrategy.OVERWRITE, List.of())),
+                List.of());
+        ProjectDocument document = new ProjectDocument(
+                1, new ProjectMetadata("Safe", "", "", "", 1L, 1L), ProjectSettings.defaults(),
+                List.of(flow), AccessWorkspace.empty(), List.of(), null, Map.of(), List.of(session));
+
+        for (ExportMode mode : List.of(ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS)) {
+            String json = serializer.serializeProject(document, mode);
+            assertFalse(json.contains("top-flow-secret"));
+            assertFalse(json.contains("request-secret"));
+            assertFalse(json.contains("body-secret"));
+            assertFalse(json.contains("captured-secret"));
+            assertFalse(json.contains("session-rule-secret"));
+        }
+
+        String full = serializer.serializeProject(document, ExportMode.FULL_EXPORT);
+        assertTrue(full.contains("top-flow-secret"));
+        assertTrue(full.contains("request-secret"));
+        assertTrue(full.contains("body-secret"));
+        assertTrue(full.contains("session-rule-secret"));
     }
 
     @Test

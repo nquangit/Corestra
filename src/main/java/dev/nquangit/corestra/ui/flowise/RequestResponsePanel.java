@@ -6,6 +6,8 @@ import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.flow.rule.ExtractRule;
+import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -23,6 +25,7 @@ import java.awt.event.FocusEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Embeds a Burp-native read-only request viewer and read-only response viewer side by side.
@@ -34,6 +37,7 @@ public final class RequestResponsePanel extends JPanel {
 
     private final FlowWorkspaceController workspaceController;
     private final RequestResponseController reqRespController;
+    private final HttpResponseEditor responseEditor;
 
     public RequestResponsePanel(FlowWorkspaceController workspaceController, MontoyaApi api) {
         super(new BorderLayout());
@@ -41,7 +45,7 @@ public final class RequestResponsePanel extends JPanel {
         Objects.requireNonNull(api, "api");
 
         HttpRequestEditor requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        HttpResponseEditor responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
+        responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
 
         reqRespController = new RequestResponseController(workspaceController, requestEditor, responseEditor, api);
 
@@ -65,6 +69,67 @@ public final class RequestResponsePanel extends JPanel {
 
         add(buildStepHeader(), BorderLayout.NORTH);
         add(splitPane, BorderLayout.CENTER);
+    }
+
+    /**
+     * Returns the current response-editor selection translated to an extraction snapshot.
+     * Selections crossing the header/body boundary are rejected.
+     *
+     * @return selection suitable for regex suggestion
+     */
+    public Optional<ResponseRegexSelection> responseRegexSelection() {
+        return responseEditor.selection().flatMap(selection -> {
+            burp.api.montoya.http.message.responses.HttpResponse response = responseEditor.getResponse();
+            if (response == null || selection.contents().length() == 0) {
+                return Optional.empty();
+            }
+            int start = selection.offsets().startIndexInclusive();
+            int end = selection.offsets().endIndexExclusive();
+            int bodyOffset = response.bodyOffset();
+            String raw = response.toByteArray().toString();
+            int firstLineEnd = raw.indexOf("\r\n");
+            int lineDelimiterLength = 2;
+            if (firstLineEnd < 0) {
+                firstLineEnd = raw.indexOf('\n');
+                lineDelimiterLength = 1;
+            }
+            if (firstLineEnd < 0) return Optional.empty();
+            int headerStart = firstLineEnd + lineDelimiterLength;
+            int headerEnd = raw.indexOf("\r\n\r\n", headerStart);
+            if (headerEnd < 0) headerEnd = raw.indexOf("\n\n", headerStart);
+            if (headerEnd < 0) headerEnd = bodyOffset;
+            String rawHeaders = raw.substring(Math.min(headerStart, raw.length()), Math.min(headerEnd, raw.length()));
+            ExtractRule.RegexSource source;
+            int sourceStart;
+            if (end <= bodyOffset) {
+                source = ExtractRule.RegexSource.HEADERS;
+                if (start < headerStart || end > headerEnd) {
+                    return Optional.empty();
+                }
+                sourceStart = response.toByteArray()
+                        .subArray(headerStart, start).toString().length();
+            } else if (start >= bodyOffset) {
+                source = ExtractRule.RegexSource.BODY;
+                sourceStart = response.toByteArray().subArray(bodyOffset, start).toString().length();
+            } else {
+                return Optional.empty();
+            }
+            String selected = selection.contents().toString();
+            HttpMessageSnapshot snapshot = new HttpMessageSnapshot(
+                    raw.substring(0, firstLineEnd),
+                    rawHeaders.isEmpty() ? List.of() : List.of(rawHeaders.split("\\r?\\n", -1)),
+                    response.bodyToString());
+            return Optional.of(new ResponseRegexSelection(
+                    snapshot, source, sourceStart, sourceStart + selected.length()));
+        });
+    }
+
+    /** Selection coordinates resolved against either response headers or body. */
+    public record ResponseRegexSelection(
+            HttpMessageSnapshot snapshot,
+            ExtractRule.RegexSource source,
+            int start,
+            int end) {
     }
 
     // -------------------------------------------------------------------------

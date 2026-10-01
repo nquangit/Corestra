@@ -46,16 +46,19 @@ import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Runs explicitly requested access-test race batches with a synchronization gate.
  */
-public final class RaceRunner {
+public final class RaceRunner implements AutoCloseable {
     private final InMemoryAccessRepository repository;
     private final AccessTargetRequestPreparer requestPreparer;
     private final StoredRequestHttpRequestAdapter requestAdapter;
@@ -68,6 +71,8 @@ public final class RaceRunner {
     private final ScenarioManager scenarioManager;
     private final Clock clock;
     private final ExecutorService executorService;
+    private final java.util.Set<Future<RaceWorkerResult>> activeFutures = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     /**
      * Creates a race runner.
@@ -132,6 +137,9 @@ public final class RaceRunner {
         Map<String, String> runEnv = Map.copyOf(Objects.requireNonNullElse(env, Map.of()));
         Map<String, String> runLegacy = Map.copyOf(Objects.requireNonNullElse(legacy, Map.of()));
         long startedAt = clock.millis();
+        if (closed.get()) {
+            return invalid(runConfig, startedAt, List.of("Race runner is closed"));
+        }
         AccessWorkspace snapshot = repository.snapshot();
         ResolvedTarget target = resolveTarget(runConfig, snapshot, startedAt).orElse(null);
         if (target == null) {
@@ -263,6 +271,18 @@ public final class RaceRunner {
                 Math.max(clock.millis(), startedAt));
     }
 
+    /**
+     * Cancels queued workers and interrupts active workers when the extension unloads.
+     */
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            activeFutures.forEach(future -> future.cancel(true));
+            activeFutures.clear();
+            executorService.shutdownNow();
+        }
+    }
+
     private IterationOutcome runIteration(
             RaceRunConfig config,
             ResolvedTarget target,
@@ -281,8 +301,21 @@ public final class RaceRunner {
         for (int worker = 0; worker < config.concurrency(); worker++) {
             int workerIndex = worker;
             Map<String, String> scenario = workerScenarios.get(worker);
-            futures.add(executorService.submit(workerTask(config, target, authProfile, authProvider,
-                    scenario, env, legacy, mode, iteration, workerIndex, readyLatch, startGate, abort, warnings)));
+            Future<RaceWorkerResult> future;
+            try {
+                future = executorService.submit(workerTask(
+                        config, target, authProfile, authProvider, scenario, env, legacy, mode,
+                        iteration, workerIndex, readyLatch, startGate, abort, warnings));
+            } catch (RejectedExecutionException exception) {
+                abort.set(true);
+                startGate.countDown();
+                cancelFutures(futures);
+                futures.forEach(activeFutures::remove);
+                warnings.add("Race runner closed while workers were being submitted.");
+                return new IterationOutcome(List.of(), List.copyOf(warnings), true, true);
+            }
+            futures.add(future);
+            activeFutures.add(future);
         }
 
         boolean ready;
@@ -302,9 +335,36 @@ public final class RaceRunner {
         startGate.countDown();
 
         ArrayList<RaceWorkerResult> results = new ArrayList<>();
-        for (Future<RaceWorkerResult> future : futures) {
+        long completionStartedNanos = System.nanoTime();
+        long completionTimeoutNanos = TimeUnit.MILLISECONDS.toNanos(config.completionTimeoutMillis());
+        for (int workerIndex = 0; workerIndex < futures.size(); workerIndex++) {
+            Future<RaceWorkerResult> future = futures.get(workerIndex);
             try {
-                results.add(future.get());
+                long remainingNanos = completionTimeoutNanos
+                        - (System.nanoTime() - completionStartedNanos);
+                if (remainingNanos <= 0L) {
+                    throw new TimeoutException("race completion deadline elapsed");
+                }
+                results.add(future.get(remainingNanos, TimeUnit.NANOSECONDS));
+            } catch (TimeoutException exception) {
+                abort.set(true);
+                cancelFutures(futures);
+                warnings.add("Race workers exceeded the completion timeout and were cancelled.");
+                long now = clock.millis();
+                for (int pendingWorker = workerIndex; pendingWorker < futures.size(); pendingWorker++) {
+                    results.add(timedOutWorker(pendingWorker, iteration, now));
+                }
+                break;
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                abort.set(true);
+                cancelFutures(futures);
+                warnings.add("Race coordinator was interrupted; unfinished workers were cancelled.");
+                long now = clock.millis();
+                for (int pendingWorker = workerIndex; pendingWorker < futures.size(); pendingWorker++) {
+                    results.add(timedOutWorker(pendingWorker, iteration, now));
+                }
+                break;
             } catch (Exception exception) {
                 long now = clock.millis();
                 results.add(new RaceWorkerResult(
@@ -319,12 +379,34 @@ public final class RaceRunner {
                         now,
                         now,
                         List.of()));
+            } finally {
+                activeFutures.remove(future);
             }
         }
+        futures.forEach(activeFutures::remove);
         results.sort(Comparator.comparingInt(RaceWorkerResult::workerIndex));
         boolean invalid = !ready || results.stream().anyMatch(result -> result.runStatus() == RunStatus.INVALID);
         boolean failed = results.stream().anyMatch(result -> result.runStatus() == RunStatus.FAILED);
         return new IterationOutcome(results, List.copyOf(warnings), invalid, failed);
+    }
+
+    private void cancelFutures(List<Future<RaceWorkerResult>> futures) {
+        futures.forEach(future -> future.cancel(true));
+    }
+
+    private RaceWorkerResult timedOutWorker(int workerIndex, int iteration, long now) {
+        return new RaceWorkerResult(
+                workerIndex,
+                iteration,
+                RunStatus.FAILED,
+                Verdict.ERROR,
+                0,
+                "Race worker timed out and was cancelled.",
+                "",
+                now,
+                now,
+                now,
+                List.of());
     }
 
     private Callable<RaceWorkerResult> workerTask(

@@ -84,13 +84,14 @@ public final class SessionState {
     }
 
     /**
-     * Returns true when the state has no values or has expired.
+     * Returns true when neither extracted values nor a successful authentication exist,
+     * or when the state has expired. Keep-alive flows need not extract any values.
      *
      * @param nowEpochMillis current timestamp
      * @return true when missing or expired
      */
     public boolean missingOrExpired(long nowEpochMillis) {
-        if (values.isEmpty()) {
+        if (values.isEmpty() && lastAuthenticatedAtEpochMillis == 0L) {
             return true;
         }
         return expiresAtEpochMillis > 0L && expiresAtEpochMillis <= nowEpochMillis;

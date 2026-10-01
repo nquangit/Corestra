@@ -1,7 +1,6 @@
 package dev.nquangit.corestra.integration;
 
 import burp.api.montoya.core.ToolType;
-import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.http.handler.HttpRequestToBeSent;
 import burp.api.montoya.http.handler.HttpResponseReceived;
@@ -68,15 +67,13 @@ public final class CorestraSessionHttpHandler implements HttpHandler {
                 return RequestToBeSentAction.continueWith(requestToBeSent);
             }
 
-            List<String> headersWithoutHost = headerLines(requestToBeSent).stream()
-                    .filter(header -> !header.toLowerCase().startsWith("host:"))
-                    .toList();
             MutableHttpRequest mutable = new MutableHttpRequest(
-                    requestToBeSent.method() + " " + requestPath(requestToBeSent) + " HTTP/1.1",
-                    headersWithoutHost,
+                    requestToBeSent.method() + " " + requestPath(requestToBeSent) + " "
+                            + requestVersion(requestToBeSent),
+                    headerLines(requestToBeSent),
                     requestToBeSent.bodyToString());
             RequestMutationResult mutated = injectionService.apply(rules, java.util.Map.of(), mutable);
-            return RequestToBeSentAction.continueWith(rebuildRequest(requestToBeSent, mutated));
+            return RequestToBeSentAction.continueWith(HttpRequestMutationAdapter.apply(requestToBeSent, mutated));
         } catch (RuntimeException ignored) {
             return RequestToBeSentAction.continueWith(requestToBeSent);
         }
@@ -139,14 +136,14 @@ public final class CorestraSessionHttpHandler implements HttpHandler {
 
     private static HttpMessageSnapshot requestSnapshot(HttpRequest request) {
         return new HttpMessageSnapshot(
-                request.method() + " " + requestPath(request) + " HTTP/1.1",
+                request.method() + " " + requestPath(request) + " " + requestVersion(request),
                 headerLines(request),
                 request.bodyToString());
     }
 
     private static HttpMessageSnapshot responseSnapshot(HttpResponseReceived response) {
         return new HttpMessageSnapshot(
-                "HTTP/1.1 " + response.statusCode(),
+                requestVersion(response) + " " + response.statusCode(),
                 response.headers().stream()
                         .map(header -> header.name() + ": " + header.value())
                         .collect(Collectors.toList()),
@@ -181,27 +178,13 @@ public final class CorestraSessionHttpHandler implements HttpHandler {
         return queryStart >= 0 ? path.substring(0, queryStart) : path;
     }
 
-    private static HttpRequest rebuildRequest(HttpRequest original, RequestMutationResult mutated) {
-        HttpService service = original.httpService();
-        String host = service != null ? service.host() : "";
-        int port = service != null ? service.port() : 443;
-        boolean secure = service != null && service.secure();
-        boolean defaultPort = (secure && port == 443) || (!secure && port == 80);
+    private static String requestVersion(HttpRequest request) {
+        String version = request.httpVersion();
+        return version == null || version.isBlank() ? "HTTP/1.1" : version;
+    }
 
-        StringBuilder raw = new StringBuilder();
-        raw.append(mutated.requestLine()).append("\r\n");
-        raw.append("Host: ").append(host);
-        if (!defaultPort) {
-            raw.append(":").append(port);
-        }
-        raw.append("\r\n");
-        for (String header : mutated.headers()) {
-            raw.append(header).append("\r\n");
-        }
-        raw.append("\r\n");
-        if (mutated.body() != null && !mutated.body().isEmpty()) {
-            raw.append(mutated.body());
-        }
-        return HttpRequest.httpRequest(service, raw.toString());
+    private static String requestVersion(HttpResponseReceived response) {
+        String version = response.httpVersion();
+        return version == null || version.isBlank() ? "HTTP/1.1" : version;
     }
 }

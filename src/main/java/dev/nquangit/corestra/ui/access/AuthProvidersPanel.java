@@ -26,12 +26,16 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.JSpinner;
+import javax.swing.SpinnerNumberModel;
 import javax.swing.ListSelectionModel;
 import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -45,7 +49,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         super(new BorderLayout(8, 8));
         this.controller = controller;
         tableModel = new DefaultTableModel(new Object[]{
-                "Name", "Enabled", "Login Flow", "Refresh Flow", "Validate Flow", "Fallback", "Retry", "Id"}, 0) {
+                "Name", "Enabled", "Login Flow", "Refresh Flow", "Validate Flow", "Fallback", "Retry", "TTL (s)", "Id"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -54,7 +58,13 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         table = new JTable(tableModel);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);
-        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(7));
+        table.setAutoCreateRowSorter(true);
+        table.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) {
+                if (event.getClickCount() == 2) selectedProvider().ifPresent(AuthProvidersPanel.this::showEditor);
+            }
+        });
+        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(8));
 
         add(toolbar(), BorderLayout.NORTH);
         add(new JScrollPane(table), BorderLayout.CENTER);
@@ -72,6 +82,10 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         panel.add(add);
         panel.add(edit);
         panel.add(delete);
+        JLabel hint = new JLabel("Provider = shared login behavior; keep user credentials in Auth Profiles.");
+        hint.setToolTipText("One provider can serve many actors while each profile keeps isolated credentials and auth state.");
+        panel.add(Box.createHorizontalStrut(8));
+        panel.add(hint);
         return panel;
     }
 
@@ -116,7 +130,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             return java.util.Optional.empty();
         }
         int modelRow = table.convertRowIndexToModel(row);
-        String id = (String) tableModel.getValueAt(modelRow, 7);
+        String id = (String) tableModel.getValueAt(modelRow, 8);
         return controller.authProvider(id);
     }
 
@@ -136,6 +150,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     flowLabel(provider.validateFlowId()),
                     provider.fallbackPolicy(),
                     provider.targetRetryPolicy(),
+                    provider.stateTtlSeconds(),
                     provider.id()});
         }
     }
@@ -161,6 +176,8 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         private final JComboBox<FlowOption> validateFlow = new JComboBox<>();
         private final JComboBox<AuthFallbackPolicy> fallbackPolicy = new JComboBox<>(AuthFallbackPolicy.values());
         private final JComboBox<AuthRetryPolicy> targetRetryPolicy = new JComboBox<>(AuthRetryPolicy.values());
+        private final JSpinner stateTtlSeconds = new JSpinner(new SpinnerNumberModel(
+                AuthProvider.DEFAULT_STATE_TTL_SECONDS, 0L, AuthProvider.MAX_STATE_TTL_SECONDS, 30L));
         private final InjectionRulesTablePanel injectionRules;
         private final OutcomeRulesTablePanel successRules;
         private final OutcomeRulesTablePanel failureRules;
@@ -177,6 +194,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     "",
                     AuthFallbackPolicy.MANUAL_ONLY,
                     AuthRetryPolicy.NO_RETRY,
+                    AuthProvider.DEFAULT_STATE_TTL_SECONDS,
                     List.of(),
                     List.of(),
                     List.of())
@@ -190,6 +208,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             selectFlow(validateFlow, initial.validateFlowId());
             fallbackPolicy.setSelectedItem(initial.fallbackPolicy());
             targetRetryPolicy.setSelectedItem(initial.targetRetryPolicy());
+            stateTtlSeconds.setValue(initial.stateTtlSeconds());
             injectionRules = new InjectionRulesTablePanel(initial.injectionRules());
             successRules = new OutcomeRulesTablePanel("Success Rules", initial.successRules(), true);
             failureRules = new OutcomeRulesTablePanel("Failure Rules", initial.failureRules(), false);
@@ -209,6 +228,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     selectedFlowId(validateFlow),
                     selectedFallbackPolicy(),
                     selectedRetryPolicy(),
+                    ((Number) stateTtlSeconds.getValue()).longValue(),
                     injectionRules.rules(),
                     successRules.successRules(),
                     failureRules.failureRules());
@@ -233,9 +253,14 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             fields.add(fallbackPolicy);
             fields.add(new JLabel("Target Retry Policy"));
             fields.add(targetRetryPolicy);
+            JLabel ttlLabel = new JLabel("Auth State TTL (seconds)");
+            ttlLabel.setToolTipText("Fallback reuse period when login/refresh does not extract expiresAt, expiresIn, or expires_in. Set 0 to authenticate every target.");
+            stateTtlSeconds.setToolTipText(ttlLabel.getToolTipText());
+            fields.add(ttlLabel);
+            fields.add(stateTtlSeconds);
 
             JTextArea note = new JTextArea(
-                    "Select flows that already exist in Flowise. Leave a flow as None when the selected policy does not use it.");
+                    "Select flows that already exist in Flowise. TTL prevents repeated login when the server does not return an expiry. An extracted expiresAt/expiresIn value takes priority.");
             note.setEditable(false);
             note.setOpaque(false);
             note.setLineWrap(true);
@@ -351,7 +376,10 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             table = new JTable(model);
             table.setFillsViewportHeight(true);
             table.getColumnModel().getColumn(1)
-                    .setCellEditor(new DefaultCellEditor(new JComboBox<>(AuthInjectionLocation.values())));
+                    .setCellEditor(new DefaultCellEditor(new JComboBox<>(new AuthInjectionLocation[]{
+                            AuthInjectionLocation.HEADER,
+                            AuthInjectionLocation.COOKIE,
+                            AuthInjectionLocation.QUERY})));
             table.getColumnModel().getColumn(4)
                     .setCellEditor(new DefaultCellEditor(new JComboBox<>(AuthInjectionMode.values())));
             table.getColumnModel().removeColumn(table.getColumnModel().getColumn(ID_COLUMN));
@@ -399,6 +427,9 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
             javax.swing.JButton add = StyledButton.neutral("Add Row");
             javax.swing.JButton remove = StyledButton.danger("Remove Row");
+            javax.swing.JButton bearer = StyledButton.neutral("Bearer preset");
+            javax.swing.JButton cookie = StyledButton.neutral("Cookie preset");
+            javax.swing.JButton csrf = StyledButton.neutral("CSRF preset");
             add.addActionListener(event -> model.addRow(new Object[]{
                     true,
                     AuthInjectionLocation.HEADER,
@@ -407,9 +438,23 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     AuthInjectionMode.OVERRIDE,
                     ""}));
             remove.addActionListener(event -> removeSelectedRow());
+            bearer.addActionListener(event -> addPreset(AuthInjectionLocation.HEADER,
+                    "Authorization", "Bearer {{auth.accessToken}}"));
+            cookie.addActionListener(event -> addPreset(AuthInjectionLocation.COOKIE,
+                    "SESSION", "{{auth.sessionId}}"));
+            csrf.addActionListener(event -> addPreset(AuthInjectionLocation.HEADER,
+                    "X-CSRF-Token", "{{auth.csrfToken}}"));
             panel.add(add);
             panel.add(remove);
+            panel.add(Box.createHorizontalStrut(8));
+            panel.add(bearer);
+            panel.add(cookie);
+            panel.add(csrf);
             return panel;
+        }
+
+        private void addPreset(AuthInjectionLocation location, String target, String template) {
+            model.addRow(new Object[]{true, location, target, template, AuthInjectionMode.OVERRIDE, ""});
         }
 
         private void removeSelectedRow() {
@@ -483,7 +528,11 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             table = new JTable(model);
             table.setFillsViewportHeight(true);
             table.getColumnModel().getColumn(1)
-                    .setCellEditor(new DefaultCellEditor(new JComboBox<>(AuthRuleType.values())));
+                    .setCellEditor(new DefaultCellEditor(new JComboBox<>(new AuthRuleType[]{
+                            AuthRuleType.STATUS_CODE,
+                            AuthRuleType.HEADER_EXISTS,
+                            AuthRuleType.BODY_CONTAINS,
+                            AuthRuleType.BODY_NOT_CONTAINS})));
             table.getColumnModel().removeColumn(table.getColumnModel().getColumn(ID_COLUMN));
 
             add(new JScrollPane(table), BorderLayout.CENTER);

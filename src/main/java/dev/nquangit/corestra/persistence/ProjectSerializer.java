@@ -11,7 +11,9 @@ import dev.nquangit.corestra.access.persistence.AccessWorkspaceConfiguration;
 import dev.nquangit.corestra.access.persistence.AccessWorkspaceDocument;
 import dev.nquangit.corestra.access.persistence.AccessWorkspaceSerializer;
 import dev.nquangit.corestra.access.security.ExportMode;
+import dev.nquangit.corestra.access.security.RedactionService;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.session.SessionInjectionRule;
 import dev.nquangit.corestra.session.SessionProfile;
 import dev.nquangit.corestra.session.SessionProfilesDocument;
 import dev.nquangit.corestra.session.SessionState;
@@ -29,6 +31,7 @@ public final class ProjectSerializer {
 
     private final FlowSerializer flowSerializer;
     private final AccessWorkspaceSerializer accessWorkspaceSerializer;
+    private final FlowExportSanitizer flowExportSanitizer;
     private final ObjectMapper objectMapper;
 
     /**
@@ -51,6 +54,7 @@ public final class ProjectSerializer {
             AccessWorkspaceSerializer accessWorkspaceSerializer) {
         this.flowSerializer = Objects.requireNonNull(flowSerializer, "flowSerializer");
         this.accessWorkspaceSerializer = Objects.requireNonNull(accessWorkspaceSerializer, "accessWorkspaceSerializer");
+        this.flowExportSanitizer = new FlowExportSanitizer(new RedactionService());
         this.objectMapper = JsonMapper.builder()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
                 .build();
@@ -80,7 +84,7 @@ public final class ProjectSerializer {
         root.put("schemaVersion", CURRENT_SCHEMA_VERSION);
         root.set("metadata", objectMapper.valueToTree(doc.metadata()));
         root.set("settings", objectMapper.valueToTree(doc.settings()));
-        root.set("flows", flowSerializer.objectMapper().valueToTree(doc.flows()));
+        root.set("flows", flowSerializer.objectMapper().valueToTree(flowsForMode(doc.flows(), exportMode)));
         root.set("access", accessWorkspaceSerializer.serialize(
                 AccessWorkspaceConfiguration.projectState(doc.accessDocument()), exportMode));
         root.set("sessions", objectMapper.valueToTree(
@@ -201,8 +205,34 @@ public final class ProjectSerializer {
 
     private List<SessionProfile> transformSessionProfiles(List<SessionProfile> profiles, boolean excludeSecrets) {
         return SessionProfilesDocument.ensureGeneral(profiles).stream()
-                .map(profile -> profile.withState(transformSessionState(profile.state(), excludeSecrets)))
+                .map(profile -> profile.withConfig(
+                        profile.name(), profile.scope(), profile.authConfig(), profile.scheduler(),
+                        profile.injectionRules().stream()
+                                .map(rule -> transformSessionInjectionRule(rule, excludeSecrets)).toList(),
+                        profile.extractionRules())
+                        .withState(transformSessionState(profile.state(), excludeSecrets)))
                 .toList();
+    }
+
+    private List<FlowDefinition> flowsForMode(List<FlowDefinition> flows, ExportMode exportMode) {
+        return switch (exportMode) {
+            case FULL_EXPORT -> List.copyOf(flows);
+            case SANITIZED_EXPORT -> flows.stream()
+                    .map(flow -> flowExportSanitizer.sanitizeFlow(flow, false)).toList();
+            case EXCLUDE_SECRETS -> flows.stream()
+                    .map(flow -> flowExportSanitizer.sanitizeFlow(flow, true)).toList();
+            case ENCRYPTED_EXPORT -> throw new IllegalArgumentException("Encrypted access export is not implemented");
+        };
+    }
+
+    private SessionInjectionRule transformSessionInjectionRule(
+            SessionInjectionRule rule, boolean excludeSecrets) {
+        return new SessionInjectionRule(
+                rule.id(), rule.enabled(), rule.target(), rule.targetSelector(),
+                flowExportSanitizer.sanitizeConfiguredValue(
+                        rule.targetSelector(), rule.valueTemplate(), excludeSecrets, true),
+                rule.writeStrategy(), rule.allowedToolTypes(),
+                rule.transformChain());
     }
 
     private SessionState transformSessionState(SessionState state, boolean excludeSecrets) {

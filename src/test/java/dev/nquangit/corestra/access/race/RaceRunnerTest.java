@@ -63,6 +63,21 @@ class RaceRunnerTest {
     private static final Clock CLOCK = Clock.fixed(Instant.ofEpochMilli(1000L), ZoneOffset.UTC);
 
     @Test
+    void closingRunnerStopsWorkerExecutor() {
+        InMemoryAccessRepository repository = repository(template("/accounts/{{data.accountId}}",
+                Set.of(new ScopedVariableRef(VariableScope.DATA, "accountId"))), testCase(List.of()));
+        try (Harness harness = harness(repository, new CountingHttpClient(200), false)) {
+            harness.runner.close();
+            harness.runner.close();
+            assertTrue(harness.executor.isShutdown());
+            RaceRunResult result = harness.runner.run(
+                    RaceRunConfig.defaults("case-1"), Map.of(), Map.of(), RenderMode.STRICT);
+            assertEquals(RaceRunStatus.INVALID, result.status());
+            assertTrue(result.warnings().stream().anyMatch(warning -> warning.contains("closed")));
+        }
+    }
+
+    @Test
     void dryRunSendsZeroHttpRequests() {
         InMemoryAccessRepository repository = repository(template("/accounts/{{data.accountId}}",
                 Set.of(new ScopedVariableRef(VariableScope.DATA, "accountId"))), testCase(List.of()));
@@ -99,6 +114,28 @@ class RaceRunnerTest {
             assertTrue(result.workerResults().stream().allMatch(worker -> worker.releasedAtEpochMillis() > 0L));
             assertEquals(1, repository.results().size());
             assertEquals(1, repository.evidence().size());
+        }
+    }
+
+    @Test
+    void completionTimeoutCancelsWorkersInsteadOfBlockingCoordinatorForever() {
+        InMemoryAccessRepository repository = repository(template("/accounts/{{data.accountId}}",
+                Set.of(new ScopedVariableRef(VariableScope.DATA, "accountId"))), testCase(List.of()));
+        BlockingHttpClient httpClient = new BlockingHttpClient();
+        RaceRunConfig config = new RaceRunConfig(
+                "case-1", 2, 1, true, 0L, 0L, 1_000L,
+                RaceScenarioMode.REUSE_SINGLE_SCENARIO, RaceAuthMode.ENSURE_AUTH_BEFORE_GATE,
+                false, false, false, false, 50L);
+
+        try (Harness harness = harness(repository, httpClient, false)) {
+            RaceRunResult result = harness.runner.run(config, Map.of(), Map.of(), RenderMode.STRICT);
+
+            assertEquals(RaceRunStatus.FAILED, result.status());
+            assertEquals(2, result.workerResults().size());
+            assertTrue(result.workerResults().stream()
+                    .allMatch(worker -> worker.reason().contains("timed out")));
+            assertTrue(result.warnings().stream()
+                    .anyMatch(warning -> warning.contains("completion timeout")));
         }
     }
 
@@ -275,7 +312,7 @@ class RaceRunnerTest {
 
     private static Harness harness(
             InMemoryAccessRepository repository,
-            CountingHttpClient httpClient,
+            HttpClient httpClient,
             boolean includeSingleRunner) {
         TemplateRenderer templateRenderer = new TemplateRenderer(new VariableResolver(key -> Optional.empty()));
         AccessRequestTemplateRenderer requestRenderer = new AccessRequestTemplateRenderer(templateRenderer);
@@ -406,6 +443,21 @@ class RaceRunnerTest {
 
         private String request(int index) {
             return requests.get(index);
+        }
+    }
+
+    private static final class BlockingHttpClient implements HttpClient {
+        private final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public HttpResponse send(HttpRequest request) {
+            try {
+                release.await(5, TimeUnit.SECONDS);
+                return response((short) 200, "{}");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("cancelled", exception);
+            }
         }
     }
 

@@ -20,6 +20,7 @@ final class AuthProviderFormModel {
     private final String validateFlowId;
     private final AuthFallbackPolicy fallbackPolicy;
     private final AuthRetryPolicy targetRetryPolicy;
+    private final long stateTtlSeconds;
     private final List<AuthInjectionRule> injectionRules;
     private final List<AuthSuccessRule> successRules;
     private final List<AuthFailureRule> failureRules;
@@ -36,6 +37,24 @@ final class AuthProviderFormModel {
             List<AuthInjectionRule> injectionRules,
             List<AuthSuccessRule> successRules,
             List<AuthFailureRule> failureRules) {
+        this(name, description, enabled, loginFlowId, refreshFlowId, validateFlowId,
+                fallbackPolicy, targetRetryPolicy, AuthProvider.DEFAULT_STATE_TTL_SECONDS,
+                injectionRules, successRules, failureRules);
+    }
+
+    AuthProviderFormModel(
+            String name,
+            String description,
+            boolean enabled,
+            String loginFlowId,
+            String refreshFlowId,
+            String validateFlowId,
+            AuthFallbackPolicy fallbackPolicy,
+            AuthRetryPolicy targetRetryPolicy,
+            long stateTtlSeconds,
+            List<AuthInjectionRule> injectionRules,
+            List<AuthSuccessRule> successRules,
+            List<AuthFailureRule> failureRules) {
         this.name = normalizeRequiredText(name, "name");
         this.description = normalizeOptionalText(description);
         this.enabled = enabled;
@@ -44,6 +63,11 @@ final class AuthProviderFormModel {
         this.validateFlowId = normalizeOptionalText(validateFlowId);
         this.fallbackPolicy = Objects.requireNonNullElse(fallbackPolicy, AuthFallbackPolicy.MANUAL_ONLY);
         this.targetRetryPolicy = Objects.requireNonNullElse(targetRetryPolicy, AuthRetryPolicy.NO_RETRY);
+        if (stateTtlSeconds < 0L || stateTtlSeconds > AuthProvider.MAX_STATE_TTL_SECONDS) {
+            throw new IllegalArgumentException("stateTtlSeconds must be between 0 and "
+                    + AuthProvider.MAX_STATE_TTL_SECONDS);
+        }
+        this.stateTtlSeconds = stateTtlSeconds;
         this.injectionRules = copyList(injectionRules, "injectionRules");
         this.successRules = copyList(successRules, "successRules");
         this.failureRules = copyList(failureRules, "failureRules");
@@ -60,6 +84,7 @@ final class AuthProviderFormModel {
                 provider.validateFlowId(),
                 provider.fallbackPolicy(),
                 provider.targetRetryPolicy(),
+                provider.stateTtlSeconds(),
                 provider.injectionRules(),
                 provider.successRules(),
                 provider.failureRules());
@@ -78,7 +103,8 @@ final class AuthProviderFormModel {
                 successRules,
                 failureRules,
                 fallbackPolicy,
-                targetRetryPolicy);
+                targetRetryPolicy,
+                stateTtlSeconds);
     }
 
     String name() {
@@ -111,6 +137,10 @@ final class AuthProviderFormModel {
 
     AuthRetryPolicy targetRetryPolicy() {
         return targetRetryPolicy;
+    }
+
+    long stateTtlSeconds() {
+        return stateTtlSeconds;
     }
 
     List<AuthInjectionRule> injectionRules() {

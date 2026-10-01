@@ -9,6 +9,7 @@ import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
+import dev.nquangit.corestra.flow.execution.FlowExecutionLog;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.UiTheme;
 
@@ -84,11 +85,12 @@ public final class FlowTabsPanel extends JTabbedPane {
     private final FlowWorkspaceController controller;
     private final MontoyaApi api;
     private final AccessUiController accessController;
+    private final FlowExecutionLog executionLog;
     private final Map<String, FlowWorkspacePanel> panelCache = new LinkedHashMap<>();
     private boolean refreshing = false;
 
     public FlowTabsPanel(FlowWorkspaceController controller, MontoyaApi api) {
-        this(controller, api, null);
+        this(controller, api, null, new FlowExecutionLog());
     }
 
     /**
@@ -102,10 +104,20 @@ public final class FlowTabsPanel extends JTabbedPane {
             FlowWorkspaceController controller,
             MontoyaApi api,
             AccessUiController accessController) {
+        this(controller, api, accessController, new FlowExecutionLog());
+    }
+
+    /** Creates flow tabs with a shared execution timeline. */
+    public FlowTabsPanel(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            AccessUiController accessController,
+            FlowExecutionLog executionLog) {
         super(JTabbedPane.TOP);
         this.controller = Objects.requireNonNull(controller, "controller");
         this.api        = Objects.requireNonNull(api, "api");
         this.accessController = accessController;
+        this.executionLog = Objects.requireNonNull(executionLog, "executionLog");
 
         // Small insets → visible gap between adjacent coloured boxes.
         putClientProperty("JTabbedPane.tabInsets", new Insets(3, 4, 3, 4));
@@ -160,7 +172,8 @@ public final class FlowTabsPanel extends JTabbedPane {
         try {
             List<FlowDefinition> flows = controller.flows();
             for (FlowDefinition flow : flows) {
-                panelCache.computeIfAbsent(flow.id(), id -> new FlowWorkspacePanel(controller, api, accessController));
+                panelCache.computeIfAbsent(flow.id(), id ->
+                        new FlowWorkspacePanel(controller, api, accessController, executionLog));
             }
             panelCache.keySet().retainAll(flows.stream().map(FlowDefinition::id).toList());
 

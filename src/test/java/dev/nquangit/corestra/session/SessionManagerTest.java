@@ -241,6 +241,44 @@ class SessionManagerTest {
         assertFalse(SessionGuard.isActive(), "guard must be inactive after forceAuthenticate");
     }
 
+    @Test
+    void staleResponseMergesIntoLatestStateWithoutUndoingProfileEdits() {
+        SessionProfileRepository repository = new SessionProfileRepository();
+        SessionProfile stale = generalWithHeaderExtraction();
+        repository.saveProfile(stale);
+        SessionManager manager = manager(repository);
+        SessionProfile latest = stale.withEnabled(false).withState(
+                new SessionState(Map.of("refreshToken", "new-refresh"), 900L, 9000L, 900L));
+        repository.saveProfile(latest);
+
+        manager.applyExtractionRules(stale, context("PROXY", true, "api.example"),
+                requestSnapshot(), responseSnapshot("new-access"));
+
+        SessionProfile saved = repository.profile(stale.id()).orElseThrow();
+        assertFalse(saved.enabled());
+        assertEquals("new-refresh", saved.state().values().get("refreshToken"));
+        assertEquals("new-access", saved.state().values().get("accessToken"));
+        assertEquals(900L, saved.state().lastAuthenticatedAtEpochMillis());
+        assertEquals(9000L, saved.state().expiresAtEpochMillis());
+    }
+
+    @Test
+    void lateResponseDoesNotRecreateDeletedProfile() {
+        SessionProfileRepository repository = new SessionProfileRepository();
+        SessionProfile base = generalWithHeaderExtraction();
+        SessionProfile profile = new SessionProfile("custom", "Custom", true, false,
+                base.scope(), base.authConfig(), base.scheduler(), base.state(),
+                base.injectionRules(), base.extractionRules());
+        repository.saveProfile(profile);
+        SessionManager manager = manager(repository);
+        repository.deleteProfile(profile.id());
+
+        manager.applyExtractionRules(profile, context("PROXY", true, "api.example"),
+                requestSnapshot(), responseSnapshot("late-token"));
+
+        assertTrue(repository.profile(profile.id()).isEmpty());
+    }
+
     private static SessionManager managerWithProfiles(List<SessionProfile> profiles) {
         SessionProfileRepository repository = new SessionProfileRepository();
         repository.saveProfiles(profiles);

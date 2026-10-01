@@ -61,6 +61,26 @@ class AuthManagerTest {
     }
 
     @Test
+    void relativeExpiryAndProviderFallbackTtlPreventPerTargetLogin() {
+        InMemoryAccessRepository relativeRepository = repository(AuthFallbackPolicy.LOGIN_ONLY);
+        RecordingRunner relativeRunner = new RecordingRunner()
+                .then(AuthFlowPurpose.LOGIN, success("accessToken", "token", "expires_in", "60"));
+        AuthEnsureResult relative = manager(relativeRepository, relativeRunner)
+                .ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT);
+        assertEquals(61_000L, relative.updatedProfile().orElseThrow().state().expiresAtEpochMillis());
+
+        InMemoryAccessRepository fallbackRepository = repository(AuthFallbackPolicy.LOGIN_ONLY);
+        RecordingRunner fallbackRunner = new RecordingRunner()
+                .then(AuthFlowPurpose.LOGIN, success("accessToken", "token"));
+        AuthManager fallbackManager = manager(fallbackRepository, fallbackRunner);
+        AuthEnsureResult first = fallbackManager.ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT);
+        AuthEnsureResult second = fallbackManager.ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT);
+        assertEquals(301_000L, first.updatedProfile().orElseThrow().state().expiresAtEpochMillis());
+        assertEquals(AuthEnsureStatus.VALID, second.status());
+        assertEquals(1, fallbackRunner.count(AuthFlowPurpose.LOGIN));
+    }
+
+    @Test
     void refreshThenLoginRefreshSuccessSkipsLogin() {
         InMemoryAccessRepository repository = repository(AuthFallbackPolicy.REFRESH_THEN_LOGIN);
         RecordingRunner runner = new RecordingRunner()

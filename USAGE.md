@@ -4,6 +4,8 @@ Corestra is a Burp Suite extension for building reusable request flows and acces
 
 This guide explains how to install the extension, configure flows, build Access Testing artifacts, run tests safely, and export evidence.
 
+For a complete actor-authentication walkthrough, see [Access Testing setup](guides/ACCESS_TESTING.md). Ready-to-copy cookie, bearer, CSRF, API-key, refresh, and anonymous-user configurations are in [Auth recipes](guides/AUTH_RECIPES.md).
+
 ## 1. Prerequisites
 
 - Burp Suite with Montoya extension support.
@@ -92,6 +94,9 @@ Add a step from Burp:
 Add extract rules:
 
 - Use extract rules when a response or request contains a value needed later.
+- To generate a response regex, select the exact value in the native response editor before opening the extract-rule dialog, choose **Regex**, then click **Suggest from response selection**. Corestra chooses headers or body from the selection offset, creates capture group `1`, and verifies the match count against the stored response.
+- For **Regex**, choose whether to search the body, the start line and headers, or the full HTTP message. Capture group `0` returns the full match; positive numbers return a capturing group. **Test regex** runs the rule against the step's stored request or response and shows the matched value or the exact failure.
+- Optional transforms run in order after extraction. Put one operation per line, for example `trim`, `substring:0:16`, `stripPrefix:Bearer`, or `base64Decode`.
 - Common examples:
   - Extract `accessToken` from login JSON into `auth.accessToken`.
   - Extract `confirmToken` from a setup response into `scenario.confirmToken`.
@@ -100,12 +105,22 @@ Add extract rules:
 Add inject rules:
 
 - Use inject rules when a later request needs a value from an earlier step.
+- For a variable-based Flowise inject rule, choose from the enabled extractors on earlier enabled steps. The selector shows the variable key together with its source step and extractor. Custom runtime keys and existing saved keys remain editable.
+- Click **Suggest** above the injection-rule table to scan the current request for header, cookie, query, form, and JSON field names matching earlier extractor variables. Review the suggestions and select only the rules to add.
+- Session Handler value-template cells offer `{{session.key}}` choices from the profile's enabled extraction rules.
+- Optional transforms run after resolving the variable or static value and before writing it into the request. This is useful for adding/removing prefixes, slicing a value, changing case, URL/Base64 encoding, or regex replacement.
 - Common examples:
   - Inject `{{auth.accessToken}}` into the `Authorization` header.
   - Inject `{{scenario.confirmToken}}` into a JSON body.
   - Inject `{{data.accountId}}` into a request path or body.
 
+Supported value transforms are `trim`, `lowercase`, `uppercase`, `urlDecode`, `urlEncode`, `base64Decode`, `base64Encode`, `substring:START[:END]`, `prefix:TEXT`, `suffix:TEXT`, `stripPrefix:TEXT`, `stripSuffix:TEXT`, and `replaceRegex:PATTERN=>REPLACEMENT`.
+
 Keep flows small and purpose-specific. It is usually better to have separate login, refresh, setup, target, post-check, and teardown flows than one large flow that does everything.
+
+The **Flow Log** sub-tab keeps the newest 1,000 step exchanges in memory. It is searchable and opens the selected request and response in Burp-native viewers. The log is cleared when the extension unloads and can also be cleared manually.
+
+The root **Parameters** tab passively builds a runtime parameter dictionary from Burp traffic. Collection is restricted to Burp scope by default and ignores extension-origin traffic. Example values are disabled by default; when enabled, they remain in memory and keys recognized as sensitive are stored as `<redacted>`. The dictionary is bounded to 5,000 scoped entries and can be filtered or cleared at any time.
 
 ## 6. Scoped Variables
 
@@ -146,8 +161,9 @@ When adding or editing a provider:
 5. Select the **Validate Flow** from the dropdown if Corestra should check auth state before refreshing or logging in.
 6. Choose a fallback policy.
 7. Choose a target retry policy.
-8. Configure injection rules.
-9. Configure success and failure rules.
+8. Set **Auth State TTL**. This fallback lifetime prevents login from running for every target when the server does not return expiry metadata. Extracted `expiresAt`, `expiresIn`, or `expires_in` takes priority.
+9. Configure injection rules. Bearer, Cookie, and CSRF presets add the common rule shapes; review their variable and cookie/header names.
+10. Configure success and failure rules.
 
 The Login, Refresh, and Validate controls list flows already created in Flowise. Use **None** when a policy does not need that flow.
 
@@ -159,6 +175,10 @@ Typical provider setup:
 - Injection rule: inject `Bearer {{auth.accessToken}}` into the `Authorization` header.
 - Success rule: status code is 200, or body contains a success marker.
 - Failure rule: status code is 401 or 403, or body contains an auth error code.
+
+Provider injection currently supports headers, individual cookies, and query parameters. Put auth values required in a JSON/form body or path directly in an Access Template as `{{auth.variableName}}`, or use a Flow Target with Flowise injection rules.
+
+Use `403` as an auth failure signal only when the application truly uses it for expired authentication. If `403` means a correct authorization denial, adding it as an auth failure rule can cause an unnecessary refresh/login and retry.
 
 Do not store real production credentials in shared exports. Use sanitized export when sharing projects.
 
@@ -178,8 +198,9 @@ For each profile:
 
 1. Select a provider, or use manual auth.
 2. Set the role label.
-3. Add credentials or auth state only when needed.
-4. Keep profiles enabled only when they should be considered by matrix generation and plan runs.
+3. Put per-user login inputs such as username, password, device ID, or login hash in **Credentials**. Auth flows read them as `credentials.username`, `credentials.password`, and similar keys.
+4. Use **Auth Variables**, **Headers**, and **Cookies** for existing cached/manual auth state. Editing a profile preserves its credentials and cached expiry.
+5. Keep profiles enabled only when they should be considered by matrix generation and plan runs.
 
 Role labels are used by matrix generation strategies such as owner-vs-others, maker-checker, cross-role, cross-tenant, and cross-branch.
 
@@ -427,6 +448,8 @@ Use Race Run only for authorized testing of race-condition hypotheses.
 
 Race runs can send multiple target requests with configurable concurrency. Use dry-run first, configure teardown where needed, and avoid production systems unless explicitly authorized.
 
+Each race batch has a worker-completion deadline. Workers that do not finish before the deadline are cancelled and reported as failed, so a stalled HTTP request cannot block the race coordinator indefinitely.
+
 ## 21. Results and Evidence
 
 The Results panel shows:
@@ -471,6 +494,12 @@ Sanitized export redacts:
 - sensitive data-profile keys
 - Authorization and Cookie headers
 - common token fields in bodies and evidence
+- hardcoded values in auth/session injection rules, flow overrides, and assertions when their target is sensitive
+- Flowise and Access flow request snapshots
+
+Captured step responses are omitted from sanitized and exclude-secrets project exports because they can contain arbitrary application secrets. Placeholder templates such as `Bearer {{auth.accessToken}}` are retained so an imported sanitized project remains configurable. Full export retains raw request/response and configured values and must be handled as sensitive data.
+
+Access Testing sends actor-prepared authentication directly through the selected project transport. Project-wide Session Handler rules are not applied again to Access auth, setup, target, post-check, race, or teardown requests, which prevents an overlapping session profile from replacing the selected actor's credentials.
 
 Use full export only inside trusted storage or when the recipient is authorized to receive secrets.
 
@@ -493,6 +522,13 @@ Auth retry does not happen:
 - Confirm the Auth Profile uses a non-manual provider.
 - Confirm failure rules match the target failure response.
 - Confirm login or refresh flow is selected and enabled.
+
+Proxy Pipeline reports a connection failure:
+
+- Confirm **Project > Settings > Proxy host/port** points to an active Burp Proxy listener. The default is `127.0.0.1:8080`.
+- For HTTPS targets, Corestra opens an HTTP CONNECT tunnel and then negotiates TLS through Burp. Current builds keep that CONNECT socket open and mark the CONNECT request so Corestra's own Session Handler/auto-trigger rules cannot process it recursively.
+- The error includes both the configured listener and target authority. A connection-refused error indicates the listener address, while a CONNECT status or TLS-handshake error occurs after reaching the listener.
+- Hover over the failed-run summary to see the complete error when the label is wider than the available panel space.
 
 Unexpected ALLOW or DENY verdict:
 

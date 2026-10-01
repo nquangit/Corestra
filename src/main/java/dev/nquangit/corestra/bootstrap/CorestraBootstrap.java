@@ -8,10 +8,14 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
+import dev.nquangit.corestra.flow.execution.FlowExecutionLog;
 import dev.nquangit.corestra.flow.execution.ThreadSleeper;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.inject.InjectionService;
+import dev.nquangit.corestra.http.discovery.ParameterDictionary;
+import dev.nquangit.corestra.http.discovery.ParameterDiscoveryHandler;
 import dev.nquangit.corestra.integration.AutoTriggerHttpHandler;
+import dev.nquangit.corestra.integration.ActorIsolatedHttpClient;
 import dev.nquangit.corestra.integration.CorestraSessionHttpHandler;
 import dev.nquangit.corestra.integration.CorestraSessionHandlingAction;
 import dev.nquangit.corestra.integration.HttpClient;
@@ -56,6 +60,7 @@ import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
 import dev.nquangit.corestra.ui.project.ProjectPanel;
+import dev.nquangit.corestra.ui.project.ParameterDictionaryPanel;
 import dev.nquangit.corestra.ui.session.SessionHandlerPanel;
 
 import java.time.Clock;
@@ -94,6 +99,7 @@ public final class CorestraBootstrap {
         AtomicReference<SessionManager> sessionManagerRef = new AtomicReference<>();
         SessionAwareHttpClient sessionAwareHttpClient = new SessionAwareHttpClient(
                 routingHttpClient, sessionManagerRef::get, injectionService);
+        HttpClient actorIsolatedHttpClient = new ActorIsolatedHttpClient(routingHttpClient);
 
         FlowEngine flowEngine = new FlowEngine(
                 extractionService,
@@ -103,6 +109,21 @@ public final class CorestraBootstrap {
                         .filter(flow -> flow.id().equals(flowId))
                         .findFirst(),
                 new ThreadSleeper());
+
+        // Access Testing owns actor authentication and must never inherit the project-wide
+        // Session Handler profile. Use the undecorated transport for its auth/setup/target/
+        // teardown paths so an overlapping session scope cannot overwrite the selected actor.
+        FlowEngine accessFlowEngine = new FlowEngine(
+                extractionService,
+                injectionService,
+                actorIsolatedHttpClient,
+                flowId -> flowRepository.loadAll().stream()
+                        .filter(flow -> flow.id().equals(flowId))
+                        .findFirst(),
+                new ThreadSleeper());
+        FlowExecutionLog executionLog = new FlowExecutionLog();
+        flowEngine.addExecutionListener(executionLog::record);
+        accessFlowEngine.addExecutionListener(executionLog::record);
 
         ServiceRegistry registry = new ServiceRegistry(api, flowRepository, flowEngine);
 
@@ -135,13 +156,13 @@ public final class CorestraBootstrap {
         Clock authClock = Clock.systemUTC();
         AuthManager authManager = new AuthManager(
                 accessRepository,
-                new AuthFlowExecutor(flowRepository, flowEngine, authClock),
+                new AuthFlowExecutor(flowRepository, accessFlowEngine, authClock),
                 new AuthRuleEvaluator(),
                 authClock);
         ScenarioManager scenarioManager = new ScenarioManager(
                 accessRepository,
                 flowRepository,
-                new ScenarioSetupFlowRunner(flowEngine, authClock),
+                new ScenarioSetupFlowRunner(accessFlowEngine, authClock),
                 authManager,
                 new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
                 authClock);
@@ -151,7 +172,7 @@ public final class CorestraBootstrap {
                 flowRepository::loadAll,
                 extractionService,
                 injectionService,
-                sessionAwareHttpClient,
+                actorIsolatedHttpClient,
                 requestAdapter,
                 redactionService,
                 authClock);
@@ -163,7 +184,7 @@ public final class CorestraBootstrap {
         SingleAccessTestRunner accessRunner = new SingleAccessTestRunner(
                 accessRequestTemplateRenderer,
                 accessStoreFactory,
-                sessionAwareHttpClient,
+                actorIsolatedHttpClient,
                 new BasicResultEvaluator(),
                 redactionService,
                 new ManualAuthApplier(accessTemplateRenderer),
@@ -177,7 +198,7 @@ public final class CorestraBootstrap {
                 accessRepository,
                 raceRequestPreparer,
                 requestAdapter,
-                sessionAwareHttpClient,
+                actorIsolatedHttpClient,
                 new BasicResultEvaluator(),
                 redactionService,
                 new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
@@ -187,6 +208,7 @@ public final class CorestraBootstrap {
                 authClock,
                 java.util.concurrent.Executors.newFixedThreadPool(
                         dev.nquangit.corestra.access.race.RaceRunConfig.MAX_CONCURRENCY));
+        registry.registerCloseable(raceRunner);
         AccessUiController accessUiController = new AccessUiController(
                 accessRepository,
                 new dev.nquangit.corestra.access.id.UuidAccessIdGenerator(),
@@ -197,15 +219,21 @@ public final class CorestraBootstrap {
                 flowRepository::loadAll,
                 raceRunner);
         AccessTestingPanel accessTestingPanel = new AccessTestingPanel(accessUiController);
-        FlowisePanel flowisePanel = new FlowisePanel(controller, api, accessUiController);
+        FlowisePanel flowisePanel = new FlowisePanel(controller, api, accessUiController, executionLog);
         SessionHandlerPanel sessionHandlerPanel = new SessionHandlerPanel(sessionManager, flowRepository::loadAll);
         ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer,
                 settingsRepo, accessRepository, sessionProfileRepository, () -> {
                     accessTestingPanel.refreshUi();
                     sessionHandlerPanel.refreshProfiles();
                 });
+        ParameterDictionary parameterDictionary = new ParameterDictionary();
+        ParameterDiscoveryHandler parameterDiscoveryHandler =
+                new ParameterDiscoveryHandler(parameterDictionary, redactionService);
+        ParameterDictionaryPanel parameterDictionaryPanel =
+                new ParameterDictionaryPanel(parameterDictionary, parameterDiscoveryHandler);
         CorestraRootPanel rootPanel = new CorestraRootPanel(
-                flowisePanel, projectPanel, sessionHandlerPanel, accessTestingPanel, api);
+                flowisePanel, projectPanel, sessionHandlerPanel, accessTestingPanel,
+                parameterDictionaryPanel, api);
 
         api.userInterface().registerSuiteTab("Corestra", rootPanel);
         api.userInterface().registerContextMenuItemsProvider(
@@ -219,9 +247,15 @@ public final class CorestraBootstrap {
         // Project-level Session Handler: scoped extraction/injection for live Burp/Corestra traffic.
         api.http().registerHttpHandler(new CorestraSessionHttpHandler(sessionManager, injectionService));
 
+        // Observe the pipeline marker before AutoTrigger removes it from requests reaching Burp.
+        // This keeps extension-origin proxy traffic out of the passive parameter dictionary.
+        api.http().registerHttpHandler(parameterDiscoveryHandler);
+
         // Auto-trigger: per-step trigger rules inject flow context into matching live requests.
-        api.http().registerHttpHandler(new AutoTriggerHttpHandler(
-                controller::flows, flowEngine, extractionService, injectionService));
+        AutoTriggerHttpHandler autoTriggerHttpHandler = new AutoTriggerHttpHandler(
+                controller::flows, flowEngine, extractionService, injectionService);
+        registry.registerCloseable(autoTriggerHttpHandler);
+        api.http().registerHttpHandler(autoTriggerHttpHandler);
 
         return registry;
     }

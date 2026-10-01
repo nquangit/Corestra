@@ -5,6 +5,8 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Describes how a flow step should write a value into a request before execution.
@@ -21,6 +23,7 @@ public final class InjectRule {
     private final String valueSourceKey;
     private final String staticValue;
     private final WriteStrategy writeStrategy;
+    private final List<String> transformChain;
 
     /**
      * Creates an injection rule.
@@ -46,6 +49,7 @@ public final class InjectRule {
             @JsonProperty("valueSourceKey") String valueSourceKey,
             @JsonProperty("staticValue") String staticValue,
             @JsonProperty("writeStrategy") WriteStrategy writeStrategy,
+            @JsonProperty("transformChain") List<String> transformChain,
             @JsonProperty("ruleType") RuleType ruleType) {
         this.ruleType = validateRuleType(ruleType, RuleType.INJECT);
         this.id = normalizeRequiredText(id, "id");
@@ -58,6 +62,7 @@ public final class InjectRule {
         this.valueSourceKey = normalizeValueSourceKey(valueSourceType, valueSourceKey);
         this.staticValue = valueSourceType == ValueSourceType.STATIC ? Objects.requireNonNullElse(staticValue, "") : "";
         this.writeStrategy = Objects.requireNonNullElse(writeStrategy, WriteStrategy.OVERWRITE);
+        this.transformChain = normalizeStringList(transformChain);
     }
 
     /**
@@ -83,7 +88,37 @@ public final class InjectRule {
             String valueSourceKey,
             String staticValue,
             WriteStrategy writeStrategy) {
-        this(id, name, enabled, target, targetSelector, valueSourceType, valueSourceKey, staticValue, writeStrategy, RuleType.INJECT);
+        this(id, name, enabled, target, targetSelector, valueSourceType, valueSourceKey,
+                staticValue, writeStrategy, List.of(), RuleType.INJECT);
+    }
+
+    /**
+     * Creates an injection rule with an ordered transform chain.
+     *
+     * @param id stable rule identifier
+     * @param name display name
+     * @param enabled whether the rule is enabled
+     * @param target request target
+     * @param targetSelector selector inside the target
+     * @param valueSourceType source type
+     * @param valueSourceKey context variable key
+     * @param staticValue inline static value
+     * @param writeStrategy write strategy
+     * @param transformChain transforms applied before injection
+     */
+    public InjectRule(
+            String id,
+            String name,
+            boolean enabled,
+            Target target,
+            String targetSelector,
+            ValueSourceType valueSourceType,
+            String valueSourceKey,
+            String staticValue,
+            WriteStrategy writeStrategy,
+            List<String> transformChain) {
+        this(id, name, enabled, target, targetSelector, valueSourceType, valueSourceKey,
+                staticValue, writeStrategy, transformChain, RuleType.INJECT);
     }
 
     /**
@@ -177,6 +212,15 @@ public final class InjectRule {
     }
 
     /**
+     * Returns transforms applied to the resolved value before injection.
+     *
+     * @return immutable transform chain
+     */
+    public List<String> transformChain() {
+        return transformChain;
+    }
+
+    /**
      * Compares this injection rule to another object.
      *
      * @param other the candidate object
@@ -199,7 +243,8 @@ public final class InjectRule {
                 && valueSourceType == that.valueSourceType
                 && Objects.equals(valueSourceKey, that.valueSourceKey)
                 && Objects.equals(staticValue, that.staticValue)
-                && writeStrategy == that.writeStrategy;
+                && writeStrategy == that.writeStrategy
+                && Objects.equals(transformChain, that.transformChain);
     }
 
     /**
@@ -209,7 +254,8 @@ public final class InjectRule {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(ruleType, id, name, enabled, target, targetSelector, valueSourceType, valueSourceKey, staticValue, writeStrategy);
+        return Objects.hash(ruleType, id, name, enabled, target, targetSelector, valueSourceType,
+                valueSourceKey, staticValue, writeStrategy, transformChain);
     }
 
     /**
@@ -230,6 +276,7 @@ public final class InjectRule {
                 ", valueSourceKey='" + valueSourceKey + '\'' +
                 ", staticValue='" + staticValue + '\'' +
                 ", writeStrategy=" + writeStrategy +
+                ", transformChain=" + transformChain +
                 '}';
     }
 
@@ -362,5 +409,18 @@ public final class InjectRule {
             return "";
         }
         return normalizeRequiredText(valueSourceKey, "valueSourceKey");
+    }
+
+    private static List<String> normalizeStringList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        ArrayList<String> normalized = new ArrayList<>();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                normalized.add(value.stripLeading());
+            }
+        }
+        return List.copyOf(normalized);
     }
 }

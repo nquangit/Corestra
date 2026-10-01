@@ -69,8 +69,9 @@ import java.util.function.Supplier;
  */
 public final class SessionHandlerPanel extends JPanel {
     private static final String[] COMMON_TOOL_TYPES = {"PROXY", "REPEATER", "SCANNER", "INTRUDER", "EXTENSIONS"};
-    private static final int INJECTION_TOOLS_COLUMN = 5;
-    private static final int EXTRACTION_TOOLS_COLUMN = 5;
+    private static final int INJECTION_TOOLS_COLUMN = 6;
+    private static final int INJECTION_VALUE_COLUMN = 3;
+    private static final int EXTRACTION_TOOLS_COLUMN = 8;
     private static final DateTimeFormatter STATE_UPDATED_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
 
@@ -89,9 +90,10 @@ public final class SessionHandlerPanel extends JPanel {
     private final JCheckBox revealStateCheck = new JCheckBox("Reveal values");
     private final DefaultTableModel criteriaModel = editableModel("Type", "Selector", "Pattern");
     private final DefaultTableModel injectionModel = editableModel(
-            "Enabled", "Target", "Selector", "Value Template", "Write Strategy", "Tools");
+            "Enabled", "Target", "Selector", "Value Template", "Write Strategy", "Transforms (→)", "Tools");
     private final DefaultTableModel extractionModel = editableModel(
-            "Enabled", "Source", "Extractor", "Selector", "Target Key", "Tools");
+            "Enabled", "Source", "Extractor", "Selector", "Regex Input", "Group",
+            "Target Key", "Transforms (→)", "Tools");
     private final DefaultTableModel stateModel = nonEditableModel("Key", "Value", "Updated");
     private final JTable criteriaTable = new JTable(criteriaModel);
     private final JTable injectionTable = new JTable(injectionModel);
@@ -141,10 +143,14 @@ public final class SessionHandlerPanel extends JPanel {
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(InjectRule.Target.values())));
         injectionTable.getColumnModel().getColumn(4)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(InjectRule.WriteStrategy.values())));
+        injectionTable.getColumnModel().getColumn(INJECTION_VALUE_COLUMN)
+                .setCellEditor(new SessionVariableTemplateCellEditor(extractionModel));
         extractionTable.getColumnModel().getColumn(1)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.SourceSide.values())));
         extractionTable.getColumnModel().getColumn(2)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.ExtractorType.values())));
+        extractionTable.getColumnModel().getColumn(4)
+                .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.RegexSource.values())));
         installToolEditor(injectionTable.getColumnModel().getColumn(INJECTION_TOOLS_COLUMN));
         installToolEditor(extractionTable.getColumnModel().getColumn(EXTRACTION_TOOLS_COLUMN));
     }
@@ -521,6 +527,7 @@ public final class SessionHandlerPanel extends JPanel {
                 rule.targetSelector(),
                 rule.valueTemplate(),
                 rule.writeStrategy(),
+                formatTransforms(rule.transformChain()),
                 formatTools(rule.allowedToolTypes())}));
     }
 
@@ -531,7 +538,10 @@ public final class SessionHandlerPanel extends JPanel {
                 rule.sourceSide(),
                 rule.extractorType(),
                 rule.sourceSelector(),
+                rule.regexSource(),
+                rule.regexGroupIndex() == null ? 0 : rule.regexGroupIndex(),
                 rule.targetKey(),
+                formatTransforms(rule.transformChain()),
                 formatTools(rule.allowedToolTypes())}));
     }
 
@@ -678,7 +688,8 @@ public final class SessionHandlerPanel extends JPanel {
                     valueAt(injectionModel, row, 3),
                     enumValue(InjectRule.WriteStrategy.class, valueAt(injectionModel, row, 4),
                             InjectRule.WriteStrategy.OVERWRITE),
-                    splitTools(valueAt(injectionModel, row, 5))));
+                    splitTools(valueAt(injectionModel, row, 6)),
+                    splitTransforms(rawValueAt(injectionModel, row, 5))));
         }
         return List.copyOf(rules);
     }
@@ -692,8 +703,12 @@ public final class SessionHandlerPanel extends JPanel {
                     enumValue(ExtractRule.SourceSide.class, valueAt(extractionModel, row, 1), ExtractRule.SourceSide.RESPONSE),
                     enumValue(ExtractRule.ExtractorType.class, valueAt(extractionModel, row, 2), ExtractRule.ExtractorType.HEADER),
                     valueAt(extractionModel, row, 3),
-                    valueAt(extractionModel, row, 4),
-                    splitTools(valueAt(extractionModel, row, 5))));
+                    valueAt(extractionModel, row, 6),
+                    splitTools(valueAt(extractionModel, row, 8)),
+                    splitTransforms(rawValueAt(extractionModel, row, 7)),
+                    enumValue(ExtractRule.RegexSource.class, valueAt(extractionModel, row, 4),
+                            ExtractRule.RegexSource.BODY),
+                    parseNonNegativeInt(valueAt(extractionModel, row, 5), 0)));
         }
         return List.copyOf(rules);
     }
@@ -705,6 +720,7 @@ public final class SessionHandlerPanel extends JPanel {
                 "Authorization",
                 "Bearer {{session.accessToken}}",
                 InjectRule.WriteStrategy.OVERWRITE,
+                "",
                 ""});
     }
 
@@ -718,7 +734,10 @@ public final class SessionHandlerPanel extends JPanel {
                 ExtractRule.SourceSide.RESPONSE,
                 ExtractRule.ExtractorType.JSON_PATH,
                 "accessToken",
+                ExtractRule.RegexSource.BODY,
+                0,
                 "accessToken",
+                "",
                 ""});
     }
 
@@ -847,8 +866,12 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     private static String valueAt(DefaultTableModel model, int row, int col) {
+        return rawValueAt(model, row, col).strip();
+    }
+
+    private static String rawValueAt(DefaultTableModel model, int row, int col) {
         Object value = model.getValueAt(row, col);
-        return value == null ? "" : value.toString().strip();
+        return value == null ? "" : value.toString();
     }
 
     private static boolean boolAt(DefaultTableModel model, int row, int col) {
@@ -862,6 +885,28 @@ public final class SessionHandlerPanel extends JPanel {
         } catch (NumberFormatException ignored) {
             return fallback;
         }
+    }
+
+    private static int parseNonNegativeInt(String raw, int fallback) {
+        try {
+            return Math.max(0, Integer.parseInt(raw == null ? "" : raw.strip()));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    static String formatTransforms(List<String> transforms) {
+        return transforms == null || transforms.isEmpty() ? "" : String.join("→", transforms);
+    }
+
+    static List<String> splitTransforms(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(raw.split("→", -1))
+                .map(String::stripLeading)
+                .filter(value -> !value.isBlank())
+                .toList();
     }
 
     static String formatTools(List<String> tools) {
@@ -886,6 +931,24 @@ public final class SessionHandlerPanel extends JPanel {
                 .filter(value -> !value.isBlank())
                 .forEach(value -> values.put(value, value));
         return List.copyOf(values.keySet());
+    }
+
+    static List<String> availableSessionVariableTemplates(DefaultTableModel extractionModel) {
+        LinkedHashMap<String, String> templates = new LinkedHashMap<>();
+        for (int row = 0; row < extractionModel.getRowCount(); row++) {
+            if (!boolAt(extractionModel, row, 0)) {
+                continue;
+            }
+            String key = valueAt(extractionModel, row, 6);
+            if (key.startsWith("session.")) {
+                key = key.substring("session.".length());
+            }
+            if (!key.isBlank()) {
+                String template = "{{session." + key + "}}";
+                templates.put(template, template);
+            }
+        }
+        return List.copyOf(templates.keySet());
     }
 
     private static <T extends Enum<T>> T enumValue(Class<T> enumType, String raw, T fallback) {
@@ -974,6 +1037,35 @@ public final class SessionHandlerPanel extends JPanel {
                 }
             }
             fireEditingStopped();
+        }
+    }
+
+    private static final class SessionVariableTemplateCellEditor extends AbstractCellEditor
+            implements TableCellEditor {
+        private final DefaultTableModel extractionModel;
+        private JComboBox<String> combo;
+
+        private SessionVariableTemplateCellEditor(DefaultTableModel extractionModel) {
+            this.extractionModel = extractionModel;
+        }
+
+        @Override
+        public Object getCellEditorValue() {
+            Object value = combo == null ? "" : combo.getEditor().getItem();
+            return value == null ? "" : value.toString();
+        }
+
+        @Override
+        public Component getTableCellEditorComponent(
+                JTable table,
+                Object value,
+                boolean isSelected,
+                int row,
+                int column) {
+            combo = new JComboBox<>(availableSessionVariableTemplates(extractionModel).toArray(String[]::new));
+            combo.setEditable(true);
+            combo.getEditor().setItem(value == null ? "" : value.toString());
+            return combo;
         }
     }
 

@@ -19,10 +19,17 @@ import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
+    private static final DateTimeFormatter STATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            .withZone(ZoneId.systemDefault());
     private final AccessUiController controller;
     private final DefaultTableModel tableModel;
     private final JTable table;
@@ -30,7 +37,7 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
     AuthProfilesPanel(AccessUiController controller) {
         super(new BorderLayout(8, 8));
         this.controller = controller;
-        tableModel = new DefaultTableModel(new Object[]{"Name", "Role", "Provider", "Enabled", "Id"}, 0) {
+        tableModel = new DefaultTableModel(new Object[]{"Name", "Role", "Provider", "Auth State", "Enabled", "Id"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -39,7 +46,13 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
         table = new JTable(tableModel);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);
-        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(4));
+        table.setAutoCreateRowSorter(true);
+        table.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) {
+                if (event.getClickCount() == 2) selectedProfile().ifPresent(AuthProfilesPanel.this::showEditor);
+            }
+        });
+        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(5));
 
         add(toolbar(), BorderLayout.NORTH);
         add(new JScrollPane(table), BorderLayout.CENTER);
@@ -51,13 +64,30 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
         javax.swing.JButton add = StyledButton.primary("Add");
         javax.swing.JButton edit = StyledButton.neutral("Edit");
         javax.swing.JButton delete = StyledButton.danger("Delete");
+        javax.swing.JButton clearState = StyledButton.neutral("Clear Auth State");
         add.addActionListener(event -> showEditor(null));
         edit.addActionListener(event -> selectedProfile().ifPresent(this::showEditor));
         delete.addActionListener(event -> selectedProfile().ifPresent(this::deleteProfile));
+        clearState.setToolTipText("Clear cached tokens/cookies/expiry for the selected actor; credentials are preserved.");
+        clearState.addActionListener(event -> selectedProfile().ifPresent(this::clearState));
         panel.add(add);
         panel.add(edit);
         panel.add(delete);
+        panel.add(clearState);
+        JLabel hint = new JLabel("Create one profile per real actor; credentials and cached auth state stay isolated.");
+        panel.add(hint);
         return panel;
+    }
+
+    private void clearState(AuthProfile profile) {
+        int result = JOptionPane.showConfirmDialog(this,
+                "Clear cached auth variables, headers, cookies, and expiry for \"" + profile.name()
+                        + "\"? Credentials will be preserved.",
+                "Clear Auth State", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (result == JOptionPane.OK_OPTION) {
+            controller.clearAuthProfileState(profile.id());
+            refresh();
+        }
     }
 
     private void showEditor(AuthProfile existing) {
@@ -100,7 +130,7 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
             return java.util.Optional.empty();
         }
         int modelRow = table.convertRowIndexToModel(row);
-        String id = (String) tableModel.getValueAt(modelRow, 4);
+        String id = (String) tableModel.getValueAt(modelRow, 5);
         return controller.authProfile(id);
     }
 
@@ -117,9 +147,19 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
                     profile.name(),
                     profile.role(),
                     profile.providerId(),
+                    authStateLabel(profile),
                     profile.enabled(),
                     profile.id()});
         }
+    }
+
+    private static String authStateLabel(AuthProfile profile) {
+        if (AuthProfile.MANUAL_PROVIDER_ID.equals(profile.providerId())) return "Manual";
+        long expiresAt = profile.state().expiresAtEpochMillis();
+        if (profile.state().lastUpdatedAtEpochMillis() == 0L) return "Not acquired";
+        if (expiresAt == 0L) return "Expiry unknown";
+        String timestamp = STATE_TIME.format(Instant.ofEpochMilli(expiresAt));
+        return expiresAt <= System.currentTimeMillis() ? "Expired " + timestamp : "Valid until " + timestamp;
     }
 
     private static final class AuthProfileFormPanel extends JPanel {
@@ -127,9 +167,12 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
         private final JTextField role = new JTextField();
         private final JComboBox<AuthProviderOption> provider = new JComboBox<>();
         private final JCheckBox enabled = new JCheckBox("Enabled", true);
+        private final KeyValueTablePanel credentials;
         private final KeyValueTablePanel variables;
         private final KeyValueTablePanel headers;
         private final KeyValueTablePanel cookies;
+        private final long expiresAtEpochMillis;
+        private final long lastUpdatedAtEpochMillis;
 
         AuthProfileFormPanel(List<AuthProviderOption> providerOptions, AuthProfileFormModel model) {
             super(new BorderLayout(8, 8));
@@ -140,9 +183,12 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
             role.setText(initial.role());
             enabled.setSelected(initial.enabled());
             configureProviderOptions(providerOptions, initial.providerId());
+            credentials = new KeyValueTablePanel(initial.credentials());
             variables = new KeyValueTablePanel(initial.variables());
             headers = new KeyValueTablePanel(initial.headers());
             cookies = new KeyValueTablePanel(initial.cookies());
+            expiresAtEpochMillis = initial.expiresAtEpochMillis();
+            lastUpdatedAtEpochMillis = initial.lastUpdatedAtEpochMillis();
 
             JPanel fields = new JPanel(new GridLayout(0, 2, 6, 6));
             fields.add(new JLabel("Name"));
@@ -165,17 +211,24 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
                     role.getText(),
                     selectedProviderId(),
                     enabled.isSelected(),
+                    credentials.values(),
                     variables.values(),
                     headers.values(),
-                    cookies.values());
+                    cookies.values(),
+                    expiresAtEpochMillis,
+                    lastUpdatedAtEpochMillis);
         }
 
         private JTabbedPane buildValueTabs() {
             JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
+            credentials.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
             variables.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
             headers.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
             cookies.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
-            tabs.addTab("Variables", variables);
+            tabs.addTab("Credentials", credentials);
+            tabs.setToolTipTextAt(0, "Per-user login inputs. Auth flows can read them as credentials.username, credentials.password, and similar keys.");
+            tabs.addTab("Auth Variables", variables);
+            tabs.setToolTipTextAt(1, "Cached/extracted auth state such as accessToken, refreshToken, csrfToken, or sessionId.");
             tabs.addTab("Headers", headers);
             tabs.addTab("Cookies", cookies);
             return tabs;

@@ -75,12 +75,15 @@ class SessionHandlerPanelTest {
         assertInstanceOf(DefaultCellEditor.class, criteria.getColumnModel().getColumn(0).getCellEditor());
         assertInstanceOf(DefaultCellEditor.class, injection.getColumnModel().getColumn(1).getCellEditor());
         assertInstanceOf(DefaultCellEditor.class, injection.getColumnModel().getColumn(4).getCellEditor());
+        assertEquals("SessionVariableTemplateCellEditor",
+                injection.getColumnModel().getColumn(3).getCellEditor().getClass().getSimpleName());
         assertInstanceOf(DefaultCellEditor.class, extraction.getColumnModel().getColumn(1).getCellEditor());
         assertInstanceOf(DefaultCellEditor.class, extraction.getColumnModel().getColumn(2).getCellEditor());
+        assertInstanceOf(DefaultCellEditor.class, extraction.getColumnModel().getColumn(4).getCellEditor());
         assertEquals("ToolSourceCellEditor",
-                injection.getColumnModel().getColumn(5).getCellEditor().getClass().getSimpleName());
+                injection.getColumnModel().getColumn(6).getCellEditor().getClass().getSimpleName());
         assertEquals("ToolSourceCellEditor",
-                extraction.getColumnModel().getColumn(5).getCellEditor().getClass().getSimpleName());
+                extraction.getColumnModel().getColumn(8).getCellEditor().getClass().getSimpleName());
     }
 
     @Test
@@ -108,6 +111,22 @@ class SessionHandlerPanelTest {
         assertEquals(List.of(), SessionHandlerPanel.splitTools(""));
         assertEquals(List.of("PROXY", "REPEATER"), SessionHandlerPanel.splitTools("PROXY, REPEATER,PROXY"));
         assertEquals("PROXY,REPEATER", SessionHandlerPanel.formatTools(List.of("PROXY", "REPEATER")));
+    }
+
+    @Test
+    void sessionInjectionVariableChoicesComeFromEnabledExtractors() {
+        javax.swing.table.DefaultTableModel extractionModel = new javax.swing.table.DefaultTableModel(
+                new Object[][]{
+                        {true, "RESPONSE", "HEADER", "X-Token", "BODY", 0, "accessToken", "", ""},
+                        {true, "RESPONSE", "HEADER", "X-Csrf", "BODY", 0, "session.csrf", "", ""},
+                        {false, "RESPONSE", "HEADER", "X-Old", "BODY", 0, "oldToken", "", ""}
+                },
+                new Object[]{"Enabled", "Source", "Extractor", "Selector", "Regex Input", "Group",
+                        "Target Key", "Transforms", "Tools"});
+
+        assertEquals(
+                List.of("{{session.accessToken}}", "{{session.csrf}}"),
+                SessionHandlerPanel.availableSessionVariableTemplates(extractionModel));
     }
 
     @Test
@@ -249,6 +268,15 @@ class SessionHandlerPanelTest {
                         "X-Token",
                         "accessToken",
                         List.of("PROXY"))));
+    }
+
+    @Test
+    void transformColumnsRoundTripWithoutDroppingIntentionalTrailingSpaces() {
+        List<String> transforms = List.of("trim", "stripPrefix:Bearer", "prefix:Token ");
+
+        String displayed = SessionHandlerPanel.formatTransforms(transforms);
+
+        assertEquals(transforms, SessionHandlerPanel.splitTransforms(displayed));
     }
 
     private static SessionTrafficContext context() {

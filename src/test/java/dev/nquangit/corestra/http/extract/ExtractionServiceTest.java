@@ -315,16 +315,112 @@ class ExtractionServiceTest {
         }
 
         @Test
-        void returnsFailureWhenGroupIndexIsNonNumeric() {
+        void regexAlternationWithoutExplicitGroupIsNotMisreadAsLegacyGroupSuffix() {
             ExtractRule rule = rule(ExtractRule.ExtractorType.REGEX, ExtractRule.SourceSide.RESPONSE, "token=(\\w+)|abc");
             HttpMessageSnapshot resp = responseWith("HTTP/1.1 200 OK", List.of(), "token=secret");
 
             ExtractionResult result = service.extract(rule, null, resp);
 
+            assertTrue(result.isSuccess());
+            assertEquals("token=secret", result.value());
+        }
+
+        @Test
+        void extractsFromResponseHeadersWhenConfigured() {
+            ExtractRule rule = new ExtractRule(
+                    "id-1", "header-regex", true,
+                    ExtractRule.SourceSide.RESPONSE,
+                    ExtractRule.ExtractorType.REGEX,
+                    "X-Trace-Id: ([a-z0-9-]+)",
+                    "traceId",
+                    List.of(),
+                    ExtractRule.RegexSource.HEADERS,
+                    1);
+            HttpMessageSnapshot resp = responseWith("HTTP/1.1 200 OK",
+                    List.of("Content-Type: application/json", "X-Trace-Id: abc-123"),
+                    "{\"ignored\":true}");
+
+            ExtractionResult result = service.extract(rule, null, resp);
+
+            assertTrue(result.isSuccess());
+            assertEquals("abc-123", result.value());
+        }
+
+        @Test
+        void fullMessageRegexCanMatchStatusHeadersAndBody() {
+            ExtractRule rule = new ExtractRule(
+                    "id-1", "full-regex", true,
+                    ExtractRule.SourceSide.RESPONSE,
+                    ExtractRule.ExtractorType.REGEX,
+                    "(?s)HTTP/1\\.1 201.*X-Token: ([^\\r\\n]+).*created",
+                    "token",
+                    List.of("trim"),
+                    ExtractRule.RegexSource.FULL_MESSAGE,
+                    1);
+            HttpMessageSnapshot resp = responseWith("HTTP/1.1 201 Created",
+                    List.of("X-Token: value-with-space "), "created");
+
+            ExtractionResult result = service.extract(rule, null, resp);
+
+            assertTrue(result.isSuccess());
+            assertEquals("value-with-space", result.value());
+        }
+
+        @Test
+        void explicitGroupKeepsRegexAlternationIntact() {
+            ExtractRule rule = new ExtractRule(
+                    "id-1", "alternation", true,
+                    ExtractRule.SourceSide.RESPONSE,
+                    ExtractRule.ExtractorType.REGEX,
+                    "token=(alpha|beta)",
+                    "token",
+                    List.of(),
+                    ExtractRule.RegexSource.BODY,
+                    1);
+
+            ExtractionResult result = service.extract(rule, null,
+                    responseWith("HTTP/1.1 200 OK", List.of(), "token=beta"));
+
+            assertTrue(result.isSuccess());
+            assertEquals("beta", result.value());
+        }
+
+        @Test
+        void appliesTransformsAfterExtractionInOrder() {
+            ExtractRule rule = new ExtractRule(
+                    "id-1", "transform", true,
+                    ExtractRule.SourceSide.RESPONSE,
+                    ExtractRule.ExtractorType.REGEX,
+                    "token=([^;]+)",
+                    "token",
+                    List.of("trim", "substring:7", "uppercase"),
+                    ExtractRule.RegexSource.BODY,
+                    1);
+
+            ExtractionResult result = service.extract(rule, null,
+                    responseWith("HTTP/1.1 200 OK", List.of(), "token=  bearer abc  ;"));
+
+            assertTrue(result.isSuccess());
+            assertEquals("ABC", result.value());
+        }
+
+        @Test
+        void invalidTransformReturnsActionableFailure() {
+            ExtractRule rule = new ExtractRule(
+                    "id-1", "transform", true,
+                    ExtractRule.SourceSide.RESPONSE,
+                    ExtractRule.ExtractorType.BODY_TEXT,
+                    null,
+                    "value",
+                    List.of("substring:99"),
+                    ExtractRule.RegexSource.BODY,
+                    0);
+
+            ExtractionResult result = service.extract(rule, null,
+                    responseWith("HTTP/1.1 200 OK", List.of(), "short"));
+
             assertFalse(result.isSuccess());
-            assertNotNull(result.failureReason());
-            assertTrue(result.failureReason().contains("invalid group index") && result.failureReason().contains("abc"),
-                    "Expected failure reason to mention the bad group index token, got: " + result.failureReason());
+            assertTrue(result.failureReason().contains("substring:99"));
         }
     }
 

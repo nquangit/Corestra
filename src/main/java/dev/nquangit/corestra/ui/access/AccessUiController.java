@@ -445,6 +445,22 @@ public final class AccessUiController {
         return profile;
     }
 
+    /** Clears cached tokens, headers, cookies, and expiry while preserving actor credentials. */
+    public AuthProfile clearAuthProfileState(String id) {
+        ensureEditable();
+        String normalizedId = id == null ? "" : id.strip();
+        if (normalizedId.isEmpty()) {
+            throw new IllegalArgumentException("authProfileId must not be blank");
+        }
+        AuthProfile current = repository.authProfile(normalizedId)
+                .orElseThrow(() -> new IllegalArgumentException("Auth profile not found: " + id));
+        AuthProfile cleared = new AuthProfile(
+                current.id(), current.name(), current.role(), current.providerId(), current.credentials(),
+                dev.nquangit.corestra.access.auth.AuthState.empty(), current.enabled());
+        repository.saveAuthProfile(cleared);
+        return cleared;
+    }
+
     /**
      * Deletes an auth profile.
      *

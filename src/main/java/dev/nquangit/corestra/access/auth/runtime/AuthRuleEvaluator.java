@@ -77,7 +77,8 @@ public final class AuthRuleEvaluator {
             case BODY_CONTAINS -> body(runResult.finalResponseRaw()).contains(ruleText(expression, expectedValue));
             case BODY_NOT_CONTAINS -> !body(runResult.finalResponseRaw()).contains(ruleText(expression, expectedValue));
             case JSON_PATH, CUSTOM -> {
-                warnings.add("Auth rule type is not supported in PR 9B: " + ruleType);
+                warnings.add("Auth rule type is not supported: " + ruleType
+                        + "; use STATUS_CODE, HEADER_EXISTS, BODY_CONTAINS, or BODY_NOT_CONTAINS");
                 yield false;
             }
         };

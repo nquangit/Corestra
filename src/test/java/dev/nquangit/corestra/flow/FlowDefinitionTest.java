@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -93,6 +94,50 @@ class FlowDefinitionTest {
         assertFalse(serialized.has("aggregationPlan"));
         assertTrue(steps.get(0).has("notes"));
         assertFalse(steps.get(0).has("description"));
+    }
+
+    @Test
+    void ruleTransformsAndExplicitRegexSettingsRoundTripThroughJackson() throws Exception {
+        ExtractRule extraction = new ExtractRule(
+                "extract-header", "Extract header token", true,
+                ExtractRule.SourceSide.RESPONSE, ExtractRule.ExtractorType.REGEX,
+                "X-Token: (\\S+)", "token", List.of("trim", "substring:0:8"),
+                ExtractRule.RegexSource.HEADERS, 1);
+        InjectRule injection = new InjectRule(
+                "inject-header", "Inject header token", true,
+                InjectRule.Target.REQUEST_HEADER, "Authorization",
+                InjectRule.ValueSourceType.VARIABLE, "token", "",
+                InjectRule.WriteStrategy.OVERWRITE, List.of("prefix:Bearer "));
+
+        ExtractRule restoredExtraction = OBJECT_MAPPER.readValue(
+                OBJECT_MAPPER.writeValueAsString(extraction), ExtractRule.class);
+        InjectRule restoredInjection = OBJECT_MAPPER.readValue(
+                OBJECT_MAPPER.writeValueAsString(injection), InjectRule.class);
+
+        assertEquals(extraction, restoredExtraction);
+        assertEquals(injection, restoredInjection);
+    }
+
+    @Test
+    void legacyRulesDefaultNewSettingsWithoutChangingOldSelector() throws Exception {
+        String extractionJson = """
+                {"id":"extract","name":"Extract","enabled":true,"sourceSide":"RESPONSE",
+                 "extractorType":"REGEX","sourceSelector":"token=(\\\\w+)|1",
+                 "targetVariableName":"token","transformChain":[],"ruleType":"EXTRACT"}
+                """;
+        String injectionJson = """
+                {"id":"inject","name":"Inject","enabled":true,"target":"REQUEST_HEADER",
+                 "targetSelector":"Authorization","valueSourceType":"VARIABLE","valueSourceKey":"token",
+                 "staticValue":"","writeStrategy":"OVERWRITE","ruleType":"INJECT"}
+                """;
+
+        ExtractRule extraction = OBJECT_MAPPER.readValue(extractionJson, ExtractRule.class);
+        InjectRule injection = OBJECT_MAPPER.readValue(injectionJson, InjectRule.class);
+
+        assertEquals(ExtractRule.RegexSource.BODY, extraction.regexSource());
+        assertNull(extraction.regexGroupIndex());
+        assertEquals("token=(\\w+)|1", extraction.sourceSelector());
+        assertEquals(List.of(), injection.transformChain());
     }
 
     @Test

@@ -2,6 +2,8 @@ package dev.nquangit.corestra.http.inject;
 
 import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy;
+import dev.nquangit.corestra.http.transform.ValueTransformResult;
+import dev.nquangit.corestra.http.transform.ValueTransformService;
 
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -34,6 +36,7 @@ public final class InjectionService {
     private final CookieInjector cookieInjector;
     private final JsonBodyInjector jsonBodyInjector;
     private final RegexBodyInjector regexBodyInjector;
+    private final ValueTransformService transformService;
 
     /**
      * Creates an {@code InjectionService} with default injector instances.
@@ -43,6 +46,7 @@ public final class InjectionService {
         this.cookieInjector = new CookieInjector();
         this.jsonBodyInjector = new JsonBodyInjector();
         this.regexBodyInjector = new RegexBodyInjector();
+        this.transformService = new ValueTransformService();
     }
 
     /**
@@ -77,6 +81,12 @@ public final class InjectionService {
             if (value == null) {
                 continue;
             }
+            ValueTransformResult transformed = transformService.apply(value, rule.transformChain());
+            if (!transformed.success()) {
+                diagnostics.add("Rule '" + rule.name() + "': transform failed: " + transformed.error());
+                continue;
+            }
+            value = transformed.value();
 
             switch (rule.target()) {
                 case REQUEST_HEADER -> {

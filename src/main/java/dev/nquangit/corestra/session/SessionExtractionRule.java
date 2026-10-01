@@ -21,6 +21,9 @@ public final class SessionExtractionRule {
     private final String sourceSelector;
     private final String targetKey;
     private final List<String> allowedToolTypes;
+    private final List<String> transformChain;
+    private final ExtractRule.RegexSource regexSource;
+    private final Integer regexGroupIndex;
 
     /**
      * Creates a session extraction rule.
@@ -32,6 +35,9 @@ public final class SessionExtractionRule {
      * @param sourceSelector extractor selector
      * @param targetKey session key to update, with or without {@code session.} prefix
      * @param allowedToolTypes allowed Montoya tool type names; empty means all tools
+     * @param transformChain transforms applied after extraction
+     * @param regexSource HTTP message section searched by regex rules
+     * @param regexGroupIndex regex capture group, or {@code null} for a legacy selector
      */
     @JsonCreator
     public SessionExtractionRule(
@@ -41,7 +47,10 @@ public final class SessionExtractionRule {
             @JsonProperty("extractorType") ExtractRule.ExtractorType extractorType,
             @JsonProperty("sourceSelector") String sourceSelector,
             @JsonProperty("targetKey") String targetKey,
-            @JsonProperty("allowedToolTypes") List<String> allowedToolTypes) {
+            @JsonProperty("allowedToolTypes") List<String> allowedToolTypes,
+            @JsonProperty("transformChain") List<String> transformChain,
+            @JsonProperty("regexSource") ExtractRule.RegexSource regexSource,
+            @JsonProperty("regexGroupIndex") Integer regexGroupIndex) {
         this.id = normalizeRequiredText(id, "id");
         this.enabled = enabled;
         this.sourceSide = Objects.requireNonNullElse(sourceSide, ExtractRule.SourceSide.RESPONSE);
@@ -49,6 +58,37 @@ public final class SessionExtractionRule {
         this.sourceSelector = normalizeOptionalText(sourceSelector);
         this.targetKey = SessionState.normalizeSessionKey(targetKey);
         this.allowedToolTypes = normalizeToolTypes(allowedToolTypes);
+        this.transformChain = normalizeTransforms(transformChain);
+        this.regexSource = this.extractorType == ExtractRule.ExtractorType.REGEX
+                ? Objects.requireNonNullElse(regexSource, ExtractRule.RegexSource.BODY)
+                : ExtractRule.RegexSource.BODY;
+        this.regexGroupIndex = this.extractorType == ExtractRule.ExtractorType.REGEX ? regexGroupIndex : null;
+        if (this.regexGroupIndex != null && this.regexGroupIndex < 0) {
+            throw new IllegalArgumentException("regexGroupIndex must not be negative");
+        }
+    }
+
+    /**
+     * Creates a session extraction rule with legacy regex defaults and no transforms.
+     *
+     * @param id stable rule id
+     * @param enabled whether rule is enabled
+     * @param sourceSide request or response source side
+     * @param extractorType extraction mechanism
+     * @param sourceSelector extractor selector
+     * @param targetKey session key to update
+     * @param allowedToolTypes allowed Montoya tool type names
+     */
+    public SessionExtractionRule(
+            String id,
+            boolean enabled,
+            ExtractRule.SourceSide sourceSide,
+            ExtractRule.ExtractorType extractorType,
+            String sourceSelector,
+            String targetKey,
+            List<String> allowedToolTypes) {
+        this(id, enabled, sourceSide, extractorType, sourceSelector, targetKey,
+                allowedToolTypes, List.of(), ExtractRule.RegexSource.BODY, null);
     }
 
     /**
@@ -115,6 +155,33 @@ public final class SessionExtractionRule {
     }
 
     /**
+     * Returns transforms applied to the extracted value.
+     *
+     * @return immutable transform chain
+     */
+    public List<String> transformChain() {
+        return transformChain;
+    }
+
+    /**
+     * Returns the HTTP message section searched by regex rules.
+     *
+     * @return regex source
+     */
+    public ExtractRule.RegexSource regexSource() {
+        return regexSource;
+    }
+
+    /**
+     * Returns the explicit regex capture group, or {@code null} for a legacy selector.
+     *
+     * @return capture group
+     */
+    public Integer regexGroupIndex() {
+        return regexGroupIndex;
+    }
+
+    /**
      * Returns whether this rule can run for the supplied tool.
      *
      * @param toolTypeName Montoya tool type name
@@ -138,7 +205,9 @@ public final class SessionExtractionRule {
                 extractorType,
                 sourceSelector,
                 targetKey,
-                List.of());
+                transformChain,
+                regexSource,
+                regexGroupIndex);
     }
 
     /**
@@ -161,7 +230,10 @@ public final class SessionExtractionRule {
                 && extractorType == that.extractorType
                 && Objects.equals(sourceSelector, that.sourceSelector)
                 && Objects.equals(targetKey, that.targetKey)
-                && Objects.equals(allowedToolTypes, that.allowedToolTypes);
+                && Objects.equals(allowedToolTypes, that.allowedToolTypes)
+                && Objects.equals(transformChain, that.transformChain)
+                && regexSource == that.regexSource
+                && Objects.equals(regexGroupIndex, that.regexGroupIndex);
     }
 
     /**
@@ -171,7 +243,8 @@ public final class SessionExtractionRule {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(id, enabled, sourceSide, extractorType, sourceSelector, targetKey, allowedToolTypes);
+        return Objects.hash(id, enabled, sourceSide, extractorType, sourceSelector, targetKey,
+                allowedToolTypes, transformChain, regexSource, regexGroupIndex);
     }
 
     private static List<String> normalizeToolTypes(List<String> values) {
@@ -182,6 +255,19 @@ public final class SessionExtractionRule {
         for (String value : values) {
             if (value != null && !value.isBlank()) {
                 normalized.add(value.strip());
+            }
+        }
+        return List.copyOf(normalized);
+    }
+
+    private static List<String> normalizeTransforms(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        ArrayList<String> normalized = new ArrayList<>();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                normalized.add(value.stripLeading());
             }
         }
         return List.copyOf(normalized);

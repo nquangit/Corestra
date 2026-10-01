@@ -12,9 +12,12 @@ final class AuthProfileFormModel {
     private final String role;
     private final String providerId;
     private final boolean enabled;
+    private final Map<String, String> credentials;
     private final Map<String, String> variables;
     private final Map<String, String> headers;
     private final Map<String, String> cookies;
+    private final long expiresAtEpochMillis;
+    private final long lastUpdatedAtEpochMillis;
 
     AuthProfileFormModel(
             String name,
@@ -23,7 +26,7 @@ final class AuthProfileFormModel {
             Map<String, String> variables,
             Map<String, String> headers,
             Map<String, String> cookies) {
-        this(name, role, AuthProfile.MANUAL_PROVIDER_ID, enabled, variables, headers, cookies);
+        this(name, role, AuthProfile.MANUAL_PROVIDER_ID, enabled, Map.of(), variables, headers, cookies, 0L, 0L);
     }
 
     AuthProfileFormModel(
@@ -34,13 +37,30 @@ final class AuthProfileFormModel {
             Map<String, String> variables,
             Map<String, String> headers,
             Map<String, String> cookies) {
+        this(name, role, providerId, enabled, Map.of(), variables, headers, cookies, 0L, 0L);
+    }
+
+    AuthProfileFormModel(
+            String name,
+            String role,
+            String providerId,
+            boolean enabled,
+            Map<String, String> credentials,
+            Map<String, String> variables,
+            Map<String, String> headers,
+            Map<String, String> cookies,
+            long expiresAtEpochMillis,
+            long lastUpdatedAtEpochMillis) {
         this.name = normalizeRequiredText(name, "name");
         this.role = normalizeOptionalText(role);
         this.providerId = normalizeProviderId(providerId);
         this.enabled = enabled;
+        this.credentials = copyMap(credentials, "credentials");
         this.variables = copyMap(variables, "variables");
         this.headers = copyMap(headers, "headers");
         this.cookies = copyMap(cookies, "cookies");
+        this.expiresAtEpochMillis = Math.max(0L, expiresAtEpochMillis);
+        this.lastUpdatedAtEpochMillis = Math.max(0L, lastUpdatedAtEpochMillis);
     }
 
     static AuthProfileFormModel from(AuthProfile profile) {
@@ -50,9 +70,12 @@ final class AuthProfileFormModel {
                 profile.role(),
                 profile.providerId(),
                 profile.enabled(),
+                profile.credentials(),
                 profile.state().variables(),
                 profile.state().headers(),
-                profile.state().cookies());
+                profile.state().cookies(),
+                profile.state().expiresAtEpochMillis(),
+                profile.state().lastUpdatedAtEpochMillis());
     }
 
     AuthProfile toAuthProfile(String id) {
@@ -61,8 +84,9 @@ final class AuthProfileFormModel {
                 name,
                 role,
                 providerId,
-                Map.of(),
-                new AuthState(variables, headers, cookies, 0L, System.currentTimeMillis()),
+                credentials,
+                new AuthState(variables, headers, cookies, expiresAtEpochMillis,
+                        lastUpdatedAtEpochMillis == 0L ? System.currentTimeMillis() : lastUpdatedAtEpochMillis),
                 enabled);
     }
 
@@ -82,6 +106,10 @@ final class AuthProfileFormModel {
         return enabled;
     }
 
+    Map<String, String> credentials() {
+        return credentials;
+    }
+
     Map<String, String> variables() {
         return variables;
     }
@@ -92,6 +120,14 @@ final class AuthProfileFormModel {
 
     Map<String, String> cookies() {
         return cookies;
+    }
+
+    long expiresAtEpochMillis() {
+        return expiresAtEpochMillis;
+    }
+
+    long lastUpdatedAtEpochMillis() {
+        return lastUpdatedAtEpochMillis;
     }
 
     private static Map<String, String> copyMap(Map<String, String> values, String fieldName) {

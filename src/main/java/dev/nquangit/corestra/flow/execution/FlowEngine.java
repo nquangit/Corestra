@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /**
  * Executes a complete {@link FlowDefinition} step by step.
@@ -44,6 +46,7 @@ public final class FlowEngine {
     private final StepConditionEvaluator conditionEvaluator;
     private final FlowDefinitionResolver flowResolver;
     private final Sleeper sleeper;
+    private final List<Consumer<ExecutionResult>> executionListeners = new CopyOnWriteArrayList<>();
 
     /**
      * Creates a {@code FlowEngine}.
@@ -131,7 +134,20 @@ public final class FlowEngine {
     public ExecutionResult execute(FlowDefinition flow, ExecutionContext context) {
         Objects.requireNonNull(flow, "flow");
         Objects.requireNonNull(context, "context");
-        return executeInternal(flow, context, new ControlState());
+        ExecutionResult result = executeInternal(flow, context, new ControlState());
+        for (Consumer<ExecutionResult> listener : executionListeners) {
+            try {
+                listener.accept(result);
+            } catch (RuntimeException ignored) {
+                // Diagnostics must not change flow execution semantics.
+            }
+        }
+        return result;
+    }
+
+    /** Registers an observer invoked after each top-level execution completes. */
+    public void addExecutionListener(Consumer<ExecutionResult> listener) {
+        executionListeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     private ExecutionResult executeInternal(FlowDefinition flow, ExecutionContext context, ControlState controlState) {

@@ -124,13 +124,10 @@ public final class SessionManager {
      * @return updated profile when present
      */
     public Optional<SessionProfile> clearState(String profileId) {
-        Optional<SessionProfile> profile = repository.profile(profileId);
-        if (profile.isEmpty()) {
-            return Optional.empty();
-        }
-        SessionProfile updated = repository.saveProfile(profile.orElseThrow().withState(SessionState.empty()));
-        notifyProfileChanged(new SessionProfileChangeEvent(updated.id(), SessionProfileChangeType.STATE_CLEARED));
-        return Optional.of(updated);
+        Optional<SessionProfile> updated = repository.updateState(profileId, ignored -> SessionState.empty());
+        updated.ifPresent(saved -> notifyProfileChanged(
+                new SessionProfileChangeEvent(saved.id(), SessionProfileChangeType.STATE_CLEARED)));
+        return updated;
     }
 
     /**
@@ -189,7 +186,7 @@ public final class SessionManager {
                 context.headers(), context.body())) {
             return profile;
         }
-        return runAuthFlowLocked(profile.id(), false);
+        return runAuthFlowLocked(profile.id(), AuthRunMode.ON_DEMAND);
     }
 
     /**
@@ -202,7 +199,17 @@ public final class SessionManager {
         if (profileId == null || profileId.isBlank()) {
             return Optional.empty();
         }
-        return Optional.of(runAuthFlowLocked(profileId.strip(), true));
+        return Optional.of(runAuthFlowLocked(profileId.strip(), AuthRunMode.FORCED));
+    }
+
+    /**
+     * Refreshes an enabled scheduled profile if it is still due after acquiring its auth lock.
+     *
+     * @param profileId profile id
+     * @return current profile state after the refresh check
+     */
+    public SessionProfile refreshScheduledProfile(String profileId) {
+        return runAuthFlowLocked(profileId, AuthRunMode.SCHEDULED);
     }
 
     /**
@@ -234,10 +241,11 @@ public final class SessionManager {
         if (updates.isEmpty()) {
             return profile;
         }
-        SessionProfile updated = profile.withState(profile.state().withExtractedValues(updates, clock.millis()));
-        SessionProfile saved = repository.saveProfile(updated);
-        notifyProfileChanged(new SessionProfileChangeEvent(saved.id(), SessionProfileChangeType.STATE_UPDATED));
-        return saved;
+        Optional<SessionProfile> saved = repository.updateState(profile.id(),
+                state -> state.withExtractedValues(updates, clock.millis()));
+        saved.ifPresent(updated -> notifyProfileChanged(
+                new SessionProfileChangeEvent(updated.id(), SessionProfileChangeType.STATE_UPDATED)));
+        return saved.orElse(profile);
     }
 
     /**
@@ -284,7 +292,9 @@ public final class SessionManager {
         return Optional.of(rendered.toString());
     }
 
-    private SessionProfile runAuthFlowLocked(String profileId, boolean force) {
+    private enum AuthRunMode { ON_DEMAND, FORCED, SCHEDULED }
+
+    private SessionProfile runAuthFlowLocked(String profileId, AuthRunMode mode) {
         ReentrantLock lock = locks.computeIfAbsent(profileId, ignored -> new ReentrantLock());
         lock.lock();
         try {
@@ -297,17 +307,26 @@ public final class SessionManager {
                 return profile;
             }
             long now = clock.millis();
-            if (!force && !profile.state().missingOrExpired(now)) {
+            if (mode == AuthRunMode.SCHEDULED) {
+                long last = profile.state().lastAuthenticatedAtEpochMillis();
+                long intervalMillis = profile.scheduler().intervalSeconds() * 1000L;
+                if (!profile.enabled() || !profile.scheduler().enabled()
+                        || (last > 0L && now - last < intervalMillis && !profile.state().missingOrExpired(now))) {
+                    return profile;
+                }
+            }
+            if (mode == AuthRunMode.ON_DEMAND && !profile.state().missingOrExpired(now)) {
                 return profile;
             }
             Optional<FlowDefinition> flow = flowsSupplier.get().stream()
+                    .filter(FlowDefinition::enabled)
                     .filter(candidate -> candidate.id().equals(profile.authConfig().mainAuthFlowId()))
                     .findFirst();
             if (flow.isEmpty()) {
                 return profile;
             }
             SessionGuard.enter();
-            LinkedHashMap<String, String> updates;
+            Optional<Map<String, String>> updates;
             try {
                 updates = runAuthFlow(flow.orElseThrow(), profile);
             } finally {
@@ -316,11 +335,12 @@ public final class SessionManager {
             if (updates.isEmpty()) {
                 return profile;
             }
-            SessionProfile updated = profile.withState(profile.state().withAuthenticatedValues(
-                    updates, now, profile.authConfig().ttlSeconds()));
-            SessionProfile saved = repository.saveProfile(updated);
-            notifyProfileChanged(new SessionProfileChangeEvent(saved.id(), SessionProfileChangeType.STATE_UPDATED));
-            return saved;
+            Optional<SessionProfile> saved = repository.updateState(profile.id(),
+                    state -> state.withAuthenticatedValues(
+                            updates.orElseThrow(), clock.millis(), profile.authConfig().ttlSeconds()));
+            saved.ifPresent(updated -> notifyProfileChanged(
+                    new SessionProfileChangeEvent(updated.id(), SessionProfileChangeType.STATE_UPDATED)));
+            return saved.orElse(profile);
         } finally {
             lock.unlock();
         }
@@ -336,7 +356,7 @@ public final class SessionManager {
         }
     }
 
-    private LinkedHashMap<String, String> runAuthFlow(FlowDefinition flow, SessionProfile profile) {
+    private Optional<Map<String, String>> runAuthFlow(FlowDefinition flow, SessionProfile profile) {
         long now = clock.millis();
         ExecutionContext context = ExecutionContext.start(
                 UUID.randomUUID().toString(),
@@ -348,6 +368,9 @@ public final class SessionManager {
         }
 
         ExecutionResult result = flowEngine.execute(flow, context);
+        if (!result.success() || result.stepRecords().isEmpty()) {
+            return Optional.empty();
+        }
         LinkedHashMap<String, String> updates = new LinkedHashMap<>();
         result.finalContext().ifPresent(finalContext ->
                 finalContext.variables().forEach((key, value) -> collectSessionVariable(updates, key, value)));
@@ -355,7 +378,8 @@ public final class SessionManager {
             record.extractedVariables().forEach((key, value) -> collectSessionVariable(updates, key, value));
             applyAuthFlowExtractionRules(profile, record).forEach(updates::put);
         });
-        return updates;
+        // A successful keep-alive request may intentionally produce no session variables.
+        return Optional.of(updates);
     }
 
     private Map<String, String> applyAuthFlowExtractionRules(SessionProfile profile, StepExecutionRecord record) {

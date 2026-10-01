@@ -57,6 +57,8 @@ public final class AccessTestingPanel extends JPanel {
                 "Prepare disabled-by-default rows, setup, post-checks, teardown, and dry-run settings.");
         addAccessTab("Results", new ResultsPanel(controller),
                 "Review run outcomes, redacted evidence, post-check summaries, and finding drafts.");
+        addAccessTab("Guide", new AccessGuidePanel(),
+                "Step-by-step setup checklist, auth flow model, and common injection recipes.");
         tabs.addChangeListener(event -> {
             if (tabs.getSelectedComponent() instanceof AccessTabPanel accessTabPanel) {
                 accessTabPanel.refreshUi();
@@ -86,7 +88,11 @@ public final class AccessTestingPanel extends JPanel {
         boolean running = controller.isPlanRunning();
         for (int index = 0; index < tabs.getTabCount(); index++) {
             String title = tabs.getTitleAt(index);
-            boolean editableConfigTab = !"Matrix".equals(title) && !"Results".equals(title);
+            boolean editableConfigTab = switch (title) {
+                case "Auth Providers", "Auth Profiles", "Data Profiles", "Templates",
+                        "Flow Targets", "Evaluation Profiles" -> true;
+                default -> false;
+            };
             tabs.setEnabledAt(index, !running || !editableConfigTab);
         }
         if (running && !tabs.isEnabledAt(tabs.getSelectedIndex())) {
@@ -104,9 +110,13 @@ public final class AccessTestingPanel extends JPanel {
         JButton validate = StyledButton.neutral("Validate Access Project");
         validate.setToolTipText("Check references, placeholders, setup, post-checks, teardown, and export-safety warnings.");
         validate.addActionListener(event -> showValidationReport());
+        JButton guide = StyledButton.neutral("Quick Guide");
+        guide.setToolTipText("Open the Access Testing setup checklist and auth recipes.");
+        guide.addActionListener(event -> selectTab("Guide"));
         JLabel hint = new JLabel("Validate before dry-runs or live plans to catch broken references early.");
         hint.setToolTipText("Validation is read-only and never sends HTTP.");
         panel.add(validate);
+        panel.add(guide);
         panel.add(hint);
         return panel;
     }

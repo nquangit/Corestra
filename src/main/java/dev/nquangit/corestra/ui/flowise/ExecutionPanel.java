@@ -141,7 +141,9 @@ public final class ExecutionPanel extends JPanel {
                     ExecutionResult result = get();
                     controller.setLastExecutionResult(result);
                 } catch (Exception ex) {
-                    summaryLabel.setText("Execution failed: " + ex.getMessage());
+                    String message = "Execution failed: " + ex.getMessage();
+                    summaryLabel.setText(message);
+                    summaryLabel.setToolTipText(message);
                     summaryLabel.setForeground(UiTheme.pick(new Color(0xDC2626), new Color(0xF87171)));
                 } finally {
                     setRunning(false, null);
@@ -155,6 +157,7 @@ public final class ExecutionPanel extends JPanel {
             runButton.setEnabled(false);
             runStepButton.setEnabled(false);
             summaryLabel.setText(runningStatus);
+            summaryLabel.setToolTipText(null);
             summaryLabel.setForeground(UIManager.getColor("Label.foreground"));
         } else {
             updateButtonState();
@@ -187,15 +190,19 @@ public final class ExecutionPanel extends JPanel {
         ExecutionResult result = controller.lastExecutionResult();
         if (result == null) {
             summaryLabel.setText("No execution results yet.");
+            summaryLabel.setToolTipText(null);
             summaryLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
             return;
         }
 
         if (result.success()) {
             summaryLabel.setText("Last run: SUCCESS — " + result.flowName());
+            summaryLabel.setToolTipText(null);
             summaryLabel.setForeground(UiTheme.pick(new Color(0x059669), new Color(0x34D399)));
         } else {
-            summaryLabel.setText("Last run: FAILED — " + result.failureMessage());
+            String message = "Last run: FAILED — " + result.failureMessage();
+            summaryLabel.setText(message);
+            summaryLabel.setToolTipText(message);
             summaryLabel.setForeground(UiTheme.pick(new Color(0xDC2626), new Color(0xF87171)));
         }
 

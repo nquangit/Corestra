@@ -1,6 +1,5 @@
 package dev.nquangit.corestra.integration;
 
-import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import dev.nquangit.corestra.flow.rule.InjectRule;
@@ -137,41 +136,21 @@ public final class SessionAwareHttpClient implements HttpClient {
         String fullPath = request.path() != null ? request.path() : "/";
         String body = request.bodyToString() != null ? request.bodyToString() : "";
 
-        List<String> headersWithoutHost = request.headers().stream()
+        List<String> headers = request.headers().stream()
                 .map(h -> h.name() + ": " + h.value())
-                .filter(line -> !line.toLowerCase().startsWith("host:"))
                 .toList();
 
         MutableHttpRequest mutable = new MutableHttpRequest(
-                method + " " + fullPath + " HTTP/1.1",
-                headersWithoutHost,
+                method + " " + fullPath + " " + requestVersion(request),
+                headers,
                 body);
 
         RequestMutationResult mutated = injectionService.apply(rules, java.util.Map.of(), mutable);
-        return rebuildRequest(request, mutated);
+        return HttpRequestMutationAdapter.apply(request, mutated);
     }
 
-    private static HttpRequest rebuildRequest(HttpRequest original, RequestMutationResult mutated) {
-        HttpService service = original != null ? original.httpService() : null;
-        String host = service != null ? service.host() : "";
-        int port = service != null ? service.port() : 443;
-        boolean secure = service != null && service.secure();
-        boolean defaultPort = (secure && port == 443) || (!secure && port == 80);
-
-        StringBuilder raw = new StringBuilder();
-        raw.append(mutated.requestLine()).append("\r\n");
-        raw.append("Host: ").append(host);
-        if (!defaultPort) {
-            raw.append(":").append(port);
-        }
-        raw.append("\r\n");
-        for (String header : mutated.headers()) {
-            raw.append(header).append("\r\n");
-        }
-        raw.append("\r\n");
-        if (mutated.body() != null && !mutated.body().isEmpty()) {
-            raw.append(mutated.body());
-        }
-        return HttpRequest.httpRequest(service, raw.toString());
+    private static String requestVersion(HttpRequest request) {
+        String version = request.httpVersion();
+        return version == null || version.isBlank() ? "HTTP/1.1" : version;
     }
 }

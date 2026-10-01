@@ -22,6 +22,8 @@ public final class ExtractRule {
     private final String sourceSelector;
     private final String targetVariableName;
     private final List<String> transformChain;
+    private final RegexSource regexSource;
+    private final Integer regexGroupIndex;
 
     /**
      * Creates an extraction rule.
@@ -45,6 +47,8 @@ public final class ExtractRule {
             @JsonProperty("sourceSelector") String sourceSelector,
             @JsonProperty("targetVariableName") String targetVariableName,
             @JsonProperty("transformChain") List<String> transformChain,
+            @JsonProperty("regexSource") RegexSource regexSource,
+            @JsonProperty("regexGroupIndex") Integer regexGroupIndex,
             @JsonProperty("ruleType") RuleType ruleType) {
         this.ruleType = validateRuleType(ruleType, RuleType.EXTRACT);
         this.id = normalizeRequiredText(id, "id");
@@ -56,6 +60,13 @@ public final class ExtractRule {
         validateSourceSelector(this.extractorType, this.sourceSelector);
         this.targetVariableName = normalizeRequiredText(targetVariableName, "targetVariableName");
         this.transformChain = normalizeStringList(transformChain);
+        this.regexSource = extractorType == ExtractorType.REGEX
+                ? Objects.requireNonNullElse(regexSource, RegexSource.BODY)
+                : RegexSource.BODY;
+        this.regexGroupIndex = extractorType == ExtractorType.REGEX ? regexGroupIndex : null;
+        if (this.regexGroupIndex != null && this.regexGroupIndex < 0) {
+            throw new IllegalArgumentException("regexGroupIndex must not be negative");
+        }
     }
 
     /**
@@ -79,7 +90,37 @@ public final class ExtractRule {
             String sourceSelector,
             String targetVariableName,
             List<String> transformChain) {
-        this(id, name, enabled, sourceSide, extractorType, sourceSelector, targetVariableName, transformChain, RuleType.EXTRACT);
+        this(id, name, enabled, sourceSide, extractorType, sourceSelector, targetVariableName,
+                transformChain, RegexSource.BODY, null, RuleType.EXTRACT);
+    }
+
+    /**
+     * Creates an extraction rule with explicit regex input and capture group settings.
+     *
+     * @param id stable rule identifier
+     * @param name display name
+     * @param enabled whether the rule is enabled
+     * @param sourceSide request or response side
+     * @param extractorType extractor type
+     * @param sourceSelector extractor selector or regex pattern
+     * @param targetVariableName destination variable
+     * @param transformChain ordered value transforms
+     * @param regexSource regex input section
+     * @param regexGroupIndex capture group, where zero is the full match; {@code null} preserves legacy suffix parsing
+     */
+    public ExtractRule(
+            String id,
+            String name,
+            boolean enabled,
+            SourceSide sourceSide,
+            ExtractorType extractorType,
+            String sourceSelector,
+            String targetVariableName,
+            List<String> transformChain,
+            RegexSource regexSource,
+            Integer regexGroupIndex) {
+        this(id, name, enabled, sourceSide, extractorType, sourceSelector, targetVariableName,
+                transformChain, regexSource, regexGroupIndex, RuleType.EXTRACT);
     }
 
     /**
@@ -164,6 +205,24 @@ public final class ExtractRule {
     }
 
     /**
+     * Returns the HTTP message section searched by a regex rule.
+     *
+     * @return regex input section
+     */
+    public RegexSource regexSource() {
+        return regexSource;
+    }
+
+    /**
+     * Returns the configured regex capture group, or {@code null} for a legacy selector.
+     *
+     * @return explicit capture group or {@code null}
+     */
+    public Integer regexGroupIndex() {
+        return regexGroupIndex;
+    }
+
+    /**
      * Compares this extraction rule to another object.
      *
      * @param other the candidate object
@@ -185,7 +244,9 @@ public final class ExtractRule {
                 && extractorType == that.extractorType
                 && Objects.equals(sourceSelector, that.sourceSelector)
                 && Objects.equals(targetVariableName, that.targetVariableName)
-                && Objects.equals(transformChain, that.transformChain);
+                && Objects.equals(transformChain, that.transformChain)
+                && regexSource == that.regexSource
+                && Objects.equals(regexGroupIndex, that.regexGroupIndex);
     }
 
     /**
@@ -195,7 +256,8 @@ public final class ExtractRule {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(ruleType, id, name, enabled, sourceSide, extractorType, sourceSelector, targetVariableName, transformChain);
+        return Objects.hash(ruleType, id, name, enabled, sourceSide, extractorType, sourceSelector,
+                targetVariableName, transformChain, regexSource, regexGroupIndex);
     }
 
     /**
@@ -215,6 +277,8 @@ public final class ExtractRule {
                 ", sourceSelector='" + sourceSelector + '\'' +
                 ", targetVariableName='" + targetVariableName + '\'' +
                 ", transformChain=" + transformChain +
+                ", regexSource=" + regexSource +
+                ", regexGroupIndex=" + regexGroupIndex +
                 '}';
     }
 
@@ -268,6 +332,18 @@ public final class ExtractRule {
         STATUS_CODE
     }
 
+    /**
+     * Selects the HTTP message section searched by regex extraction.
+     */
+    public enum RegexSource {
+        /** Searches only the message body. */
+        BODY,
+        /** Searches the start line and headers, excluding the body. */
+        HEADERS,
+        /** Searches the start line, headers, blank separator, and body. */
+        FULL_MESSAGE
+    }
+
     private static RuleType validateRuleType(RuleType actual, RuleType expected) {
         if (actual == null) {
             return expected;
@@ -313,7 +389,7 @@ public final class ExtractRule {
         List<String> normalized = new ArrayList<>();
         for (String value : values) {
             if (value != null && !value.isBlank()) {
-                normalized.add(value.strip());
+                normalized.add(value.stripLeading());
             }
         }
         return List.copyOf(normalized);

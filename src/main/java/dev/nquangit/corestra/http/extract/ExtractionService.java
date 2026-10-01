@@ -1,9 +1,10 @@
 package dev.nquangit.corestra.http.extract;
 
 import dev.nquangit.corestra.flow.rule.ExtractRule;
+import dev.nquangit.corestra.http.transform.ValueTransformResult;
+import dev.nquangit.corestra.http.transform.ValueTransformService;
 
 import java.util.Objects;
-import java.util.OptionalInt;
 
 /**
  * Orchestrates value extraction by delegating to the appropriate extractor based on an
@@ -19,6 +20,7 @@ public final class ExtractionService {
     private final CookieExtractor cookieExtractor;
     private final JsonBodyExtractor jsonBodyExtractor;
     private final RegexExtractor regexExtractor;
+    private final ValueTransformService transformService;
 
     /**
      * Creates an {@code ExtractionService} with default extractor instances.
@@ -28,6 +30,7 @@ public final class ExtractionService {
         this.cookieExtractor = new CookieExtractor();
         this.jsonBodyExtractor = new JsonBodyExtractor();
         this.regexExtractor = new RegexExtractor();
+        this.transformService = new ValueTransformService();
     }
 
     /**
@@ -54,25 +57,25 @@ public final class ExtractionService {
                     "No " + rule.sourceSide().name().toLowerCase() + " message available");
         }
 
+        ExtractionResult extracted;
         if (rule.extractorType() == ExtractRule.ExtractorType.REGEX) {
-            OptionalInt groupIndex = resolveGroupIndex(rule);
-            if (groupIndex.isEmpty()) {
-                String raw = rule.sourceSelector() == null ? "" : rule.sourceSelector();
-                String badPart = raw.contains("|") ? raw.substring(raw.indexOf('|') + 1).strip() : raw;
-                return ExtractionResult.failure(rule.targetVariableName(),
-                        "invalid group index: '" + badPart + "'");
-            }
-            return regexExtractor.extract(snapshot.body(), rule.sourceSelector(), groupIndex.getAsInt(), rule.targetVariableName());
+            RegexConfiguration regex = resolveRegexConfiguration(rule);
+            extracted = regexExtractor.extract(
+                    regexInput(snapshot, rule.regexSource()),
+                    regex.pattern(),
+                    regex.groupIndex(),
+                    rule.targetVariableName());
+        } else {
+            extracted = switch (rule.extractorType()) {
+                case HEADER -> extractHeader(rule, snapshot);
+                case COOKIE -> extractCookie(rule, snapshot);
+                case JSON_PATH -> jsonBodyExtractor.extract(snapshot.body(), rule.sourceSelector(), rule.targetVariableName());
+                case BODY_TEXT -> ExtractionResult.success(rule.targetVariableName(), snapshot.body());
+                case STATUS_CODE -> extractStatusCode(rule, snapshot);
+                default -> throw new IllegalStateException("Unhandled extractor type: " + rule.extractorType());
+            };
         }
-
-        return switch (rule.extractorType()) {
-            case HEADER -> extractHeader(rule, snapshot);
-            case COOKIE -> extractCookie(rule, snapshot);
-            case JSON_PATH -> jsonBodyExtractor.extract(snapshot.body(), rule.sourceSelector(), rule.targetVariableName());
-            case BODY_TEXT -> ExtractionResult.success(rule.targetVariableName(), snapshot.body());
-            case STATUS_CODE -> extractStatusCode(rule, snapshot);
-            default -> throw new IllegalStateException("Unhandled extractor type: " + rule.extractorType());
-        };
+        return applyTransforms(rule, extracted);
     }
 
     private HttpMessageSnapshot resolveSnapshot(
@@ -127,27 +130,51 @@ public final class ExtractionService {
     }
 
     /**
-     * Parses the optional group-index suffix from a REGEX {@code sourceSelector}.
-     *
-     * <p>Returns {@code OptionalInt.of(n)} when the selector has no pipe suffix (defaults to
-     * group 0) or when the part after {@code '|'} is a valid non-negative integer.
-     * Returns {@code OptionalInt.empty()} when the part after {@code '|'} is present but
-     * cannot be parsed as an integer, signalling a misconfiguration that the caller must
-     * surface as a failure result.
+     * Resolves the regex pattern and capture group. New rules store the group separately;
+     * persisted legacy rules may still encode it as a final {@code |N} suffix.
      */
-    private OptionalInt resolveGroupIndex(ExtractRule rule) {
+    private RegexConfiguration resolveRegexConfiguration(ExtractRule rule) {
         String selector = rule.sourceSelector();
-        if (selector == null || selector.isBlank()) {
-            return OptionalInt.of(0);
+        if (rule.regexGroupIndex() != null) {
+            return new RegexConfiguration(selector, rule.regexGroupIndex());
         }
-        String[] parts = selector.split("\\|", 2);
-        if (parts.length == 2) {
+        // Legacy rules encoded the group as the final "|N" suffix. New rules store it
+        // separately so normal regex alternation remains unambiguous.
+        int separator = selector == null ? -1 : selector.lastIndexOf('|');
+        if (separator >= 0 && separator < selector.length() - 1) {
+            String suffix = selector.substring(separator + 1).strip();
             try {
-                return OptionalInt.of(Integer.parseInt(parts[1].strip()));
+                int group = Integer.parseInt(suffix);
+                if (group >= 0) {
+                    return new RegexConfiguration(selector.substring(0, separator), group);
+                }
             } catch (NumberFormatException ignored) {
-                return OptionalInt.empty();
+                // It is regex alternation, not a legacy group suffix.
             }
         }
-        return OptionalInt.of(0);
+        return new RegexConfiguration(selector, 0);
     }
+
+    private String regexInput(HttpMessageSnapshot snapshot, ExtractRule.RegexSource source) {
+        String headerBlock = snapshot.statusLine()
+                + (snapshot.headers().isEmpty() ? "" : "\r\n" + String.join("\r\n", snapshot.headers()));
+        return switch (source) {
+            case BODY -> snapshot.body();
+            case HEADERS -> headerBlock;
+            case FULL_MESSAGE -> headerBlock + "\r\n\r\n" + snapshot.body();
+        };
+    }
+
+    private ExtractionResult applyTransforms(ExtractRule rule, ExtractionResult extracted) {
+        if (!extracted.isSuccess() || rule.transformChain().isEmpty()) {
+            return extracted;
+        }
+        ValueTransformResult transformed = transformService.apply(extracted.value(), rule.transformChain());
+        if (!transformed.success()) {
+            return ExtractionResult.failure(rule.targetVariableName(), transformed.error());
+        }
+        return ExtractionResult.success(rule.targetVariableName(), transformed.value());
+    }
+
+    private record RegexConfiguration(String pattern, int groupIndex) { }
 }

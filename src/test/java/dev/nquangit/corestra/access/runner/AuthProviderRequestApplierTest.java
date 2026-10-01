@@ -93,7 +93,8 @@ class AuthProviderRequestApplierTest {
         AuthProviderApplicationResult result = applier.apply(request, provider, store(), RenderMode.STRICT);
 
         assertEquals(request, result.request());
-        assertTrue(result.warnings().stream().anyMatch(warning -> warning.contains("not supported in PR 9C")));
+        assertTrue(result.warnings().stream().anyMatch(warning ->
+                warning.contains("not supported") && warning.contains("HEADER, COOKIE, or QUERY")));
     }
 
     private static ScopedVariableStore store() {

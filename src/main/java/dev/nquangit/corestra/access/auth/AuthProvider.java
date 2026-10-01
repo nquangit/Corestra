@@ -13,6 +13,10 @@ import java.util.Objects;
  */
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 public final class AuthProvider {
+    /** Default time for reusing auth state when a flow does not extract an expiry. */
+    public static final long DEFAULT_STATE_TTL_SECONDS = 300L;
+    /** Maximum configurable fallback state lifetime. */
+    public static final long MAX_STATE_TTL_SECONDS = 86_400L;
     private final String id;
     private final String name;
     private final String description;
@@ -25,6 +29,7 @@ public final class AuthProvider {
     private final List<AuthFailureRule> failureRules;
     private final AuthFallbackPolicy fallbackPolicy;
     private final AuthRetryPolicy targetRetryPolicy;
+    private final long stateTtlSeconds;
 
     /**
      * Creates an auth provider configuration.
@@ -42,7 +47,6 @@ public final class AuthProvider {
      * @param fallbackPolicy future fallback policy
      * @param targetRetryPolicy future target retry policy
      */
-    @JsonCreator
     public AuthProvider(
             @JsonProperty("id") String id,
             @JsonProperty("name") String name,
@@ -56,6 +60,27 @@ public final class AuthProvider {
             @JsonProperty("failureRules") List<AuthFailureRule> failureRules,
             @JsonProperty("fallbackPolicy") AuthFallbackPolicy fallbackPolicy,
             @JsonProperty("targetRetryPolicy") AuthRetryPolicy targetRetryPolicy) {
+        this(id, name, description, enabled, loginFlowId, refreshFlowId, validateFlowId,
+                injectionRules, successRules, failureRules, fallbackPolicy, targetRetryPolicy,
+                DEFAULT_STATE_TTL_SECONDS);
+    }
+
+    /** Creates an auth provider configuration with a fallback state lifetime. */
+    @JsonCreator
+    public AuthProvider(
+            @JsonProperty("id") String id,
+            @JsonProperty("name") String name,
+            @JsonProperty("description") String description,
+            @JsonProperty("enabled") boolean enabled,
+            @JsonProperty("loginFlowId") String loginFlowId,
+            @JsonProperty("refreshFlowId") String refreshFlowId,
+            @JsonProperty("validateFlowId") String validateFlowId,
+            @JsonProperty("injectionRules") List<AuthInjectionRule> injectionRules,
+            @JsonProperty("successRules") List<AuthSuccessRule> successRules,
+            @JsonProperty("failureRules") List<AuthFailureRule> failureRules,
+            @JsonProperty("fallbackPolicy") AuthFallbackPolicy fallbackPolicy,
+            @JsonProperty("targetRetryPolicy") AuthRetryPolicy targetRetryPolicy,
+            @JsonProperty("stateTtlSeconds") Long stateTtlSeconds) {
         this.id = normalizeRequiredText(id, "id");
         this.name = normalizeRequiredText(name, "name");
         this.description = normalizeOptionalText(description);
@@ -68,6 +93,11 @@ public final class AuthProvider {
         this.failureRules = copyList(failureRules, "failureRules");
         this.fallbackPolicy = Objects.requireNonNullElse(fallbackPolicy, AuthFallbackPolicy.MANUAL_ONLY);
         this.targetRetryPolicy = Objects.requireNonNullElse(targetRetryPolicy, AuthRetryPolicy.NO_RETRY);
+        long ttl = stateTtlSeconds == null ? DEFAULT_STATE_TTL_SECONDS : stateTtlSeconds;
+        if (ttl < 0L || ttl > MAX_STATE_TTL_SECONDS) {
+            throw new IllegalArgumentException("stateTtlSeconds must be between 0 and " + MAX_STATE_TTL_SECONDS);
+        }
+        this.stateTtlSeconds = ttl;
     }
 
     /**
@@ -178,6 +208,11 @@ public final class AuthProvider {
         return targetRetryPolicy;
     }
 
+    /** Returns the fallback auth-state lifetime in seconds. */
+    public long stateTtlSeconds() {
+        return stateTtlSeconds;
+    }
+
     /**
      * Compares this provider to another object.
      *
@@ -193,6 +228,7 @@ public final class AuthProvider {
             return false;
         }
         return enabled == that.enabled
+                && stateTtlSeconds == that.stateTtlSeconds
                 && Objects.equals(id, that.id)
                 && Objects.equals(name, that.name)
                 && Objects.equals(description, that.description)
@@ -214,7 +250,7 @@ public final class AuthProvider {
     @Override
     public int hashCode() {
         return Objects.hash(id, name, description, enabled, loginFlowId, refreshFlowId, validateFlowId,
-                injectionRules, successRules, failureRules, fallbackPolicy, targetRetryPolicy);
+                injectionRules, successRules, failureRules, fallbackPolicy, targetRetryPolicy, stateTtlSeconds);
     }
 
     /**
@@ -236,6 +272,7 @@ public final class AuthProvider {
                 ", failureRules=" + failureRules.size() +
                 ", fallbackPolicy=" + fallbackPolicy +
                 ", targetRetryPolicy=" + targetRetryPolicy +
+                ", stateTtlSeconds=" + stateTtlSeconds +
                 '}';
     }
 

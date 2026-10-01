@@ -2,6 +2,7 @@ package dev.nquangit.corestra.ui.flowise;
 
 import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.ui.access.AccessUiController;
+import dev.nquangit.corestra.flow.execution.FlowExecutionLog;
 import dev.nquangit.corestra.ui.component.StyledButton;
 
 import javax.swing.Box;
@@ -41,7 +42,7 @@ public final class FlowisePanel extends JPanel {
      * @throws NullPointerException if either argument is {@code null}
      */
     public FlowisePanel(FlowWorkspaceController controller, MontoyaApi api) {
-        this(controller, api, null);
+        this(controller, api, null, new FlowExecutionLog());
     }
 
     /**
@@ -56,11 +57,21 @@ public final class FlowisePanel extends JPanel {
             FlowWorkspaceController controller,
             MontoyaApi api,
             AccessUiController accessController) {
+        this(controller, api, accessController, new FlowExecutionLog());
+    }
+
+    /** Creates Flowise with a shared execution timeline. */
+    public FlowisePanel(
+            FlowWorkspaceController controller,
+            MontoyaApi api,
+            AccessUiController accessController,
+            FlowExecutionLog executionLog) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
         Objects.requireNonNull(api, "api");
 
-        flowTabsPanel = new FlowTabsPanel(controller, api, accessController);
+        flowTabsPanel = new FlowTabsPanel(controller, api, accessController,
+                Objects.requireNonNull(executionLog, "executionLog"));
         cardLayout = new CardLayout();
         cardPanel  = new JPanel(cardLayout);
         cardPanel.add(buildEmptyState(), CARD_EMPTY);

@@ -138,10 +138,11 @@ class AccessUiControllerTest {
         assertEquals(620, form.getPreferredSize().height);
 
         JTabbedPane tabs = findTabbedPane(form);
-        assertEquals(3, tabs.getTabCount());
-        assertEquals("Variables", tabs.getTitleAt(0));
-        assertEquals("Headers", tabs.getTitleAt(1));
-        assertEquals("Cookies", tabs.getTitleAt(2));
+        assertEquals(4, tabs.getTabCount());
+        assertEquals("Credentials", tabs.getTitleAt(0));
+        assertEquals("Auth Variables", tabs.getTitleAt(1));
+        assertEquals("Headers", tabs.getTitleAt(2));
+        assertEquals("Cookies", tabs.getTitleAt(3));
     }
 
     @Test
@@ -286,6 +287,48 @@ class AccessUiControllerTest {
         AuthProfile profile = form.toAuthProfile("auth-1");
 
         assertEquals("provider-1", profile.providerId());
+    }
+
+    @Test
+    void authProfileFormPreservesPerActorCredentialsAndCachedExpiry() {
+        dev.nquangit.corestra.access.auth.AuthProfile original = new dev.nquangit.corestra.access.auth.AuthProfile(
+                "auth-1", "Alice", "user", "provider-1",
+                Map.of("username", "alice", "password", "secret"),
+                new dev.nquangit.corestra.access.auth.AuthState(
+                        Map.of("accessToken", "token-a"), Map.of(), Map.of(), 9_000L, 1_000L), true);
+
+        AuthProfileFormModel model = AuthProfileFormModel.from(original);
+        dev.nquangit.corestra.access.auth.AuthProfile saved = model.toAuthProfile("auth-1");
+
+        assertEquals(original.credentials(), saved.credentials());
+        assertEquals(9_000L, saved.state().expiresAtEpochMillis());
+        assertEquals(1_000L, saved.state().lastUpdatedAtEpochMillis());
+    }
+
+    @Test
+    void clearAuthProfileStatePreservesActorCredentials() {
+        InMemoryAccessRepository repository = new InMemoryAccessRepository();
+        AccessUiController controller = controller(repository);
+        AuthProfile original = new AuthProfile(
+                "auth-1", "Alice", "user", "provider-1",
+                Map.of("username", "alice", "password", "secret"),
+                new dev.nquangit.corestra.access.auth.AuthState(
+                        Map.of("accessToken", "token-a"),
+                        Map.of("Authorization", "Bearer token-a"),
+                        Map.of("SESSION", "cookie-a"),
+                        9_000L,
+                        1_000L),
+                true);
+        repository.saveAuthProfile(original);
+
+        AuthProfile cleared = controller.clearAuthProfileState(original.id());
+
+        assertEquals(original.credentials(), cleared.credentials());
+        assertTrue(cleared.state().variables().isEmpty());
+        assertTrue(cleared.state().headers().isEmpty());
+        assertTrue(cleared.state().cookies().isEmpty());
+        assertEquals(0L, cleared.state().expiresAtEpochMillis());
+        assertEquals(cleared, repository.authProfile(original.id()).orElseThrow());
     }
 
     private static JTabbedPane findTabbedPane(Component component) {

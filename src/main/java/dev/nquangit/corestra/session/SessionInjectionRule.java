@@ -21,6 +21,7 @@ public final class SessionInjectionRule {
     private final String valueTemplate;
     private final InjectRule.WriteStrategy writeStrategy;
     private final List<String> allowedToolTypes;
+    private final List<String> transformChain;
 
     /**
      * Creates a session injection rule.
@@ -32,6 +33,7 @@ public final class SessionInjectionRule {
      * @param valueTemplate template such as {@code Bearer {{session.accessToken}}}
      * @param writeStrategy write strategy
      * @param allowedToolTypes allowed Montoya tool type names; empty means all tools
+     * @param transformChain transforms applied after rendering and before injection
      */
     @JsonCreator
     public SessionInjectionRule(
@@ -41,7 +43,8 @@ public final class SessionInjectionRule {
             @JsonProperty("targetSelector") String targetSelector,
             @JsonProperty("valueTemplate") String valueTemplate,
             @JsonProperty("writeStrategy") InjectRule.WriteStrategy writeStrategy,
-            @JsonProperty("allowedToolTypes") List<String> allowedToolTypes) {
+            @JsonProperty("allowedToolTypes") List<String> allowedToolTypes,
+            @JsonProperty("transformChain") List<String> transformChain) {
         this.id = normalizeRequiredText(id, "id");
         this.enabled = enabled;
         this.target = Objects.requireNonNullElse(target, InjectRule.Target.REQUEST_HEADER);
@@ -49,6 +52,30 @@ public final class SessionInjectionRule {
         this.valueTemplate = normalizeOptionalText(valueTemplate);
         this.writeStrategy = Objects.requireNonNullElse(writeStrategy, InjectRule.WriteStrategy.OVERWRITE);
         this.allowedToolTypes = normalizeToolTypes(allowedToolTypes);
+        this.transformChain = normalizeTransforms(transformChain);
+    }
+
+    /**
+     * Creates a session injection rule without value transforms.
+     *
+     * @param id stable rule id
+     * @param enabled whether rule is enabled
+     * @param target request target to mutate
+     * @param targetSelector selector inside the target
+     * @param valueTemplate session value template
+     * @param writeStrategy write strategy
+     * @param allowedToolTypes allowed Montoya tool type names
+     */
+    public SessionInjectionRule(
+            String id,
+            boolean enabled,
+            InjectRule.Target target,
+            String targetSelector,
+            String valueTemplate,
+            InjectRule.WriteStrategy writeStrategy,
+            List<String> allowedToolTypes) {
+        this(id, enabled, target, targetSelector, valueTemplate, writeStrategy,
+                allowedToolTypes, List.of());
     }
 
     /**
@@ -115,6 +142,15 @@ public final class SessionInjectionRule {
     }
 
     /**
+     * Returns transforms applied to the rendered value before injection.
+     *
+     * @return immutable transform chain
+     */
+    public List<String> transformChain() {
+        return transformChain;
+    }
+
+    /**
      * Returns whether this rule can run for the supplied tool.
      *
      * @param toolTypeName Montoya tool type name
@@ -140,7 +176,8 @@ public final class SessionInjectionRule {
                 InjectRule.ValueSourceType.STATIC,
                 "",
                 renderedValue,
-                writeStrategy);
+                writeStrategy,
+                transformChain);
     }
 
     /**
@@ -163,7 +200,8 @@ public final class SessionInjectionRule {
                 && Objects.equals(targetSelector, that.targetSelector)
                 && Objects.equals(valueTemplate, that.valueTemplate)
                 && writeStrategy == that.writeStrategy
-                && Objects.equals(allowedToolTypes, that.allowedToolTypes);
+                && Objects.equals(allowedToolTypes, that.allowedToolTypes)
+                && Objects.equals(transformChain, that.transformChain);
     }
 
     /**
@@ -173,7 +211,8 @@ public final class SessionInjectionRule {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(id, enabled, target, targetSelector, valueTemplate, writeStrategy, allowedToolTypes);
+        return Objects.hash(id, enabled, target, targetSelector, valueTemplate, writeStrategy,
+                allowedToolTypes, transformChain);
     }
 
     private static List<String> normalizeToolTypes(List<String> values) {
@@ -184,6 +223,19 @@ public final class SessionInjectionRule {
         for (String value : values) {
             if (value != null && !value.isBlank()) {
                 normalized.add(value.strip());
+            }
+        }
+        return List.copyOf(normalized);
+    }
+
+    private static List<String> normalizeTransforms(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        ArrayList<String> normalized = new ArrayList<>();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                normalized.add(value.stripLeading());
             }
         }
         return List.copyOf(normalized);

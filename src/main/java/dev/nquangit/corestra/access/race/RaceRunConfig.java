@@ -12,6 +12,8 @@ public final class RaceRunConfig {
     public static final int MAX_ITERATIONS = 10;
     /** Default worker readiness timeout. */
     public static final long DEFAULT_PREPARATION_TIMEOUT_MILLIS = 10_000L;
+    /** Default deadline for workers to finish after the start gate opens. */
+    public static final long DEFAULT_COMPLETION_TIMEOUT_MILLIS = 60_000L;
 
     private final String testCaseId;
     private final int concurrency;
@@ -20,6 +22,7 @@ public final class RaceRunConfig {
     private final long preGateDelayMillis;
     private final long betweenIterationDelayMillis;
     private final long preparationTimeoutMillis;
+    private final long completionTimeoutMillis;
     private final RaceScenarioMode scenarioMode;
     private final RaceAuthMode authMode;
     private final boolean dryRun;
@@ -58,6 +61,45 @@ public final class RaceRunConfig {
             boolean runPostChecksAfterBatch,
             boolean runTeardownAfterBatch,
             boolean stopOnFirstError) {
+        this(testCaseId, concurrency, iterations, synchronizeStart, preGateDelayMillis,
+                betweenIterationDelayMillis, preparationTimeoutMillis, scenarioMode, authMode,
+                dryRun, runPostChecksAfterBatch, runTeardownAfterBatch, stopOnFirstError,
+                DEFAULT_COMPLETION_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * Creates a race configuration with an explicit worker completion deadline.
+     *
+     * @param testCaseId selected matrix row id
+     * @param concurrency concurrent worker count
+     * @param iterations number of race batches to run
+     * @param synchronizeStart whether workers wait at a shared start gate
+     * @param preGateDelayMillis optional delay after workers are ready
+     * @param betweenIterationDelayMillis optional delay between batches
+     * @param preparationTimeoutMillis maximum wait for worker preparation
+     * @param scenarioMode scenario preparation mode
+     * @param authMode auth preparation mode
+     * @param dryRun whether to render without sending HTTP
+     * @param runPostChecksAfterBatch whether post-checks run after the batch
+     * @param runTeardownAfterBatch whether teardown runs after the batch
+     * @param stopOnFirstError whether later iterations stop after an error
+     * @param completionTimeoutMillis maximum wait after opening the start gate
+     */
+    public RaceRunConfig(
+            String testCaseId,
+            int concurrency,
+            int iterations,
+            boolean synchronizeStart,
+            long preGateDelayMillis,
+            long betweenIterationDelayMillis,
+            long preparationTimeoutMillis,
+            RaceScenarioMode scenarioMode,
+            RaceAuthMode authMode,
+            boolean dryRun,
+            boolean runPostChecksAfterBatch,
+            boolean runTeardownAfterBatch,
+            boolean stopOnFirstError,
+            long completionTimeoutMillis) {
         this.testCaseId = normalizeRequiredText(testCaseId, "testCaseId");
         this.concurrency = validateBounded(concurrency, "concurrency", MAX_CONCURRENCY);
         this.iterations = validateBounded(iterations, "iterations", MAX_ITERATIONS);
@@ -65,6 +107,7 @@ public final class RaceRunConfig {
         this.preGateDelayMillis = validateNonNegative(preGateDelayMillis, "preGateDelayMillis");
         this.betweenIterationDelayMillis = validateNonNegative(betweenIterationDelayMillis, "betweenIterationDelayMillis");
         this.preparationTimeoutMillis = validatePositive(preparationTimeoutMillis, "preparationTimeoutMillis");
+        this.completionTimeoutMillis = validatePositive(completionTimeoutMillis, "completionTimeoutMillis");
         this.scenarioMode = Objects.requireNonNullElse(scenarioMode, RaceScenarioMode.REUSE_SINGLE_SCENARIO);
         this.authMode = Objects.requireNonNullElse(authMode, RaceAuthMode.ENSURE_AUTH_BEFORE_GATE);
         this.dryRun = dryRun;
@@ -131,6 +174,11 @@ public final class RaceRunConfig {
         return preparationTimeoutMillis;
     }
 
+    /** @return maximum wait for workers after the start gate opens */
+    public long completionTimeoutMillis() {
+        return completionTimeoutMillis;
+    }
+
     /** @return scenario preparation mode */
     public RaceScenarioMode scenarioMode() {
         return scenarioMode;
@@ -175,7 +223,8 @@ public final class RaceRunConfig {
     public RaceRunConfig withDryRun(boolean value) {
         return new RaceRunConfig(testCaseId, concurrency, iterations, synchronizeStart,
                 preGateDelayMillis, betweenIterationDelayMillis, preparationTimeoutMillis,
-                scenarioMode, authMode, value, runPostChecksAfterBatch, runTeardownAfterBatch, stopOnFirstError);
+                scenarioMode, authMode, value, runPostChecksAfterBatch, runTeardownAfterBatch,
+                stopOnFirstError, completionTimeoutMillis);
     }
 
     private static int validateBounded(int value, String fieldName, int max) {

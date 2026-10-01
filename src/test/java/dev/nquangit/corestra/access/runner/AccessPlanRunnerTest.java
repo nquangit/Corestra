@@ -45,6 +45,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AccessPlanRunnerTest {
     @Test
+    void failingStartListenerDoesNotLeavePlanPermanentlyRunning() {
+        QueueHttpClient client = new QueueHttpClient(403);
+        InMemoryAccessRepository repository = repository();
+        AccessPlanRunner runner = runner(repository, client);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> runner.run(AccessPlanRunConfig.defaults(), new AccessPlanListener() {
+                    @Override
+                    public void onPlanStarted(int totalRows) {
+                        throw new IllegalStateException("Listener failed");
+                    }
+                }));
+        assertFalse(runner.isRunning());
+        runner.run(AccessPlanRunConfig.defaults(), null);
+        assertFalse(runner.isRunning());
+    }
+
+    @Test
     void runsEnabledRowsSequentiallyAndSavesResults() {
         QueueHttpClient httpClient = new QueueHttpClient(403, 200);
         InMemoryAccessRepository repository = repository();

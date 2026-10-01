@@ -106,7 +106,11 @@ public final class SessionSchedulerService implements AutoCloseable {
                 long last = profile.state().lastAuthenticatedAtEpochMillis();
                 long intervalMillis = profile.scheduler().intervalSeconds() * 1000L;
                 if (last == 0L || last + intervalMillis <= now || profile.state().missingOrExpired(now)) {
-                    refreshProfileSafely(profile.id());
+                    try {
+                        sessionManager.refreshScheduledProfile(profile.id());
+                    } catch (RuntimeException ignored) {
+                        // A concurrent refresh or one broken profile must not stop other profiles.
+                    }
                 }
             }
         } catch (RuntimeException ignored) {

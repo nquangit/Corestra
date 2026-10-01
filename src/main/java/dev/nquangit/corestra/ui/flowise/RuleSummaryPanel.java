@@ -4,6 +4,7 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.http.inject.InjectionSuggestionService;
 
 import dev.nquangit.corestra.ui.component.StyledButton;
 
@@ -12,6 +13,8 @@ import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JLabel;
+import javax.swing.JList;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -26,6 +29,8 @@ import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Displays the extract and inject rules for the currently selected {@link FlowStep}.
@@ -38,10 +43,13 @@ import java.util.Objects;
  */
 public final class RuleSummaryPanel extends JPanel {
 
-    private static final String[] EXTRACT_COLUMNS = {"Name", "Source", "Type", "Selector", "→ Variable"};
-    private static final String[] INJECT_COLUMNS  = {"Name", "Target", "Selector", "Source", "Strategy"};
+    private static final String[] EXTRACT_COLUMNS = {
+            "Name", "Source", "Type", "Regex Input", "Selector", "Transforms", "→ Variable"};
+    private static final String[] INJECT_COLUMNS  = {
+            "Name", "Target", "Selector", "Source", "Transforms", "Strategy"};
 
     private final FlowWorkspaceController controller;
+    private final Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier;
 
     private final DefaultTableModel extractModel;
     private final DefaultTableModel injectModel;
@@ -55,8 +63,21 @@ public final class RuleSummaryPanel extends JPanel {
      * @throws NullPointerException if {@code controller} is {@code null}
      */
     public RuleSummaryPanel(FlowWorkspaceController controller) {
+        this(controller, Optional::empty);
+    }
+
+    /**
+     * Creates a rule panel with access to the current native response-editor selection.
+     *
+     * @param controller workspace controller
+     * @param regexSelectionSupplier response selection supplier
+     */
+    public RuleSummaryPanel(
+            FlowWorkspaceController controller,
+            Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
+        this.regexSelectionSupplier = Objects.requireNonNull(regexSelectionSupplier, "regexSelectionSupplier");
 
         extractModel = readOnlyModel(EXTRACT_COLUMNS);
         injectModel  = readOnlyModel(INJECT_COLUMNS);
@@ -82,9 +103,10 @@ public final class RuleSummaryPanel extends JPanel {
         });
 
         JPanel extractSection = buildSection("Extract Rules", extractTable,
-                this::addExtractRule, this::editSelectedExtractRule, this::removeSelectedExtractRule);
+                this::addExtractRule, this::editSelectedExtractRule, this::removeSelectedExtractRule, null);
         JPanel injectSection = buildSection("Inject Rules", injectTable,
-                this::addInjectRule, this::editSelectedInjectRule, this::removeSelectedInjectRule);
+                this::addInjectRule, this::editSelectedInjectRule, this::removeSelectedInjectRule,
+                this::suggestInjectRules);
 
         // Equal preferred widths → resetToPreferredSizes() places divider at available/2.
         // resizeWeight(0.5) keeps it 50/50 when the outer layout redistributes space.
@@ -127,7 +149,8 @@ public final class RuleSummaryPanel extends JPanel {
     }
 
     private static JPanel buildSection(String title, JTable table,
-                                       Runnable onAdd, Runnable onEdit, Runnable onRemove) {
+                                       Runnable onAdd, Runnable onEdit, Runnable onRemove,
+                                       Runnable onSuggest) {
         JPanel section = new JPanel(new BorderLayout());
         section.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
 
@@ -154,6 +177,13 @@ public final class RuleSummaryPanel extends JPanel {
         buttonBar.add(editBtn);
         buttonBar.add(Box.createHorizontalStrut(4));
         buttonBar.add(removeBtn);
+        if (onSuggest != null) {
+            buttonBar.add(Box.createHorizontalStrut(4));
+            StyledButton suggestBtn = StyledButton.neutral("Suggest");
+            suggestBtn.setToolTipText("Suggest injection rules from extractors in earlier steps");
+            suggestBtn.addActionListener(event -> onSuggest.run());
+            buttonBar.add(suggestBtn);
+        }
         buttonBar.add(Box.createHorizontalGlue());
 
         section.add(titleLabel, BorderLayout.NORTH);
@@ -180,7 +210,12 @@ public final class RuleSummaryPanel extends JPanel {
                     rule.name(),
                     rule.sourceSide(),
                     rule.extractorType(),
+                    rule.extractorType() == ExtractRule.ExtractorType.REGEX
+                            ? rule.regexSource() + " / group "
+                                    + (rule.regexGroupIndex() == null ? "legacy" : rule.regexGroupIndex())
+                            : "",
                     rule.sourceSelector(),
+                    String.join(" → ", rule.transformChain()),
                     rule.targetVariableName()
             });
         }
@@ -193,6 +228,7 @@ public final class RuleSummaryPanel extends JPanel {
                     rule.valueSourceType() == InjectRule.ValueSourceType.STATIC
                             ? "\"" + rule.staticValue() + "\""
                             : "$" + rule.valueSourceKey(),
+                    String.join(" → ", rule.transformChain()),
                     rule.writeStrategy()
             });
         }
@@ -206,7 +242,7 @@ public final class RuleSummaryPanel extends JPanel {
         FlowStep step = controller.selectedStep();
         if (step == null) return;
 
-        RuleEditorDialog.openForExtract(this, controller, step, null, saved -> {
+        RuleEditorDialog.openForExtract(this, controller, step, null, regexSelectionSupplier.get(), saved -> {
             FlowStep updated = withExtractRules(step, appendRule(step.extractRules(), saved));
             saveStep(updated);
         });
@@ -218,7 +254,7 @@ public final class RuleSummaryPanel extends JPanel {
         if (step == null || row < 0) return;
 
         ExtractRule rule = step.extractRules().get(row);
-        RuleEditorDialog.openForExtract(this, controller, step, rule, saved -> {
+        RuleEditorDialog.openForExtract(this, controller, step, rule, regexSelectionSupplier.get(), saved -> {
             List<ExtractRule> updated = replaceAt(step.extractRules(), row, saved);
             saveStep(withExtractRules(step, updated));
         });
@@ -266,6 +302,38 @@ public final class RuleSummaryPanel extends JPanel {
 
         List<InjectRule> updated = removeAt(step.injectRules(), row);
         saveStep(withInjectRules(step, updated));
+    }
+
+    private void suggestInjectRules() {
+        FlowDefinition flow = controller.activeFlow();
+        FlowStep step = controller.selectedStep();
+        if (flow == null || step == null) return;
+        List<InjectionSuggestionService.Suggestion> suggestions =
+                new InjectionSuggestionService().suggest(flow, step);
+        if (suggestions.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "No new matching request fields were found. Suggestions require a header, cookie, query, form, or JSON field whose name matches an enabled extractor variable from an earlier step.",
+                    "Injection suggestions", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        JList<InjectionSuggestionService.Suggestion> list = new JList<>(
+                suggestions.toArray(InjectionSuggestionService.Suggestion[]::new));
+        list.setCellRenderer((values, value, index, selected, focus) -> {
+            JLabel label = new JLabel(value.displayLabel());
+            label.setOpaque(true);
+            label.setBackground(selected ? values.getSelectionBackground() : values.getBackground());
+            label.setForeground(selected ? values.getSelectionForeground() : values.getForeground());
+            return label;
+        });
+        list.setSelectionInterval(0, suggestions.size() - 1);
+        int choice = JOptionPane.showConfirmDialog(this, new JScrollPane(list),
+                "Review injection suggestions", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION || list.getSelectedValuesList().isEmpty()) return;
+
+        List<InjectRule> rules = new ArrayList<>(step.injectRules());
+        list.getSelectedValuesList().forEach(suggestion -> rules.add(suggestion.rule()));
+        saveStep(step.withInjectRules(rules));
     }
 
     // -------------------------------------------------------------------------

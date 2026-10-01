@@ -71,7 +71,7 @@ final class AuthProviderRequestApplier {
             case QUERY -> withQueryParameter(request, target, value, rule.mode());
             case BODY_JSON, BODY_FORM, PATH -> {
                 warnings.add("Auth injection rule '" + rule.name() + "': " + location
-                        + " injection is not supported in PR 9C");
+                        + " injection is not supported; use HEADER, COOKIE, or QUERY");
                 yield request;
             }
         };

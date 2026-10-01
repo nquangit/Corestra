@@ -123,6 +123,39 @@ class InjectionServiceTest {
         }
 
         @Test
+        void transformsVariableBeforeInjection() {
+            InjectRule r = new InjectRule(
+                    "id-r1", "r1", true,
+                    Target.REQUEST_HEADER, "Authorization",
+                    ValueSourceType.VARIABLE, "tokenVar", "",
+                    WriteStrategy.OVERWRITE,
+                    List.of("trim", "stripPrefix:Bearer", "trim", "prefix:Token "));
+            InjectionService.MutableHttpRequest req = request("GET / HTTP/1.1", List.of(), "");
+
+            RequestMutationResult result = service.apply(
+                    List.of(r), Map.of("tokenVar", "  Bearer abc123  "), req);
+
+            assertTrue(result.headers().contains("Authorization: Token abc123"));
+        }
+
+        @Test
+        void invalidTransformSkipsInjectionAndReportsDiagnostic() {
+            InjectRule r = new InjectRule(
+                    "id-r1", "r1", true,
+                    Target.REQUEST_HEADER, "X-Value",
+                    ValueSourceType.STATIC, "", "short",
+                    WriteStrategy.OVERWRITE,
+                    List.of("substring:50"));
+
+            RequestMutationResult result = service.apply(
+                    List.of(r), Map.of(), request("GET / HTTP/1.1", List.of(), ""));
+
+            assertTrue(result.headers().isEmpty());
+            assertTrue(result.diagnostics().stream().anyMatch(message ->
+                    message.contains("substring:50") && message.contains("transform failed")));
+        }
+
+        @Test
         void skipsRuleWhenContextVariableMissing() {
             InjectRule r = variableRule("r1", Target.REQUEST_HEADER, "X-Token", "missingVar", WriteStrategy.OVERWRITE);
             InjectionService.MutableHttpRequest req = request("GET / HTTP/1.1", List.of(), "");

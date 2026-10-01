@@ -9,11 +9,17 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthFailureRule;
+import dev.nquangit.corestra.access.auth.AuthInjectionRule;
 import dev.nquangit.corestra.access.auth.AuthState;
+import dev.nquangit.corestra.access.auth.AuthSuccessRule;
 import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.access.evaluate.EvaluationProfile;
 import dev.nquangit.corestra.access.flow.AccessFlowTarget;
 import dev.nquangit.corestra.access.matrix.AccessTestCase;
+import dev.nquangit.corestra.access.matrix.ResponseAssertion;
+import dev.nquangit.corestra.access.postcheck.PostCheckAssertion;
+import dev.nquangit.corestra.access.postcheck.PostCheckRequest;
 import dev.nquangit.corestra.access.postcheck.PostCheckAssertionResult;
 import dev.nquangit.corestra.access.postcheck.PostCheckEvidence;
 import dev.nquangit.corestra.access.report.SavedFindingDraft;
@@ -29,9 +35,7 @@ import dev.nquangit.corestra.access.teardown.TeardownEvidence;
 import dev.nquangit.corestra.access.teardown.TeardownStepEvidence;
 import dev.nquangit.corestra.access.template.AccessRequestTemplate;
 import dev.nquangit.corestra.access.workspace.AccessWorkspace;
-import dev.nquangit.corestra.flow.FlowDefinition;
-import dev.nquangit.corestra.flow.FlowStep;
-import dev.nquangit.corestra.flow.StoredRequestTemplate;
+import dev.nquangit.corestra.persistence.FlowExportSanitizer;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -48,6 +52,7 @@ public final class AccessWorkspaceSerializer {
 
     private final ObjectMapper objectMapper;
     private final RedactionService redactionService;
+    private final FlowExportSanitizer flowExportSanitizer;
     private final JavaType authProviderMapType;
     private final JavaType authProfileMapType;
     private final JavaType dataProfileMapType;
@@ -74,6 +79,7 @@ public final class AccessWorkspaceSerializer {
      */
     public AccessWorkspaceSerializer(RedactionService redactionService) {
         this.redactionService = Objects.requireNonNull(redactionService, "redactionService");
+        this.flowExportSanitizer = new FlowExportSanitizer(redactionService);
         this.objectMapper = JsonMapper.builder()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
                 .build();
@@ -219,16 +225,55 @@ public final class AccessWorkspaceSerializer {
 
     private AccessWorkspace transformWorkspace(AccessWorkspace workspace, boolean excludeSecrets) {
         AccessWorkspace.Builder builder = AccessWorkspace.builder();
-        workspace.authProviders().values().forEach(builder::authProvider);
+        workspace.authProviders().values().forEach(provider ->
+                builder.authProvider(transformAuthProvider(provider, excludeSecrets)));
         workspace.authProfiles().values().forEach(profile -> builder.authProfile(transformAuthProfile(profile, excludeSecrets)));
         workspace.dataProfiles().values().forEach(profile -> builder.dataProfile(transformDataProfile(profile, excludeSecrets)));
-        workspace.templates().values().forEach(template -> builder.template(transformTemplate(template)));
-        workspace.flowTargets().values().forEach(flowTarget -> builder.flowTarget(transformFlowTarget(flowTarget)));
-        workspace.testCases().values().forEach(builder::testCase);
+        workspace.templates().values().forEach(template ->
+                builder.template(transformTemplate(template, excludeSecrets)));
+        workspace.flowTargets().values().forEach(flowTarget ->
+                builder.flowTarget(transformFlowTarget(flowTarget, excludeSecrets)));
+        workspace.testCases().values().forEach(testCase ->
+                builder.testCase(transformTestCase(testCase, excludeSecrets)));
         workspace.results().values().forEach(result -> builder.result(transformResult(result, excludeSecrets)));
         workspace.scenarios().values().forEach(scenario -> builder.scenario(transformScenario(scenario, excludeSecrets)));
         workspace.evaluationProfiles().values().forEach(builder::evaluationProfile);
         return builder.build();
+    }
+
+    private AuthProvider transformAuthProvider(AuthProvider provider, boolean excludeSecrets) {
+        return new AuthProvider(
+                provider.id(), provider.name(), redactionService.redactInlineSecrets(provider.description()),
+                provider.enabled(), provider.loginFlowId(), provider.refreshFlowId(), provider.validateFlowId(),
+                provider.injectionRules().stream()
+                        .map(rule -> transformAuthInjectionRule(rule, excludeSecrets)).toList(),
+                provider.successRules().stream()
+                        .map(rule -> transformAuthSuccessRule(rule, excludeSecrets)).toList(),
+                provider.failureRules().stream()
+                        .map(rule -> transformAuthFailureRule(rule, excludeSecrets)).toList(),
+                provider.fallbackPolicy(), provider.targetRetryPolicy(), provider.stateTtlSeconds());
+    }
+
+    private AuthInjectionRule transformAuthInjectionRule(AuthInjectionRule rule, boolean excludeSecrets) {
+        return new AuthInjectionRule(
+                rule.id(), rule.name(), rule.enabled(), rule.location(), rule.target(),
+                flowExportSanitizer.sanitizeConfiguredValue(
+                        rule.target(), rule.valueTemplate(), excludeSecrets, true),
+                rule.mode());
+    }
+
+    private AuthSuccessRule transformAuthSuccessRule(AuthSuccessRule rule, boolean excludeSecrets) {
+        return new AuthSuccessRule(
+                rule.id(), rule.name(), rule.enabled(), rule.type(), rule.expression(),
+                flowExportSanitizer.sanitizeConfiguredValue(
+                        rule.expression(), rule.expectedValue(), excludeSecrets, false));
+    }
+
+    private AuthFailureRule transformAuthFailureRule(AuthFailureRule rule, boolean excludeSecrets) {
+        return new AuthFailureRule(
+                rule.id(), rule.name(), rule.enabled(), rule.type(), rule.expression(),
+                flowExportSanitizer.sanitizeConfiguredValue(
+                        rule.expression(), rule.expectedValue(), excludeSecrets, false));
     }
 
     private AuthProfile transformAuthProfile(AuthProfile profile, boolean excludeSecrets) {
@@ -270,11 +315,11 @@ public final class AccessWorkspaceSerializer {
         return Map.copyOf(retained);
     }
 
-    private AccessRequestTemplate transformTemplate(AccessRequestTemplate template) {
+    private AccessRequestTemplate transformTemplate(AccessRequestTemplate template, boolean excludeSecrets) {
         return new AccessRequestTemplate(
                 template.id(),
                 template.name(),
-                transformStoredRequest(template.baseRequest()),
+                flowExportSanitizer.sanitizeRequest(template.baseRequest(), excludeSecrets),
                 template.placeholders(),
                 template.operationMetadata(),
                 template.sourceFlowId(),
@@ -283,57 +328,59 @@ public final class AccessWorkspaceSerializer {
                 template.enabled());
     }
 
-    private AccessFlowTarget transformFlowTarget(AccessFlowTarget flowTarget) {
+    private AccessFlowTarget transformFlowTarget(AccessFlowTarget flowTarget, boolean excludeSecrets) {
         return new AccessFlowTarget(
                 flowTarget.id(),
                 flowTarget.name(),
-                transformFlow(flowTarget.flowSnapshot()),
+                flowExportSanitizer.sanitizeFlow(flowTarget.flowSnapshot(), excludeSecrets),
                 flowTarget.sourceFlowId(),
                 flowTarget.sourceFlowName(),
                 flowTarget.sourceFlowHash(),
                 flowTarget.targetStepId(),
                 flowTarget.runMode(),
                 flowTarget.enabled(),
-                flowTarget.injectionOverrides());
+                flowTarget.injectionOverrides().stream()
+                        .map(override -> new dev.nquangit.corestra.access.flow.FlowInjectionOverride(
+                                override.id(), override.name(), override.enabled(), override.targetType(),
+                                override.targetKey(), flowExportSanitizer.sanitizeConfiguredValue(
+                                        override.targetKey(), override.valueTemplate(), excludeSecrets, true)))
+                        .toList());
     }
 
-    private FlowDefinition transformFlow(FlowDefinition flow) {
-        return new FlowDefinition(
-                flow.id(),
-                flow.name(),
-                flow.description(),
-                flow.enabled(),
-                flow.steps().stream().map(this::transformStep).toList(),
-                flow.rules(),
-                flow.aggregation(),
-                flow.triggerConfig());
+    private AccessTestCase transformTestCase(AccessTestCase testCase, boolean excludeSecrets) {
+        return new AccessTestCase(
+                testCase.id(), testCase.name(), testCase.targetType(), testCase.templateId(),
+                testCase.flowTargetId(), testCase.flowId(), testCase.targetStepId(), testCase.setup(),
+                testCase.target(), testCase.expected(), testCase.evaluationProfileId(),
+                testCase.assertions().stream()
+                        .map(rule -> transformResponseAssertion(rule, excludeSecrets)).toList(),
+                testCase.postChecks().stream()
+                        .map(check -> transformPostCheck(check, excludeSecrets)).toList(),
+                testCase.teardown(), testCase.enabled(), testCase.status(), testCase.lastRunAtEpochMillis());
     }
 
-    private FlowStep transformStep(FlowStep step) {
-        return new FlowStep(
-                step.id(),
-                step.name(),
-                step.enabled(),
-                step.notes(),
-                transformStoredRequest(step.requestTemplate()),
-                step.extractRules(),
-                step.injectRules(),
-                step.preconditions(),
-                step.errorStrategy(),
-                null,
-                step.triggerRule(),
-                step.includeInAggregation());
+    private ResponseAssertion transformResponseAssertion(ResponseAssertion rule, boolean excludeSecrets) {
+        return new ResponseAssertion(
+                rule.id(), rule.name(), rule.type(), rule.expression(),
+                flowExportSanitizer.sanitizeConfiguredValue(
+                        rule.expression(), rule.expectedValue(), excludeSecrets, false),
+                rule.enabled());
     }
 
-    private StoredRequestTemplate transformStoredRequest(StoredRequestTemplate request) {
-        return new StoredRequestTemplate(
-                request.method(),
-                request.scheme(),
-                request.host(),
-                request.port(),
-                redactionService.redactInlineSecrets(request.pathAndQuery()),
-                redactionService.redactHeaders(request.headerLines()),
-                redactionService.redactInlineSecrets(request.body()));
+    private PostCheckRequest transformPostCheck(PostCheckRequest check, boolean excludeSecrets) {
+        return new PostCheckRequest(
+                check.id(), check.name(), check.enabled(), check.templateId(), check.authProfileId(),
+                check.authBinding(), check.dataProfileId(), check.scenarioInstanceId(),
+                check.assertions().stream()
+                        .map(rule -> transformPostCheckAssertion(rule, excludeSecrets)).toList());
+    }
+
+    private PostCheckAssertion transformPostCheckAssertion(PostCheckAssertion rule, boolean excludeSecrets) {
+        return new PostCheckAssertion(
+                rule.id(), rule.name(), rule.enabled(), rule.type(), rule.expression(),
+                flowExportSanitizer.sanitizeConfiguredValue(
+                        rule.expression(), rule.expectedValue(), excludeSecrets, false),
+                rule.negate());
     }
 
     private AccessTestResult transformResult(AccessTestResult result, boolean excludeSecrets) {
