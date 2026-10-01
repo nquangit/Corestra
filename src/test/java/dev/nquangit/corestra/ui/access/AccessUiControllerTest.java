@@ -102,6 +102,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class AccessUiControllerTest {
     @Test
@@ -1339,6 +1340,48 @@ class AccessUiControllerTest {
 
         assertTrue(missingReferences.hasBlockingErrors());
         assertFalse(fixedReferences.hasBlockingErrors());
+    }
+
+    @Test
+    void flowiseCredentialSaveCreatesAndUpdatesProfileWithoutLosingAuthState() {
+        InMemoryAccessRepository repository = new InMemoryAccessRepository();
+        AccessUiController controller = controller(repository);
+
+        AuthProfile created = controller.saveCredentialValue(
+                "", "Alice", "user", "manual", "credentials.username", "alice");
+        repository.saveAuthProfile(new AuthProfile(
+                created.id(), created.name(), created.role(), created.providerId(), created.credentials(),
+                new dev.nquangit.corestra.access.auth.AuthState(
+                        Map.of("accessToken", "token"), Map.of(), Map.of(), 0L, 10L), true));
+
+        AuthProfile updated = controller.saveCredentialValue(
+                created.id(), "ignored", "ignored", "missing-provider",
+                "credentials.password", "secret");
+
+        assertEquals(Map.of("username", "alice", "password", "secret"), updated.credentials());
+        assertEquals("token", updated.state().variables().get("accessToken"));
+        assertEquals("Alice", updated.name());
+    }
+
+    @Test
+    void flowiseProfileSaveValidatesNamespacesAndOwnerReferences() {
+        InMemoryAccessRepository repository = new InMemoryAccessRepository();
+        AccessUiController controller = controller(repository);
+
+        assertThrows(IllegalArgumentException.class, () -> controller.saveCredentialValue(
+                "", "Alice", "", "manual", "data.username", "alice"));
+        assertThrows(IllegalArgumentException.class, () -> controller.saveDataValue(
+                "", "Account", "missing-auth", "data.accountId", "123"));
+
+        AuthProfile owner = controller.saveCredentialValue(
+                "", "Alice", "", "manual", "credentials.username", "alice");
+        DataProfile data = controller.saveDataValue(
+                "", "Alice account", owner.id(), "data.accountId", "123");
+        DataProfile updated = controller.saveDataValue(
+                data.id(), "ignored", "missing-auth", "data.customerId", "C-1");
+
+        assertEquals(owner.id(), updated.ownerAuthProfileId());
+        assertEquals(Map.of("accountId", "123", "customerId", "C-1"), updated.values());
     }
 
     private static AccessUiController controller(InMemoryAccessRepository repository) {

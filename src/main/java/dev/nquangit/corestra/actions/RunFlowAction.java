@@ -42,8 +42,19 @@ public final class RunFlowAction {
      * @throws NullPointerException if {@code flow} is {@code null}
      */
     public ExecutionResult run(FlowDefinition flow) {
+        return run(flow, Map.of());
+    }
+
+    /**
+     * Executes the whole flow with caller-supplied initial variables.
+     *
+     * @param flow the flow to execute
+     * @param initialVariables initial variables available to injection rules
+     * @return the execution result
+     */
+    public ExecutionResult run(FlowDefinition flow, Map<String, String> initialVariables) {
         Objects.requireNonNull(flow, "flow");
-        return engine.execute(flow, newContext(flow));
+        return engine.execute(flow, newContext(flow, initialVariables));
     }
 
     /**
@@ -55,8 +66,16 @@ public final class RunFlowAction {
      * @throws NullPointerException if either argument is {@code null}
      */
     public ExecutionResult runSingleStep(FlowDefinition flow, FlowStep step) {
+        return runSingleStep(flow, step, Map.of());
+    }
+
+    /** Executes one step with caller-supplied initial variables. */
+    public ExecutionResult runSingleStep(
+            FlowDefinition flow,
+            FlowStep step,
+            Map<String, String> initialVariables) {
         FlowDefinition single = singleStepFlow(flow, step);
-        return engine.execute(single, newContext(single));
+        return engine.execute(single, newContext(single, initialVariables));
     }
 
     /**
@@ -83,8 +102,16 @@ public final class RunFlowAction {
         return step.withEnabled(true);
     }
 
-    private static ExecutionContext newContext(FlowDefinition flow) {
-        return ExecutionContext.start(
+    private static ExecutionContext newContext(
+            FlowDefinition flow,
+            Map<String, String> initialVariables) {
+        ExecutionContext context = ExecutionContext.start(
                 UUID.randomUUID().toString(), flow.id(), Map.of(), System.currentTimeMillis());
+        if (initialVariables != null) {
+            for (Map.Entry<String, String> entry : initialVariables.entrySet()) {
+                context = context.withVariable(entry.getKey(), entry.getValue());
+            }
+        }
+        return context;
     }
 }

@@ -7,6 +7,7 @@ import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.http.inject.InjectionSuggestionService;
 
 import dev.nquangit.corestra.ui.component.StyledButton;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -50,6 +51,7 @@ public final class RuleSummaryPanel extends JPanel {
 
     private final FlowWorkspaceController controller;
     private final Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier;
+    private final AccessUiController accessController;
 
     private final DefaultTableModel extractModel;
     private final DefaultTableModel injectModel;
@@ -63,7 +65,7 @@ public final class RuleSummaryPanel extends JPanel {
      * @throws NullPointerException if {@code controller} is {@code null}
      */
     public RuleSummaryPanel(FlowWorkspaceController controller) {
-        this(controller, Optional::empty);
+        this(controller, Optional::empty, null);
     }
 
     /**
@@ -75,9 +77,18 @@ public final class RuleSummaryPanel extends JPanel {
     public RuleSummaryPanel(
             FlowWorkspaceController controller,
             Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier) {
+        this(controller, regexSelectionSupplier, null);
+    }
+
+    /** Creates a rule panel with Access Testing variable/profile integration. */
+    public RuleSummaryPanel(
+            FlowWorkspaceController controller,
+            Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier,
+            AccessUiController accessController) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
         this.regexSelectionSupplier = Objects.requireNonNull(regexSelectionSupplier, "regexSelectionSupplier");
+        this.accessController = accessController;
 
         extractModel = readOnlyModel(EXTRACT_COLUMNS);
         injectModel  = readOnlyModel(INJECT_COLUMNS);
@@ -277,7 +288,7 @@ public final class RuleSummaryPanel extends JPanel {
         FlowStep step = controller.selectedStep();
         if (step == null) return;
 
-        RuleEditorDialog.openForInject(this, controller, step, null, saved -> {
+        RuleEditorDialog.openForInject(this, controller, step, null, accessController, saved -> {
             FlowStep updated = withInjectRules(step, appendRule(step.injectRules(), saved));
             saveStep(updated);
         });
@@ -289,7 +300,7 @@ public final class RuleSummaryPanel extends JPanel {
         if (step == null || row < 0) return;
 
         InjectRule rule = step.injectRules().get(row);
-        RuleEditorDialog.openForInject(this, controller, step, rule, saved -> {
+        RuleEditorDialog.openForInject(this, controller, step, rule, accessController, saved -> {
             List<InjectRule> updated = replaceAt(step.injectRules(), row, saved);
             saveStep(withInjectRules(step, updated));
         });

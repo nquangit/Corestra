@@ -2,6 +2,7 @@ package dev.nquangit.corestra.ui.access;
 
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthState;
 import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.access.dependency.SetupSuggestionEngine;
 import dev.nquangit.corestra.access.dependency.SetupSuggestionResult;
@@ -74,6 +75,7 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -445,6 +447,42 @@ public final class AccessUiController {
         return profile;
     }
 
+    /**
+     * Adds or replaces one credential on an existing profile, or creates a new profile.
+     * This is the narrow integration used by the Flowise injection editor.
+     */
+    public AuthProfile saveCredentialValue(
+            String existingId,
+            String newProfileName,
+            String role,
+            String providerId,
+            String credentialKey,
+            String value) {
+        ensureEditable();
+        String key = normalizeScopedKey(credentialKey, "credentials.", "credential");
+        AuthProfile current = existingId == null || existingId.isBlank()
+                ? null
+                : repository.authProfile(existingId.strip()).orElseThrow(
+                        () -> new IllegalArgumentException("Auth profile not found: " + existingId));
+        LinkedHashMap<String, String> credentials = new LinkedHashMap<>(
+                current == null ? Map.of() : current.credentials());
+        credentials.put(key, Objects.requireNonNullElse(value, ""));
+        AuthProfile saved = current == null
+                ? new AuthProfile(
+                        normalizeExistingOrNew("", "auth"),
+                        normalizeRequiredText(newProfileName, "profile name"),
+                        role,
+                        normalizeProviderForSave(providerId),
+                        credentials,
+                        AuthState.empty(),
+                        true)
+                : new AuthProfile(
+                        current.id(), current.name(), current.role(), current.providerId(), credentials,
+                        current.state(), current.enabled());
+        repository.saveAuthProfile(saved);
+        return saved;
+    }
+
     /** Clears cached tokens, headers, cookies, and expiry while preserving actor credentials. */
     public AuthProfile clearAuthProfileState(String id) {
         ensureEditable();
@@ -486,6 +524,35 @@ public final class AccessUiController {
         DataProfile profile = form.toDataProfile(id);
         repository.saveDataProfile(profile);
         return profile;
+    }
+
+    /** Adds or replaces one value on an existing data profile, or creates a new profile. */
+    public DataProfile saveDataValue(
+            String existingId,
+            String newProfileName,
+            String ownerAuthProfileId,
+            String dataKey,
+            String value) {
+        ensureEditable();
+        String key = normalizeScopedKey(dataKey, "data.", "data");
+        DataProfile current = existingId == null || existingId.isBlank()
+                ? null
+                : repository.dataProfile(existingId.strip()).orElseThrow(
+                        () -> new IllegalArgumentException("Data profile not found: " + existingId));
+        LinkedHashMap<String, String> values = new LinkedHashMap<>(
+                current == null ? Map.of() : current.values());
+        values.put(key, Objects.requireNonNullElse(value, ""));
+        DataProfile saved = current == null
+                ? new DataProfile(
+                        normalizeExistingOrNew("", "data"),
+                        normalizeRequiredText(newProfileName, "profile name"),
+                        normalizeOwnerProfileId(ownerAuthProfileId),
+                        values,
+                        true)
+                : new DataProfile(
+                        current.id(), current.name(), current.ownerAuthProfileId(), values, current.enabled());
+        repository.saveDataProfile(saved);
+        return saved;
     }
 
     /**
@@ -1796,6 +1863,51 @@ public final class AccessUiController {
             return idGenerator.newId(prefix);
         }
         return existingId.strip();
+    }
+
+    private static String normalizeScopedKey(String value, String prefix, String label) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(label + " key must not be blank");
+        }
+        String key = value.strip();
+        if (!key.startsWith(prefix)) {
+            throw new IllegalArgumentException(label + " key must start with " + prefix);
+        }
+        key = key.substring(prefix.length()).strip();
+        if (key.isEmpty() || key.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException(
+                    label + " key must not contain whitespace");
+        }
+        return key;
+    }
+
+    private static String normalizeRequiredText(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank");
+        }
+        return value.strip();
+    }
+
+    private String normalizeProviderForSave(String providerId) {
+        String normalized = providerId == null || providerId.isBlank()
+                ? AuthProfile.MANUAL_PROVIDER_ID
+                : providerId.strip();
+        if (!AuthProfile.MANUAL_PROVIDER_ID.equals(normalized)
+                && repository.authProvider(normalized).isEmpty()) {
+            throw new IllegalArgumentException("Auth provider not found: " + normalized);
+        }
+        return normalized;
+    }
+
+    private String normalizeOwnerProfileId(String authProfileId) {
+        if (authProfileId == null || authProfileId.isBlank()) {
+            return "";
+        }
+        String normalized = authProfileId.strip();
+        if (repository.authProfile(normalized).isEmpty()) {
+            throw new IllegalArgumentException("Owner auth profile not found: " + normalized);
+        }
+        return normalized;
     }
 
     private static String requestSummary(StoredRequestTemplate request) {

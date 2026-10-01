@@ -105,7 +105,10 @@ Add extract rules:
 Add inject rules:
 
 - Use inject rules when a later request needs a value from an earlier step.
-- For a variable-based Flowise inject rule, choose from the enabled extractors on earlier enabled steps. The selector shows the variable key together with its source step and extractor. Custom runtime keys and existing saved keys remain editable.
+- For a variable-based Flowise inject rule, the editable selector groups known keys from earlier enabled extractors, Auth Profile credentials/auth state, and Data Profiles. Profile-backed choices store only a reusable key such as `credentials.username`, `auth.accessToken`, or `data.accountId`; they never bind the flow to Alice, Bob, or a particular Data Profile.
+- The preview masks credentials, tokens, headers, and cookies. Data values may be shown in abbreviated form. Profile names identify where a known key was found, but the preview profile is not persisted in the flow.
+- Enter any custom variable key when it does not exist in the catalog. Context guidance below the selector explains where that key must be supplied.
+- For a new `credentials.*` or `data.*` key, click **Save value to profile…**. Choose an existing profile or explicitly create one, enter the value, and confirm. Existing profile state and unrelated values are preserved; saving an existing key replaces that key only. Closing the Inject Rule with **OK** never creates or changes a profile by itself.
 - Click **Suggest** above the injection-rule table to scan the current request for header, cookie, query, form, and JSON field names matching earlier extractor variables. Review the suggestions and select only the rules to add.
 - Session Handler value-template cells offer `{{session.key}}` choices from the profile's enabled extraction rules.
 - Optional transforms run after resolving the variable or static value and before writing it into the request. This is useful for adding/removing prefixes, slicing a value, changing case, URL/Base64 encoding, or regex replacement.
@@ -113,6 +116,15 @@ Add inject rules:
   - Inject `{{auth.accessToken}}` into the `Authorization` header.
   - Inject `{{scenario.confirmToken}}` into a JSON body.
   - Inject `{{data.accountId}}` into a request path or body.
+
+To run a parameterized flow manually, open its **Execution** sub-tab and click **Run Context…**:
+
+1. Select an enabled Auth Profile when the flow reads `credentials.*` or cached `auth.*` values.
+2. Select an enabled Data Profile when the flow reads `data.*` values. If that Data Profile has an owner, Corestra rejects a different selected Auth Profile.
+3. Add optional custom variables as one `key=value` pair per line. A value may contain additional `=` characters. Custom values override values supplied by the selected profiles.
+4. Run the flow or selected step. Corestra checks required profile-scoped variables before sending a request. A whole-flow run recognizes values produced by earlier enabled extractors; a single-step run requires those values in Run Context because earlier steps are not executed.
+
+Run Context is local UI state and does not change the flow definition or Access Matrix. Access Testing rows continue to obtain their actor and data bindings from the row configuration.
 
 Supported value transforms are `trim`, `lowercase`, `uppercase`, `urlDecode`, `urlEncode`, `base64Decode`, `base64Encode`, `substring:START[:END]`, `prefix:TEXT`, `suffix:TEXT`, `stripPrefix:TEXT`, `stripSuffix:TEXT`, and `replaceRegex:PATTERN=>REPLACEMENT`.
 

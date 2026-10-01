@@ -76,7 +76,7 @@ public final class FlowWorkspacePanel extends JPanel {
 
         StepListPanel stepList = new StepListPanel(controller, accessController);
         RequestResponsePanel reqResp = new RequestResponsePanel(controller, api);
-        JTabbedPane detailTabs = buildDetailTabs(controller, api, reqResp,
+        JTabbedPane detailTabs = buildDetailTabs(controller, api, reqResp, accessController,
                 Objects.requireNonNull(executionLog, "executionLog"));
 
         JSplitPane rightSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, reqResp, detailTabs);
@@ -109,12 +109,14 @@ public final class FlowWorkspacePanel extends JPanel {
             FlowWorkspaceController controller,
             MontoyaApi api,
             RequestResponsePanel requestResponsePanel,
+            AccessUiController accessController,
             FlowExecutionLog executionLog) {
         JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
 
-        tabs.addTab("Rules", new RuleSummaryPanel(controller, requestResponsePanel::responseRegexSelection));
+        tabs.addTab("Rules", new RuleSummaryPanel(
+                controller, requestResponsePanel::responseRegexSelection, accessController));
         tabs.addTab("Conditions & Actions", new ConditionActionPanel(controller));
-        tabs.addTab("Execution", new ExecutionPanel(controller));
+        tabs.addTab("Execution", new ExecutionPanel(controller, accessController));
         tabs.addTab("Flow Log", new FlowLogPanel(controller, executionLog, api));
         tabs.addTab("Auto Trigger Flow", new TriggerPanel(controller));
         tabs.addTab("Aggregation", new AggregationPanel(controller));

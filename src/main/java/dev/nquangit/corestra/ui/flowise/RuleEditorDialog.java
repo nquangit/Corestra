@@ -4,10 +4,14 @@ import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.access.auth.AuthProfile;
+import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.http.extract.RegexSuggestionService;
+import dev.nquangit.corestra.ui.access.AccessUiController;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -19,17 +23,22 @@ import javax.swing.DefaultListCellRenderer;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JPasswordField;
 import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
+import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Window;
 import java.util.ArrayList;
@@ -115,6 +124,17 @@ public final class RuleEditorDialog extends JDialog {
             FlowStep step,
             InjectRule rule,
             Consumer<InjectRule> onSave) {
+        openForInject(parent, controller, step, rule, null, onSave);
+    }
+
+    /** Opens an inject editor enriched with Access Testing variable profiles. */
+    public static void openForInject(
+            Component parent,
+            FlowWorkspaceController controller,
+            FlowStep step,
+            InjectRule rule,
+            AccessUiController accessController,
+            Consumer<InjectRule> onSave) {
         Objects.requireNonNull(step, "step");
         Objects.requireNonNull(controller, "controller");
         Objects.requireNonNull(onSave, "onSave");
@@ -123,7 +143,7 @@ public final class RuleEditorDialog extends JDialog {
         RuleEditorDialog dialog = new RuleEditorDialog(
                 window,
                 "Inject Rule",
-                buildInjectForm(controller.activeFlow(), step, rule, onSave));
+                buildInjectForm(controller.activeFlow(), step, rule, accessController, onSave));
         dialog.setVisible(true);
     }
 
@@ -317,6 +337,7 @@ public final class RuleEditorDialog extends JDialog {
             FlowDefinition flow,
             FlowStep step,
             InjectRule existing,
+            AccessUiController accessController,
             Consumer<InjectRule> onSave) {
         JTextField nameField = new JTextField(existing != null ? existing.name() : "New Inject Rule", 24);
         JCheckBox enabledBox = new JCheckBox("Enabled", existing == null || existing.enabled());
@@ -324,9 +345,10 @@ public final class RuleEditorDialog extends JDialog {
         JTextField selectorField = new JTextField(existing != null ? existing.targetSelector() : "", 24);
         JComboBox<InjectRule.ValueSourceType> sourceTypeCombo =
                 new JComboBox<>(InjectRule.ValueSourceType.values());
-        List<ExtractedVariableOption> variableOptions = availableExtractedVariables(flow, step);
-        JComboBox<ExtractedVariableOption> sourceKeyCombo = new JComboBox<>(
-                variableOptions.toArray(ExtractedVariableOption[]::new));
+        InjectionVariableCatalog variableCatalog = new InjectionVariableCatalog(accessController);
+        List<InjectionVariableCatalog.VariableOption> variableOptions = variableCatalog.options(flow, step);
+        JComboBox<InjectionVariableCatalog.VariableOption> sourceKeyCombo = new JComboBox<>(
+                variableOptions.toArray(InjectionVariableCatalog.VariableOption[]::new));
         sourceKeyCombo.setEditable(true);
         sourceKeyCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
@@ -338,14 +360,14 @@ public final class RuleEditorDialog extends JDialog {
                     boolean cellHasFocus) {
                 JLabel label = (JLabel) super.getListCellRendererComponent(
                         list, value, index, isSelected, cellHasFocus);
-                if (value instanceof ExtractedVariableOption option) {
+                if (value instanceof InjectionVariableCatalog.VariableOption option) {
                     label.setText(option.displayLabel());
                 }
                 return label;
             }
         });
-        sourceKeyCombo.setPrototypeDisplayValue(new ExtractedVariableOption(
-                "variableName", "Previous step", "Extractor rule"));
+        sourceKeyCombo.setPrototypeDisplayValue(new InjectionVariableCatalog.VariableOption(
+                "credentials.username", "Credentials", "Auth profile name", "", true));
         selectExistingVariable(sourceKeyCombo, existing == null ? "" : existing.valueSourceKey());
         JTextField staticValueField = new JTextField(existing != null ? existing.staticValue() : "", 24);
         JTextArea transformsArea = new JTextArea(
@@ -355,8 +377,13 @@ public final class RuleEditorDialog extends JDialog {
         JLabel sourceKeyLabel = new JLabel("Variable key:");
         JLabel staticValueLabel = new JLabel("Static value:");
         JLabel variableHelpLabel = new JLabel(variableOptions.isEmpty()
-                ? "No enabled extractors exist before this step; custom runtime keys are still accepted."
-                : "Choose a variable extracted by an earlier enabled step, or enter a custom runtime key.");
+                ? "No known variables yet; enter a custom runtime key."
+                : "Choose a known key or type a custom key. The flow stores the key, not a profile ID.");
+        JLabel previewLabel = new JLabel(" ");
+        JButton saveToProfileButton = new JButton("Save value to profile…");
+        saveToProfileButton.setToolTipText(
+                "Save a credentials.* or data.* value to an Access Testing profile after confirmation");
+        saveToProfileButton.setEnabled(false);
         JLabel errorLabel = new JLabel(" ");
 
         if (existing != null) {
@@ -370,6 +397,8 @@ public final class RuleEditorDialog extends JDialog {
             sourceKeyLabel.setVisible(!isStatic);
             sourceKeyCombo.setVisible(!isStatic);
             variableHelpLabel.setVisible(!isStatic);
+            previewLabel.setVisible(!isStatic);
+            saveToProfileButton.setVisible(!isStatic && accessController != null);
             staticValueLabel.setVisible(isStatic);
             staticValueField.setVisible(isStatic);
         };
@@ -384,6 +413,8 @@ public final class RuleEditorDialog extends JDialog {
                 {"Value source:", sourceTypeCombo},
                 {sourceKeyLabel, sourceKeyCombo},
                 {"", variableHelpLabel},
+                {"Preview:", previewLabel},
+                {"", saveToProfileButton},
                 {staticValueLabel, staticValueField},
                 {"Write strategy:", strategyCombo},
                 {"Transforms (one per line):", new JScrollPane(transformsArea)},
@@ -397,6 +428,36 @@ public final class RuleEditorDialog extends JDialog {
 
         JButton okButton = new JButton("OK");
         JButton cancelButton = new JButton("Cancel");
+
+        Runnable updateVariablePreview = () -> {
+            Object selected = sourceKeyCombo.getEditor().getItem();
+            if (selected instanceof InjectionVariableCatalog.VariableOption option) {
+                previewLabel.setText(option.displayPreview());
+            } else {
+                String key = selectedVariableKey(sourceKeyCombo);
+                previewLabel.setText(key.isEmpty()
+                        ? "Enter a variable key"
+                        : contextHint(key));
+            }
+            String key = selectedVariableKey(sourceKeyCombo);
+            saveToProfileButton.setEnabled(
+                    key.startsWith("credentials.") || key.startsWith("data."));
+        };
+        sourceKeyCombo.addActionListener(event -> updateVariablePreview.run());
+        if (sourceKeyCombo.getEditor().getEditorComponent() instanceof JTextField editor) {
+            editor.getDocument().addDocumentListener(onDocumentChange(updateVariablePreview));
+        }
+        saveToProfileButton.addActionListener(event -> {
+            String key = selectedVariableKey(sourceKeyCombo);
+            try {
+                saveVariableToProfile(wrapper, accessController, key);
+                reloadVariableOptions(sourceKeyCombo, variableCatalog.options(flow, step), key);
+            } catch (IllegalArgumentException | IllegalStateException exception) {
+                JOptionPane.showMessageDialog(wrapper, exception.getMessage(),
+                        "Cannot save profile value", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+        updateVariablePreview.run();
 
         okButton.addActionListener(e -> {
             String name = nameField.getText().strip();
@@ -422,6 +483,10 @@ public final class RuleEditorDialog extends JDialog {
 
             if (!isStatic && sourceKey.isEmpty()) {
                 errorLabel.setText("Variable key must not be empty.");
+                return;
+            }
+            if (!isStatic && sourceKey.chars().anyMatch(Character::isWhitespace)) {
+                errorLabel.setText("Variable key must not contain whitespace.");
                 return;
             }
 
@@ -481,7 +546,7 @@ public final class RuleEditorDialog extends JDialog {
     }
 
     private static void selectExistingVariable(
-            JComboBox<ExtractedVariableOption> combo,
+            JComboBox<InjectionVariableCatalog.VariableOption> combo,
             String existingKey) {
         if (existingKey == null || existingKey.isBlank()) {
             if (combo.getItemCount() > 0) {
@@ -491,7 +556,7 @@ public final class RuleEditorDialog extends JDialog {
         }
         String normalized = existingKey.strip();
         for (int index = 0; index < combo.getItemCount(); index++) {
-            ExtractedVariableOption option = combo.getItemAt(index);
+            InjectionVariableCatalog.VariableOption option = combo.getItemAt(index);
             if (option.key().equals(normalized)) {
                 combo.setSelectedIndex(index);
                 return;
@@ -500,12 +565,162 @@ public final class RuleEditorDialog extends JDialog {
         combo.getEditor().setItem(normalized);
     }
 
-    static String selectedVariableKey(JComboBox<ExtractedVariableOption> combo) {
+    static String selectedVariableKey(JComboBox<?> combo) {
         Object selected = combo.getEditor().getItem();
+        if (selected instanceof InjectionVariableCatalog.VariableOption option) {
+            return option.key();
+        }
         if (selected instanceof ExtractedVariableOption option) {
             return option.key();
         }
         return selected == null ? "" : selected.toString().strip();
+    }
+
+    private static String contextHint(String key) {
+        if (key.startsWith("credentials.") || key.startsWith("auth.")) {
+            return "Resolved when this run has an Auth Profile.";
+        }
+        if (key.startsWith("data.")) {
+            return "Resolved when this run has a Data Profile.";
+        }
+        if (key.startsWith("env.")) {
+            return "Add this key in Flowise Run Context or the Access environment.";
+        }
+        return "Custom key; provide it in Run Context or extract it in an earlier step.";
+    }
+
+    private static void reloadVariableOptions(
+            JComboBox<InjectionVariableCatalog.VariableOption> combo,
+            List<InjectionVariableCatalog.VariableOption> options,
+            String selectedKey) {
+        combo.removeAllItems();
+        options.forEach(combo::addItem);
+        selectExistingVariable(combo, selectedKey);
+    }
+
+    private static void saveVariableToProfile(
+            Component parent,
+            AccessUiController accessController,
+            String scopedKey) {
+        if (accessController == null) {
+            throw new IllegalStateException("Access Testing is not available.");
+        }
+        boolean credential = scopedKey != null && scopedKey.startsWith("credentials.");
+        boolean data = scopedKey != null && scopedKey.startsWith("data.");
+        if (!credential && !data) {
+            throw new IllegalArgumentException(
+                    "Only credentials.* and data.* keys can be saved to a profile.");
+        }
+
+        JComboBox<ProfileChoice> profileCombo = new JComboBox<>();
+        if (credential) {
+            for (AuthProfile profile : accessController.authProfiles()) {
+                profileCombo.addItem(new ProfileChoice(profile.id(), profile.name(), false));
+            }
+        } else {
+            for (DataProfile profile : accessController.dataProfiles()) {
+                profileCombo.addItem(new ProfileChoice(profile.id(), profile.name(), false));
+            }
+        }
+        ProfileChoice createChoice = new ProfileChoice("", "Create new profile…", true);
+        profileCombo.addItem(createChoice);
+        if (profileCombo.getItemCount() == 1) {
+            profileCombo.setSelectedItem(createChoice);
+        }
+
+        JTextField nameField = new JTextField(credential ? "New Auth Profile" : "New Data Profile");
+        JTextField roleField = new JTextField();
+        JComboBox<ProfileChoice> relationCombo = new JComboBox<>();
+        if (credential) {
+            relationCombo.addItem(new ProfileChoice(AuthProfile.MANUAL_PROVIDER_ID, "Manual", false));
+            for (AuthProvider provider : accessController.authProviders()) {
+                relationCombo.addItem(new ProfileChoice(provider.id(), provider.name(), false));
+            }
+        } else {
+            relationCombo.addItem(new ProfileChoice("", "No owner", false));
+            for (AuthProfile profile : accessController.authProfiles()) {
+                relationCombo.addItem(new ProfileChoice(profile.id(), profile.name(), false));
+            }
+        }
+        JTextField valueField = credential ? new JPasswordField(24) : new JTextField(24);
+        JLabel keyLabel = new JLabel(scopedKey);
+        JLabel effectLabel = new JLabel("Existing values with this key will be replaced after confirmation.");
+
+        JPanel fields = new JPanel(new GridLayout(0, 2, 6, 6));
+        fields.add(new JLabel("Profile:"));
+        fields.add(profileCombo);
+        fields.add(new JLabel("Variable key:"));
+        fields.add(keyLabel);
+        fields.add(new JLabel("Value:"));
+        fields.add(valueField);
+        fields.add(new JLabel("New profile name:"));
+        fields.add(nameField);
+        if (credential) {
+            fields.add(new JLabel("Role:"));
+            fields.add(roleField);
+            fields.add(new JLabel("Auth provider:"));
+        } else {
+            fields.add(new JLabel("Owner Auth Profile:"));
+        }
+        fields.add(relationCombo);
+
+        Runnable updateNewFields = () -> {
+            ProfileChoice selected = (ProfileChoice) profileCombo.getSelectedItem();
+            boolean creating = selected != null && selected.createNew();
+            nameField.setEnabled(creating);
+            roleField.setEnabled(creating);
+            relationCombo.setEnabled(creating);
+        };
+        profileCombo.addActionListener(event -> updateNewFields.run());
+        updateNewFields.run();
+
+        JPanel content = new JPanel(new BorderLayout(0, 8));
+        content.add(fields, BorderLayout.CENTER);
+        content.add(effectLabel, BorderLayout.SOUTH);
+        int result = JOptionPane.showConfirmDialog(
+                parent,
+                content,
+                credential ? "Save Credential Value" : "Save Data Value",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        ProfileChoice profile = (ProfileChoice) profileCombo.getSelectedItem();
+        ProfileChoice relation = (ProfileChoice) relationCombo.getSelectedItem();
+        if (profile == null) {
+            throw new IllegalArgumentException("Select a profile.");
+        }
+        String value = valueField.getText();
+        if (credential) {
+            accessController.saveCredentialValue(
+                    profile.id(), nameField.getText(), roleField.getText(),
+                    relation == null ? AuthProfile.MANUAL_PROVIDER_ID : relation.id(), scopedKey, value);
+        } else {
+            accessController.saveDataValue(
+                    profile.id(), nameField.getText(), relation == null ? "" : relation.id(), scopedKey, value);
+        }
+        JOptionPane.showMessageDialog(
+                parent,
+                "Saved " + scopedKey + " to " + (profile.createNew() ? nameField.getText().strip() : profile.label()) + ".",
+                "Profile updated",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private static DocumentListener onDocumentChange(Runnable action) {
+        return new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent event) { action.run(); }
+            @Override public void removeUpdate(DocumentEvent event) { action.run(); }
+            @Override public void changedUpdate(DocumentEvent event) { action.run(); }
+        };
+    }
+
+    private record ProfileChoice(String id, String label, boolean createNew) {
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 
     record ExtractedVariableOption(String key, String stepName, String ruleName) {
