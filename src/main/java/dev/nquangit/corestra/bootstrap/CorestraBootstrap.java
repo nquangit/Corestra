@@ -58,6 +58,7 @@ import dev.nquangit.corestra.access.variable.TemplateRenderer;
 import dev.nquangit.corestra.access.variable.VariableResolver;
 import dev.nquangit.corestra.ui.CorestraRootPanel;
 import dev.nquangit.corestra.ui.access.AccessTestingPanel;
+import dev.nquangit.corestra.ui.access.AuthenticationPanel;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 import dev.nquangit.corestra.ui.flowise.FlowisePanel;
@@ -222,13 +223,16 @@ public final class CorestraBootstrap {
                 accessRunner,
                 accessPlanRunner,
                 flowRepository::loadAll,
-                raceRunner);
+                raceRunner,
+                controller::updateFlow);
         AccessTestingPanel accessTestingPanel = new AccessTestingPanel(accessUiController);
+        AuthenticationPanel authenticationPanel = new AuthenticationPanel(accessUiController);
         FlowisePanel flowisePanel = new FlowisePanel(controller, api, accessUiController, executionLog);
         SessionHandlerPanel sessionHandlerPanel = new SessionHandlerPanel(sessionManager, flowRepository::loadAll);
         ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer,
                 settingsRepo, accessRepository, sessionProfileRepository, () -> {
                     accessTestingPanel.refreshUi();
+                    authenticationPanel.refreshUi();
                     sessionHandlerPanel.refreshProfiles();
                 }, new ProjectDataMaintenanceService(api.persistence()), () -> {
                     if (accessUiController.isPlanRunning()) {
@@ -242,7 +246,7 @@ public final class CorestraBootstrap {
         ParameterDictionaryPanel parameterDictionaryPanel =
                 new ParameterDictionaryPanel(parameterDictionary, parameterDiscoveryHandler);
         CorestraRootPanel rootPanel = new CorestraRootPanel(
-                flowisePanel, projectPanel, sessionHandlerPanel, accessTestingPanel,
+                flowisePanel, projectPanel, authenticationPanel, sessionHandlerPanel, accessTestingPanel,
                 parameterDictionaryPanel, api);
 
         api.userInterface().registerSuiteTab("Corestra", rootPanel);

@@ -88,6 +88,7 @@ import org.junit.jupiter.api.Test;
 
 import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
+import javax.swing.JButton;
 import java.awt.Component;
 import java.awt.Container;
 import java.lang.reflect.Constructor;
@@ -98,6 +99,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -144,6 +146,27 @@ class AccessUiControllerTest {
         assertEquals("Auth Variables", tabs.getTitleAt(1));
         assertEquals("Headers", tabs.getTitleAt(2));
         assertEquals("Cookies", tabs.getTitleAt(3));
+    }
+
+    @Test
+    void authenticationIsASharedRootWorkspaceAndAccessTestingStartsWithDataProfiles() {
+        AccessUiController controller = controller(new InMemoryAccessRepository());
+        AuthenticationPanel authentication = new AuthenticationPanel(controller);
+        AccessTestingPanel accessTesting = new AccessTestingPanel(controller);
+
+        JTabbedPane authenticationTabs = findTabbedPane(authentication);
+        assertEquals(List.of("Auth Providers", "Auth Profiles"), tabTitles(authenticationTabs));
+
+        JTabbedPane accessTabs = findTabbedPane(accessTesting);
+        assertEquals(List.of(
+                        "Data Profiles", "Templates", "Flow Targets", "Evaluation Profiles",
+                        "Matrix", "Results", "Guide"),
+                tabTitles(accessTabs));
+
+        AtomicBoolean navigated = new AtomicBoolean();
+        accessTesting.setAuthenticationNavigator(() -> navigated.set(true));
+        findButton(accessTesting, "Manage Authentication…").doClick();
+        assertTrue(navigated.get());
     }
 
     @Test
@@ -346,6 +369,30 @@ class AccessUiControllerTest {
             }
         }
         throw new AssertionError("No JTabbedPane found");
+    }
+
+    private static List<String> tabTitles(JTabbedPane tabs) {
+        java.util.ArrayList<String> titles = new java.util.ArrayList<>();
+        for (int index = 0; index < tabs.getTabCount(); index++) {
+            titles.add(tabs.getTitleAt(index));
+        }
+        return List.copyOf(titles);
+    }
+
+    private static JButton findButton(Component component, String text) {
+        if (component instanceof JButton button && text.equals(button.getText())) {
+            return button;
+        }
+        if (component instanceof Container container) {
+            for (Component child : container.getComponents()) {
+                try {
+                    return findButton(child, text);
+                } catch (AssertionError ignored) {
+                    // Keep searching siblings.
+                }
+            }
+        }
+        throw new AssertionError("No button found: " + text);
     }
 
     @Test

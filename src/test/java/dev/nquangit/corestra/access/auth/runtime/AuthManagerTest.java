@@ -61,6 +61,23 @@ class AuthManagerTest {
     }
 
     @Test
+    void loginNormalizesLegacyAuthPrefixedOutputsIncludingExpiry() {
+        InMemoryAccessRepository repository = repository(AuthFallbackPolicy.LOGIN_ONLY);
+        RecordingRunner runner = new RecordingRunner()
+                .then(AuthFlowPurpose.LOGIN, success(
+                        "auth.accessToken", "legacy-token",
+                        "auth.expiresIn", "60"));
+
+        AuthEnsureResult result = manager(repository, runner)
+                .ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT);
+
+        AuthState state = result.updatedProfile().orElseThrow().state();
+        assertEquals("legacy-token", state.variables().get("accessToken"));
+        assertEquals("60", state.variables().get("expiresIn"));
+        assertEquals(61_000L, state.expiresAtEpochMillis());
+    }
+
+    @Test
     void relativeExpiryAndProviderFallbackTtlPreventPerTargetLogin() {
         InMemoryAccessRepository relativeRepository = repository(AuthFallbackPolicy.LOGIN_ONLY);
         RecordingRunner relativeRunner = new RecordingRunner()

@@ -241,7 +241,7 @@ public final class SessionHandlerPanel extends JPanel {
 
     private JPanel buildLinkedAuthProfileSelector() {
         JButton reload = new JButton("Reload");
-        reload.setToolTipText("Reload Auth Profiles from Access Testing.");
+        reload.setToolTipText("Reload shared profiles from Authentication.");
         reload.addActionListener(event -> {
             AuthProfileOption selected = (AuthProfileOption) linkedAuthProfileCombo.getSelectedItem();
             refreshLinkedAuthProfileOptions(selected == null ? "" : selected.id());
@@ -548,7 +548,7 @@ public final class SessionHandlerPanel extends JPanel {
                 : "Uses this Session Profile's flow, state, TTL, and injection rules.");
         authSourceHint.setToolTipText(linked
                 ? "Local Session injection rules remain available as optional traffic-specific overrides."
-                : "Choose Linked Auth Profile to reuse an actor configured under Access Testing.");
+                : "Choose Linked Auth Profile to reuse an actor configured under Authentication.");
     }
 
     private void loadSelectedProfile() {

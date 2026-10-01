@@ -382,7 +382,7 @@ public final class RuleEditorDialog extends JDialog {
         JLabel previewLabel = new JLabel(" ");
         JButton saveToProfileButton = new JButton("Save value to profile…");
         saveToProfileButton.setToolTipText(
-                "Save a credentials.* or data.* value to an Access Testing profile after confirmation");
+                "Save a credentials.* value to Authentication or a data.* value to Access Testing after confirmation");
         saveToProfileButton.setEnabled(false);
         JLabel errorLabel = new JLabel(" ");
 
@@ -603,7 +603,7 @@ public final class RuleEditorDialog extends JDialog {
             AccessUiController accessController,
             String scopedKey) {
         if (accessController == null) {
-            throw new IllegalStateException("Access Testing is not available.");
+            throw new IllegalStateException("Authentication and Access Testing profiles are not available.");
         }
         boolean credential = scopedKey != null && scopedKey.startsWith("credentials.");
         boolean data = scopedKey != null && scopedKey.startsWith("data.");

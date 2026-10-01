@@ -7,6 +7,7 @@ import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.auth.AuthProvider;
 import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
 import dev.nquangit.corestra.access.auth.AuthState;
+import dev.nquangit.corestra.access.auth.analysis.AuthProviderFlowAnalyzer;
 import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.access.evaluate.EvaluationProfile;
 import dev.nquangit.corestra.access.evaluate.IndicatorType;
@@ -37,6 +38,7 @@ import dev.nquangit.corestra.access.variable.VariableErrorType;
 import dev.nquangit.corestra.access.variable.VariableResolver;
 import dev.nquangit.corestra.access.workspace.AccessWorkspace;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
+import dev.nquangit.corestra.flow.FlowDefinition;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,6 +55,7 @@ public final class AccessProjectValidator {
             new VariableResolver(new DefaultRuntimeValueProvider()));
     private final AccessRequestTemplateRenderer requestRenderer = new AccessRequestTemplateRenderer(stringRenderer);
     private final AccessScopedVariableStoreFactory storeFactory = new AccessScopedVariableStoreFactory();
+    private final AuthProviderFlowAnalyzer authProviderFlowAnalyzer = new AuthProviderFlowAnalyzer();
 
     /**
      * Validates an access workspace without mutating it.
@@ -61,10 +64,31 @@ public final class AccessProjectValidator {
      * @return validation report
      */
     public AccessValidationReport validate(AccessWorkspace workspace) {
+        return validateInternal(workspace, List.of(), false);
+    }
+
+    /**
+     * Validates an access workspace and checks AuthProvider contracts against current Flowise definitions.
+     *
+     * @param workspace workspace snapshot
+     * @param flows current Flowise definitions
+     * @return validation report
+     */
+    public AccessValidationReport validate(AccessWorkspace workspace, List<FlowDefinition> flows) {
+        return validateInternal(workspace, flows, true);
+    }
+
+    private AccessValidationReport validateInternal(
+            AccessWorkspace workspace,
+            List<FlowDefinition> flows,
+            boolean validateFlowContracts) {
         Objects.requireNonNull(workspace, "workspace");
         ValidationState state = new ValidationState();
         validateAuthProfiles(workspace, state);
         validateAuthProviders(workspace, state);
+        if (validateFlowContracts) {
+            validateAuthProviderFlowContracts(workspace, flows, state);
+        }
         validateDataProfiles(workspace, state);
         validateTemplates(workspace, state);
         validateMatrixRows(workspace, state);
@@ -72,6 +96,27 @@ public final class AccessProjectValidator {
         validateEvaluationProfiles(workspace, state);
         validateExportSecurity(workspace, state);
         return new AccessValidationReport(state.issues());
+    }
+
+    private void validateAuthProviderFlowContracts(
+            AccessWorkspace workspace,
+            List<FlowDefinition> flows,
+            ValidationState state) {
+        List<FlowDefinition> availableFlows = List.copyOf(Objects.requireNonNullElse(flows, List.of()));
+        for (AuthProvider provider : workspace.authProviders().values()) {
+            authProviderFlowAnalyzer.analyze(provider, availableFlows).issues().stream()
+                    .filter(issue -> !issue.title().endsWith("Flow is required"))
+                    .forEach(issue -> state.add(
+                            issue.severity() == AuthProviderFlowAnalyzer.Severity.ERROR
+                                    ? AccessValidationSeverity.ERROR
+                                    : AccessValidationSeverity.WARNING,
+                            AccessValidationCategory.AUTH_PROVIDER,
+                            issue.title(),
+                            "AuthProvider '" + provider.name() + "': " + issue.detail(),
+                            "AuthProvider",
+                            provider.id(),
+                            "Open Authentication > Auth Providers and review Flow Contract."));
+        }
     }
 
     private void validateAuthProfiles(AccessWorkspace workspace, ValidationState state) {

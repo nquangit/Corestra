@@ -43,9 +43,10 @@ If Burp cannot load the JAR, confirm Burp is using a compatible Java runtime and
 
 ## 3. Core Concepts
 
-Corestra has two major work areas:
+Corestra has three major work areas:
 
 - **Flowise**: Build reusable multi-step HTTP flows.
+- **Authentication**: Manage shared login behavior, actors, credentials, and cached auth state.
 - **Access Testing**: Build, run, and document authorization test cases.
 
 Important terms:
@@ -66,7 +67,7 @@ Use this order for most access-control testing:
 
 1. Capture important requests into Flowise.
 2. Build login, refresh, validation, setup, target, post-check, and teardown flows.
-3. Configure Auth Providers and Auth Profiles.
+3. Configure shared Auth Providers and Auth Profiles under **Authentication**.
 4. Create Data Profiles for owned objects.
 5. Convert requests or import OpenAPI/Postman definitions into Access Templates.
 6. Generate or manually create Matrix rows.
@@ -98,7 +99,7 @@ Add extract rules:
 - For **Regex**, choose whether to search the body, the start line and headers, or the full HTTP message. Capture group `0` returns the full match; positive numbers return a capturing group. **Test regex** runs the rule against the step's stored request or response and shows the matched value or the exact failure.
 - Optional transforms run in order after extraction. Put one operation per line, for example `trim`, `substring:0:16`, `stripPrefix:Bearer`, or `base64Decode`.
 - Common examples:
-  - Extract `accessToken` from login JSON into `auth.accessToken`.
+  - Extract `accessToken` from login JSON into `accessToken`. Auth Provider stores that unscoped key in Auth State and exposes it as `{{auth.accessToken}}` when consumed.
   - Extract `confirmToken` from a setup response into `scenario.confirmToken`.
   - Extract `transferId` into `scenario.transferId`.
 
@@ -139,7 +140,7 @@ The root **Parameters** tab passively builds a runtime parameter dictionary from
 Use one parameterized login flow for Access Testing and normal Burp traffic:
 
 1. Build a generic login flow whose request reads `credentials.*` and whose response extracts auth variables.
-2. Configure that flow under an Access Testing Auth Provider.
+2. Configure that flow under a shared Auth Provider in **Authentication**.
 3. Create one Auth Profile per real actor and put username, password, device ID, or other stable login inputs in **Credentials**.
 4. Open **Session Handler**, add or select a Session Profile, and set **Authentication** to **Linked Auth Profile**.
 5. Select the actor. Use **Reload** if the actor was created while the Session Handler tab was already open.
@@ -171,9 +172,9 @@ Recommended scopes:
 
 Prefer explicit scoped placeholders. They make test rows easier to debug and avoid ambiguous substitutions.
 
-## 7. Access Testing: Auth Providers
+## 7. Authentication: Auth Providers
 
-Open **Corestra > Access Testing > Auth Providers**.
+Open **Corestra > Authentication > Auth Providers**.
 
 An Auth Provider defines how Corestra obtains and applies authentication material.
 
@@ -187,14 +188,17 @@ When adding or editing a provider:
 6. Choose a fallback policy.
 7. Choose a target retry policy.
 8. Set **Auth State TTL**. This fallback lifetime prevents login from running for every target when the server does not return expiry metadata. Extracted `expiresAt`, `expiresIn`, or `expires_in` takes priority.
-9. Configure injection rules. Bearer, Cookie, and CSRF presets add the common rule shapes; review their variable and cookie/header names.
-10. Configure success and failure rules.
+9. Review **Flow Contract**. It lists required inputs, the Auth State keys produced by enabled extractors, and configuration errors or warnings. Extractor outputs should be unscoped (`accessToken`); their provider form is shown as `{{auth.accessToken}}`.
+10. Configure injection rules. The editable **Value Template** selector is populated from selected-flow extractors. **Generate from flow** adds conservative Bearer, Cookie, and CSRF suggestions without replacing existing rules; review their variable and cookie/header names.
+11. Configure success and failure rules.
 
 The Login, Refresh, and Validate controls list flows already created in Flowise. Use **None** when a policy does not need that flow.
 
+Corestra accepts legacy extractor names such as `auth.accessToken` and normalizes them to `accessToken` when Auth State is updated. Flow Contract reports these names as warnings. **Fix auth.* extractor names** performs an explicit atomic cleanup on the selected auth flows and updates later Flowise injection references; ambiguous collisions are skipped. If both forms are returned together at runtime, the canonical unscoped name takes precedence.
+
 Typical provider setup:
 
-- Login Flow: a flow that sends credentials and extracts `auth.accessToken`, cookies, CSRF tokens, or other auth variables.
+- Login Flow: a flow that sends credentials and extracts unscoped Auth State keys such as `accessToken`, `sessionId`, and `csrfToken`.
 - Refresh Flow: a flow that uses `auth.refreshToken` or cookies to obtain a new access token.
 - Validate Flow: a low-impact request that confirms the current auth state is still valid.
 - Injection rule: inject `Bearer {{auth.accessToken}}` into the `Authorization` header.
@@ -207,9 +211,9 @@ Use `403` as an auth failure signal only when the application truly uses it for 
 
 Do not store real production credentials in shared exports. Use sanitized export when sharing projects.
 
-## 8. Access Testing: Auth Profiles
+## 8. Authentication: Auth Profiles
 
-Open **Auth Profiles**.
+Open **Corestra > Authentication > Auth Profiles**.
 
 Create one Auth Profile per actor:
 
@@ -528,7 +532,7 @@ Access Testing sends actor-prepared authentication directly through the selected
 
 Use full export only inside trusted storage or when the recipient is authorized to receive secrets.
 
-The **Danger Zone** displays the exact UTF-8 size of Corestra's serialized string documents and the number of extension project entries. Burp container overhead is not included. **Clean Burp Project Data** removes all project-scoped Corestra flows, Access Testing configuration/results/evidence, Session Handler profiles/state, metadata, settings, and quarantine data. Export anything needed before confirming. UI preferences stored outside project data are preserved.
+The **Danger Zone** displays the exact UTF-8 size of Corestra's serialized string documents and the number of extension project entries. Burp container overhead is not included. **Clean Burp Project Data** removes all project-scoped Corestra flows, Authentication and Access Testing configuration/results/evidence, Session Handler profiles/state, metadata, settings, and quarantine data. Export anything needed before confirming. UI preferences stored outside project data are preserved.
 
 ## 24. Troubleshooting
 

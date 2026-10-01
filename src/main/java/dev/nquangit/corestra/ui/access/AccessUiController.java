@@ -81,6 +81,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -100,6 +101,7 @@ public final class AccessUiController {
     private final RaceRunner raceRunner;
     private final AccessTemplateImportService importService;
     private final Supplier<List<FlowDefinition>> flowSupplier;
+    private final Consumer<FlowDefinition> flowUpdater;
     private final FlowTargetHasher flowTargetHasher = new FlowTargetHasher();
 
     /**
@@ -169,7 +171,7 @@ public final class AccessUiController {
             AccessScopedVariableStoreFactory storeFactory,
             SingleAccessTestRunner runner,
             AccessPlanRunner planRunner) {
-        this(repository, idGenerator, templateRenderer, storeFactory, runner, planRunner, () -> List.of(), null);
+        this(repository, idGenerator, templateRenderer, storeFactory, runner, planRunner, () -> List.of(), null, null);
     }
 
     /**
@@ -191,7 +193,7 @@ public final class AccessUiController {
             SingleAccessTestRunner runner,
             AccessPlanRunner planRunner,
             Supplier<List<FlowDefinition>> flowSupplier) {
-        this(repository, idGenerator, templateRenderer, storeFactory, runner, planRunner, flowSupplier, null);
+        this(repository, idGenerator, templateRenderer, storeFactory, runner, planRunner, flowSupplier, null, null);
     }
 
     /**
@@ -215,6 +217,33 @@ public final class AccessUiController {
             AccessPlanRunner planRunner,
             Supplier<List<FlowDefinition>> flowSupplier,
             RaceRunner raceRunner) {
+        this(repository, idGenerator, templateRenderer, storeFactory, runner, planRunner,
+                flowSupplier, raceRunner, null);
+    }
+
+    /**
+     * Creates an access UI controller with read/write Flowise integration.
+     *
+     * @param repository in-memory access repository
+     * @param idGenerator identifier generator
+     * @param templateRenderer access template renderer
+     * @param storeFactory scoped variable store factory
+     * @param runner manual single test runner
+     * @param planRunner sequential plan runner
+     * @param flowSupplier supplier for persisted flow definitions
+     * @param raceRunner explicit race runner
+     * @param flowUpdater callback used for explicit flow migrations, or {@code null} when read-only
+     */
+    public AccessUiController(
+            InMemoryAccessRepository repository,
+            AccessIdGenerator idGenerator,
+            AccessRequestTemplateRenderer templateRenderer,
+            AccessScopedVariableStoreFactory storeFactory,
+            SingleAccessTestRunner runner,
+            AccessPlanRunner planRunner,
+            Supplier<List<FlowDefinition>> flowSupplier,
+            RaceRunner raceRunner,
+            Consumer<FlowDefinition> flowUpdater) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.idGenerator = Objects.requireNonNull(idGenerator, "idGenerator");
         this.templateRenderer = Objects.requireNonNull(templateRenderer, "templateRenderer");
@@ -228,6 +257,7 @@ public final class AccessUiController {
         this.raceRunner = raceRunner;
         this.importService = new AccessTemplateImportService(idGenerator);
         this.flowSupplier = Objects.requireNonNull(flowSupplier, "flowSupplier");
+        this.flowUpdater = flowUpdater;
     }
 
     /**
@@ -333,7 +363,7 @@ public final class AccessUiController {
      * @return validation report
      */
     public AccessValidationReport validateAccessWorkspace() {
-        return validator.validate(repository.snapshot());
+        return validator.validate(repository.snapshot(), flows());
     }
 
     /**
@@ -343,6 +373,20 @@ public final class AccessUiController {
      */
     public List<FlowDefinition> flows() {
         return List.copyOf(flowSupplier.get());
+    }
+
+    /** Returns whether this controller can persist an explicit Flowise migration. */
+    public boolean canUpdateFlows() {
+        return flowUpdater != null;
+    }
+
+    /** Persists a replacement flow through the authoritative Flowise controller. */
+    public void updateFlow(FlowDefinition flow) {
+        ensureEditable();
+        if (flowUpdater == null) {
+            throw new IllegalStateException("Flow updates are not available in this UI context");
+        }
+        flowUpdater.accept(Objects.requireNonNull(flow, "flow"));
     }
 
     /**

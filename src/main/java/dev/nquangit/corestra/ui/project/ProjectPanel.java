@@ -339,7 +339,7 @@ public final class ProjectPanel extends JPanel {
         cleanButton.addActionListener(event -> cleanBurpProjectData());
 
         JLabel description = new JLabel(
-                "Deletes Corestra flows, Access Testing data/evidence, Session Handler profiles/state, metadata and settings.");
+                "Deletes Corestra flows, Authentication and Access Testing data/evidence, Session Handler profiles/state, metadata and settings.");
         styleSecondary(description);
 
         JPanel actionRow = new JPanel();
@@ -491,7 +491,7 @@ public final class ProjectPanel extends JPanel {
                 + "Current serialized data: "
                 + ProjectDataMaintenanceService.formatBytes(usage.serializedStringBytes())
                 + " in " + usage.entryCount() + " entries.\n\n"
-                + "This removes flows, Access Testing configuration/results/evidence, Session Handler profiles/state, "
+                + "This removes flows, Authentication and Access Testing configuration/results/evidence, Session Handler profiles/state, "
                 + "project metadata, settings, and recovery quarantine data.\n"
                 + "Export anything you need before continuing.";
         int choice = JOptionPane.showConfirmDialog(
@@ -748,7 +748,7 @@ public final class ProjectPanel extends JPanel {
 
     private boolean confirmFullAccessExport() {
         String message = "This export may include access tokens, cookies, credentials, "
-                + "and sensitive object IDs in Access Testing configuration.";
+                + "and sensitive object IDs in Authentication and Access Testing configuration.";
         int choice = JOptionPane.showConfirmDialog(this, message, "Full Access Export",
                 JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
         return choice == JOptionPane.OK_OPTION;
@@ -765,8 +765,8 @@ public final class ProjectPanel extends JPanel {
 
     private static String exportModeDescription(ExportMode exportMode) {
         return switch (exportMode) {
-            case FULL_EXPORT -> "Includes access tokens, cookies, and credentials in reusable Access Testing configuration.";
-            case SANITIZED_EXPORT -> "Redacts secrets in reusable Access Testing configuration.";
+            case FULL_EXPORT -> "Includes access tokens, cookies, and credentials in Authentication and Access Testing configuration.";
+            case SANITIZED_EXPORT -> "Redacts secrets in Authentication and Access Testing configuration.";
             case EXCLUDE_SECRETS -> "Omits auth state while keeping safe Access Testing metadata.";
             case ENCRYPTED_EXPORT -> "Encrypted access export is reserved for a future release.";
         };

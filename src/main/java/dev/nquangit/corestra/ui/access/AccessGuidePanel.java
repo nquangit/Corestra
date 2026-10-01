@@ -19,8 +19,9 @@ final class AccessGuidePanel extends JPanel {
                 1. Build and test login/refresh/validate flows in Flowise.
                 2. In each auth flow, extract reusable values with stable names:
                    accessToken, refreshToken, sessionId, csrfToken, expiresAt/expiresIn.
-                3. Create one Auth Provider describing flow order and target injection.
-                4. Create one Auth Profile per real actor. Bind all actors to the provider,
+                3. Open Authentication and create one Auth Provider describing flow order
+                   and target injection.
+                4. In Authentication, create one Auth Profile per real actor. Bind all actors to the provider,
                    then enter each actor's own username/password/device data in Credentials.
                 5. Create Data Profiles for objects owned by those actors.
                 6. Create a target Template or Flow Target and Matrix rows.
@@ -39,6 +40,10 @@ final class AccessGuidePanel extends JPanel {
                   credentials.username   credentials.password
                   auth.accessToken       auth.refreshToken
                   auth.cookie.sessionId  env.baseUrl
+
+                Login/refresh Extract Rules produce unscoped Auth State keys such as
+                accessToken and refreshToken. Provider templates consume those keys as
+                {{auth.accessToken}} and {{auth.refreshToken}}.
 
                 Extracted values are saved only into Alice's Auth Profile. Bob has a separate
                 profile, lock, login execution, token, cookie, and expiry.

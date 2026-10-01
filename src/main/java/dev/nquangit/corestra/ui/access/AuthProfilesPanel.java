@@ -33,6 +33,8 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
     private final AccessUiController controller;
     private final DefaultTableModel tableModel;
     private final JTable table;
+    private final List<javax.swing.JButton> editingButtons = new ArrayList<>();
+    private boolean editingEnabled = true;
 
     AuthProfilesPanel(AccessUiController controller) {
         super(new BorderLayout(8, 8));
@@ -49,7 +51,9 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
         table.setAutoCreateRowSorter(true);
         table.addMouseListener(new MouseAdapter() {
             @Override public void mouseClicked(MouseEvent event) {
-                if (event.getClickCount() == 2) selectedProfile().ifPresent(AuthProfilesPanel.this::showEditor);
+                if (editingEnabled && event.getClickCount() == 2) {
+                    selectedProfile().ifPresent(AuthProfilesPanel.this::showEditor);
+                }
             }
         });
         table.getColumnModel().removeColumn(table.getColumnModel().getColumn(5));
@@ -65,6 +69,7 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
         javax.swing.JButton edit = StyledButton.neutral("Edit");
         javax.swing.JButton delete = StyledButton.danger("Delete");
         javax.swing.JButton clearState = StyledButton.neutral("Clear Auth State");
+        editingButtons.addAll(List.of(add, edit, delete, clearState));
         add.addActionListener(event -> showEditor(null));
         edit.addActionListener(event -> selectedProfile().ifPresent(this::showEditor));
         delete.addActionListener(event -> selectedProfile().ifPresent(this::deleteProfile));
@@ -85,8 +90,12 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
                         + "\"? Credentials will be preserved.",
                 "Clear Auth State", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
         if (result == JOptionPane.OK_OPTION) {
-            controller.clearAuthProfileState(profile.id());
-            refresh();
+            try {
+                controller.clearAuthProfileState(profile.id());
+                refresh();
+            } catch (IllegalArgumentException | IllegalStateException exception) {
+                showEditError(exception);
+            }
         }
     }
 
@@ -106,7 +115,7 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
         try {
             controller.saveAuthProfile(existing == null ? "" : existing.id(), form.toModel());
             refresh();
-        } catch (IllegalArgumentException exception) {
+        } catch (IllegalArgumentException | IllegalStateException exception) {
             JOptionPane.showMessageDialog(this, exception.getMessage(), "Invalid Auth Profile", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -119,8 +128,12 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
                 JOptionPane.OK_CANCEL_OPTION,
                 JOptionPane.WARNING_MESSAGE);
         if (result == JOptionPane.OK_OPTION) {
-            controller.deleteAuthProfile(profile.id());
-            refresh();
+            try {
+                controller.deleteAuthProfile(profile.id());
+                refresh();
+            } catch (IllegalArgumentException | IllegalStateException exception) {
+                showEditError(exception);
+            }
         }
     }
 
@@ -137,6 +150,16 @@ final class AuthProfilesPanel extends JPanel implements AccessTabPanel {
     @Override
     public void refreshUi() {
         refresh();
+    }
+
+    void setEditingEnabled(boolean enabled) {
+        editingEnabled = enabled;
+        editingButtons.forEach(button -> button.setEnabled(enabled));
+    }
+
+    private void showEditError(RuntimeException exception) {
+        JOptionPane.showMessageDialog(this, exception.getMessage(),
+                "Cannot edit Auth Profile", JOptionPane.ERROR_MESSAGE);
     }
 
     private void refresh() {

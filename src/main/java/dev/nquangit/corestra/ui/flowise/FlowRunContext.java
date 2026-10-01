@@ -13,7 +13,8 @@ public final class FlowRunContext {
     }
 
     /**
-     * Builds scoped variables from the selected Access Testing profiles and custom values.
+     * Builds scoped variables from the selected shared auth profile, Access Testing data profile,
+     * and custom values.
      * Profile values are exposed through their documented scope only, which keeps collisions
      * deterministic when credential, auth, and data keys share the same suffix.
      *

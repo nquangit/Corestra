@@ -35,7 +35,7 @@ public final class AuthState {
             @JsonProperty("cookies") Map<String, String> cookies,
             @JsonProperty("expiresAtEpochMillis") long expiresAtEpochMillis,
             @JsonProperty("lastUpdatedAtEpochMillis") long lastUpdatedAtEpochMillis) {
-        this.variables = copyMap(variables);
+        this.variables = normalizeVariables(variables);
         this.headers = copyMap(headers);
         this.cookies = copyMap(cookies);
         this.expiresAtEpochMillis = expiresAtEpochMillis;
@@ -49,6 +49,44 @@ public final class AuthState {
      */
     public static AuthState empty() {
         return new AuthState(Map.of(), Map.of(), Map.of(), 0L, 0L);
+    }
+
+    /**
+     * Normalizes auth-state variable keys to their unscoped storage form.
+     *
+     * <p>Auth flow extractors should produce keys such as {@code accessToken}. Older
+     * configurations sometimes produced {@code auth.accessToken}; accepting that form here
+     * keeps persisted projects compatible while ensuring consumers can resolve the value as
+     * {@code {{auth.accessToken}}}. When both forms are present, the canonical unscoped key
+     * wins.</p>
+     *
+     * @param values auth variables in canonical or legacy scoped form
+     * @return immutable variables using canonical unscoped keys
+     */
+    public static Map<String, String> normalizeVariables(Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return Map.of();
+        }
+        LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (key == null || key.isBlank()) {
+                throw new IllegalArgumentException("map keys must not be blank");
+            }
+            String stripped = key.strip();
+            if (stripped.startsWith("auth.") && stripped.length() > "auth.".length()) {
+                normalized.put(stripped.substring("auth.".length()), Objects.requireNonNullElse(value, ""));
+            }
+        });
+        values.forEach((key, value) -> {
+            if (key == null || key.isBlank()) {
+                throw new IllegalArgumentException("map keys must not be blank");
+            }
+            String stripped = key.strip();
+            if (!stripped.startsWith("auth.") || stripped.length() == "auth.".length()) {
+                normalized.put(stripped, Objects.requireNonNullElse(value, ""));
+            }
+        });
+        return Map.copyOf(normalized);
     }
 
     /**

@@ -348,8 +348,9 @@ public final class AuthManager {
             AuthFlowRunResult runResult) {
         AuthState oldState = profile.state();
         LinkedHashMap<String, String> variables = new LinkedHashMap<>(oldState.variables());
-        variables.putAll(runResult.extractedVariables());
-        long expiresAt = resolvedExpiresAt(runResult.extractedVariables(), provider.stateTtlSeconds());
+        Map<String, String> extracted = AuthState.normalizeVariables(runResult.extractedVariables());
+        variables.putAll(extracted);
+        long expiresAt = resolvedExpiresAt(extracted, provider.stateTtlSeconds());
         AuthState updatedState = new AuthState(
                 variables,
                 oldState.headers(),

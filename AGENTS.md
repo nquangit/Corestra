@@ -132,13 +132,14 @@ local Javadocs before implementation.
 ## UI conventions
 
 The root `CorestraRootPanel` uses **`JTabbedPane.TOP`** with tabs in this order:
-Flowise, Project, Session Handler, Access Testing. Do not restore the historical left-tab
+Flowise, Authentication, Session Handler, Access Testing, Parameters (when available), Project.
+Do not restore the historical left-tab
 layout unless the requested UI change calls for it.
 
 Flowise contains per-flow tabs and a split editor: reorderable/toggleable step list on the
-left, Burp-native request/response editors and detail controls on the right. Access Testing
-contains Auth Providers, Auth Profiles, Data Profiles, Templates, Flow Targets, Evaluation
-Profiles, Matrix and Results tabs.
+left, Burp-native request/response editors and detail controls on the right. Authentication
+contains the shared Auth Providers and Auth Profiles. Access Testing contains Data Profiles,
+Templates, Flow Targets, Evaluation Profiles, Matrix and Results tabs.
 
 - Use native editors from `createHttpRequestEditor` / `createHttpResponseEditor`.
 - Follow `ThemeCoordinator`, `UiTheme`, `StyledButton`, and Burp theme/font APIs.

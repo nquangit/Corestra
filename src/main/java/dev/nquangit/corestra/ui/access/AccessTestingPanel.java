@@ -30,6 +30,7 @@ public final class AccessTestingPanel extends JPanel {
     private final JTabbedPane tabs;
     private final AccessUiController controller;
     private final Timer lockTimer;
+    private Runnable authenticationNavigator = () -> { };
 
     /**
      * Creates the Access Testing panel.
@@ -41,10 +42,6 @@ public final class AccessTestingPanel extends JPanel {
         this.controller = Objects.requireNonNull(controller, "controller");
 
         this.tabs = new JTabbedPane(JTabbedPane.TOP);
-        addAccessTab("Auth Providers", new AuthProvidersPanel(controller),
-                "Configure flow-backed auth providers, injection rules, and retry policies.");
-        addAccessTab("Auth Profiles", new AuthProfilesPanel(controller),
-                "Manage target actors, roles, provider bindings, and manual auth material.");
         addAccessTab("Data Profiles", new DataProfilesPanel(controller),
                 "Manage object-owner data values used by templates and matrix rows.");
         addAccessTab("Templates", new TemplatesPanel(controller),
@@ -84,12 +81,17 @@ public final class AccessTestingPanel extends JPanel {
         }
     }
 
+    /** Sets the root-tab navigation action used by the Manage Authentication button. */
+    public void setAuthenticationNavigator(Runnable authenticationNavigator) {
+        this.authenticationNavigator = Objects.requireNonNullElse(authenticationNavigator, () -> { });
+    }
+
     private void updateLockState() {
         boolean running = controller.isPlanRunning();
         for (int index = 0; index < tabs.getTabCount(); index++) {
             String title = tabs.getTitleAt(index);
             boolean editableConfigTab = switch (title) {
-                case "Auth Providers", "Auth Profiles", "Data Profiles", "Templates",
+                case "Data Profiles", "Templates",
                         "Flow Targets", "Evaluation Profiles" -> true;
                 default -> false;
             };
@@ -113,10 +115,14 @@ public final class AccessTestingPanel extends JPanel {
         JButton guide = StyledButton.neutral("Quick Guide");
         guide.setToolTipText("Open the Access Testing setup checklist and auth recipes.");
         guide.addActionListener(event -> selectTab("Guide"));
+        JButton authentication = StyledButton.neutral("Manage Authentication…");
+        authentication.setToolTipText("Open the shared Auth Providers and Auth Profiles workspace.");
+        authentication.addActionListener(event -> authenticationNavigator.run());
         JLabel hint = new JLabel("Validate before dry-runs or live plans to catch broken references early.");
         hint.setToolTipText("Validation is read-only and never sends HTTP.");
         panel.add(validate);
         panel.add(guide);
+        panel.add(authentication);
         panel.add(hint);
         return panel;
     }

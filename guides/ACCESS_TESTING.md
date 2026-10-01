@@ -72,10 +72,11 @@ Không dùng endpoint thay đổi dữ liệu làm validate flow.
 
 ## 4. Tạo Auth Provider
 
-Mở **Access Testing > Auth Providers > Add**.
+Mở **Authentication > Auth Providers > Add**.
 
 1. Chọn Login Flow, Refresh Flow và Validate Flow phù hợp.
-2. Chọn fallback policy:
+2. Xem phần **Flow Contract** để kiểm tra input cần thiết và các Auth State key mà flow thực sự extract. Tên extractor chuẩn không có prefix, ví dụ `accessToken`; khi dùng sẽ là `{{auth.accessToken}}`. Cấu hình thiếu flow bắt buộc, flow bị disable hoặc template sai sẽ chặn lưu.
+3. Chọn fallback policy:
 
 | Policy | Hành vi khi auth state không còn fresh |
 | --- | --- |
@@ -84,10 +85,12 @@ Mở **Access Testing > Auth Providers > Add**.
 | `VALIDATE_THEN_REFRESH_THEN_LOGIN` | Validate trước, sau đó refresh rồi login nếu cần. |
 | `MANUAL_ONLY` | Không tự chạy auth flow. |
 
-3. Đặt **Auth State TTL**. TTL chỉ được dùng khi flow không extract expiry. Giá trị mặc định là 300 giây. Với session keep-alive 3 phút, đặt `180`. Đặt `0` nếu muốn auth state lập tức stale.
-4. Thêm injection rule bằng preset hoặc nhập tay. Provider injection hiện hỗ trợ `HEADER`, `COOKIE` và `QUERY`.
-5. Thêm success/failure rule. Các loại đang thực thi là `STATUS_CODE`, `HEADER_EXISTS`, `BODY_CONTAINS`, `BODY_NOT_CONTAINS`.
-6. Chỉ bật target retry nếu failure rule phân biệt được auth failure với authorization denial của bài test.
+4. Đặt **Auth State TTL**. TTL chỉ được dùng khi flow không extract expiry. Giá trị mặc định là 300 giây. Với session keep-alive 3 phút, đặt `180`. Đặt `0` nếu muốn auth state lập tức stale.
+5. Trong tab Injection, chọn trực tiếp value template được gợi ý từ extractor hoặc bấm **Generate from flow**. Nút này chỉ thêm các gợi ý Bearer/Cookie/CSRF chưa tồn tại và không ghi đè rule hiện có. Provider injection hiện hỗ trợ `HEADER`, `COOKIE` và `QUERY`.
+6. Thêm success/failure rule. Các loại đang thực thi là `STATUS_CODE`, `HEADER_EXISTS`, `BODY_CONTAINS`, `BODY_NOT_CONTAINS`.
+7. Chỉ bật target retry nếu failure rule phân biệt được auth failure với authorization denial của bài test.
+
+Project cũ có extractor như `auth.accessToken` vẫn chạy: Corestra chuẩn hóa thành key `accessToken` khi cập nhật Auth State. Flow Contract sẽ cảnh báo; nút **Fix auth.* extractor names** đổi tên trên các auth flow đang chọn và cập nhật Inject Rule nằm sau extractor. Trường hợp có cả hai tên `accessToken` và `auth.accessToken` sẽ được bỏ qua để tránh thay đổi thứ tự ghi đè ngoài ý muốn.
 
 Thứ tự expiry:
 
@@ -97,7 +100,7 @@ Thứ tự expiry:
 
 ## 5. Tạo đúng profile cho từng user/role
 
-Mở **Access Testing > Auth Profiles > Add**.
+Mở **Authentication > Auth Profiles > Add**.
 
 Ví dụ Alice:
 
@@ -146,9 +149,9 @@ Không cần tạo `Login - Alice`, `Login - Bob` và thêm một bản login kh
 3. Chọn Alice, Bob hoặc actor cần dùng trong Burp Proxy/Repeater/Scanner.
 4. Cấu hình Scope và Scheduler của Session Handler.
 
-Session Handler gọi chung auth runtime của Access Testing. Login/refresh/validate flow, credentials, token, cookie, expiry và provider injection rules đều thuộc actor đã chọn. Các Injection Rule cục bộ của Session Handler chạy sau provider rules và phù hợp cho override riêng theo tool hoặc traffic. Extraction Rule từ live response cập nhật Auth Variables của actor được liên kết.
+Session Handler gọi chung auth runtime của Authentication. Login/refresh/validate flow, credentials, token, cookie, expiry và provider injection rules đều thuộc actor đã chọn. Các Injection Rule cục bộ của Session Handler chạy sau provider rules và phù hợp cho override riêng theo tool hoặc traffic. Extraction Rule từ live response cập nhật Auth Variables của actor được liên kết.
 
-Khi muốn đổi user đang dùng cho traffic thủ công, đổi **Shared Auth Profile** thay vì sao chép flow. Nếu vừa tạo actor ở Access Testing, bấm **Reload** cạnh danh sách profile.
+Khi muốn đổi user đang dùng cho traffic thủ công, đổi **Shared Auth Profile** thay vì sao chép flow. Nếu vừa tạo actor ở Authentication, bấm **Reload** cạnh danh sách profile.
 
 ## 6. Data Profile và bài test nhiều actor
 
