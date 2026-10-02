@@ -31,6 +31,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -53,6 +54,7 @@ public final class SessionManager {
     private final AuthManager authManager;
     private final AuthInjectionRuleRenderer authInjectionRuleRenderer;
     private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> authenticationGenerations = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<Consumer<SessionProfileChangeEvent>> profileChangeListeners =
             new CopyOnWriteArrayList<>();
 
@@ -206,12 +208,21 @@ public final class SessionManager {
      * @return updated profile when present
      */
     public Optional<SessionProfile> clearState(String profileId) {
-        Optional<SessionProfile> current = repository.profile(profileId);
-        current.filter(SessionProfile::usesLinkedAuthProfile).ifPresent(this::clearLinkedAuthState);
-        Optional<SessionProfile> updated = repository.updateState(profileId, ignored -> SessionState.empty());
-        updated.ifPresent(saved -> notifyProfileChanged(
-                new SessionProfileChangeEvent(saved.id(), SessionProfileChangeType.STATE_CLEARED)));
-        return updated;
+        ReentrantLock lock = lockFor(profileId);
+        lock.lock();
+        try {
+            Optional<SessionProfile> current = repository.profile(profileId);
+            current.filter(SessionProfile::usesLinkedAuthProfile).ifPresent(this::clearLinkedAuthState);
+            Optional<SessionProfile> updated = repository.updateState(profileId, ignored -> SessionState.empty());
+            updated.ifPresent(saved -> {
+                advanceAuthenticationGeneration(saved.id());
+                notifyProfileChanged(new SessionProfileChangeEvent(
+                        saved.id(), SessionProfileChangeType.STATE_CLEARED));
+            });
+            return updated;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -313,6 +324,82 @@ public final class SessionManager {
         return runAuthFlowLocked(profileId, AuthRunMode.SCHEDULED);
     }
 
+    /** Runs maintenance immediately, preferring a configured keep-alive flow for linked actors. */
+    public SessionAuthenticationResult maintainAuthenticationWithResult(String profileId) {
+        if (profileId == null || profileId.isBlank()) {
+            return SessionAuthenticationResult.failed("", "Session Profile id is blank.", Optional.empty(), List.of());
+        }
+        return runAuthFlowLockedWithResult(profileId.strip(), AuthRunMode.MAINTENANCE);
+    }
+
+    /**
+     * Waits for any in-flight authentication of the selected profile, reloads its latest state,
+     * performs an on-demand refresh when required, and renders injection rules atomically.
+     *
+     * <p>The lock is released before the caller sends the HTTP request. This prevents a request
+     * from using a stale pre-refresh snapshot without serializing unrelated network traffic.</p>
+     *
+     * @param selectedProfile profile selected for the outgoing request
+     * @param context outgoing request context
+     * @return rules and authentication generation captured from one consistent state
+     */
+    public SessionInjectionPlan prepareInjectionRules(
+            SessionProfile selectedProfile,
+            SessionTrafficContext context) {
+        Objects.requireNonNull(selectedProfile, "selectedProfile");
+        Objects.requireNonNull(context, "context");
+        ReentrantLock lock = lockFor(selectedProfile.id());
+        lock.lock();
+        try {
+            SessionProfile current = repository.profile(selectedProfile.id()).orElse(null);
+            if (current == null) {
+                return new SessionInjectionPlan(selectedProfile.id(),
+                        authenticationGeneration(selectedProfile.id()), List.of());
+            }
+            SessionProfile ready = ensureAuthenticated(current, context);
+            return new SessionInjectionPlan(
+                    ready.id(), authenticationGeneration(ready.id()),
+                    renderedInjectionRules(ready, context.toolTypeName()));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Applies response extraction only when the response belongs to the current authentication
+     * generation. Responses sent with an older session are ignored after a refresh completes.
+     *
+     * @param profileId selected profile id captured before sending
+     * @param expectedAuthenticationGeneration generation captured before sending
+     * @param context request context
+     * @param requestSnapshot request snapshot
+     * @param responseSnapshot response snapshot
+     * @return current or updated profile when it still exists
+     */
+    public Optional<SessionProfile> applyExtractionRulesIfCurrent(
+            String profileId,
+            long expectedAuthenticationGeneration,
+            SessionTrafficContext context,
+            HttpMessageSnapshot requestSnapshot,
+            HttpMessageSnapshot responseSnapshot) {
+        Objects.requireNonNull(context, "context");
+        ReentrantLock lock = lockFor(profileId);
+        lock.lock();
+        try {
+            Optional<SessionProfile> current = repository.profile(profileId);
+            if (current.isEmpty()) {
+                return Optional.empty();
+            }
+            if (authenticationGeneration(profileId) != expectedAuthenticationGeneration) {
+                return current;
+            }
+            return Optional.of(applyExtractionRules(
+                    current.orElseThrow(), context, requestSnapshot, responseSnapshot));
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /**
      * Applies enabled extraction rules and immediately updates the selected profile state.
      *
@@ -366,11 +453,13 @@ public final class SessionManager {
         ArrayList<InjectRule> rules = new ArrayList<>();
         SessionState selectedTemplateState = profile.state();
         if (profile.usesLinkedAuthProfile() && accessRepository != null) {
-            accessRepository.authProfile(profile.linkedAuthProfileId()).ifPresent(authProfile -> {
+            AuthProfile authProfile = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
+            if (authProfile != null) {
                 AuthProvider provider = accessRepository.authProvider(authProfile.providerId()).orElse(null);
                 rules.addAll(authInjectionRuleRenderer.render(authProfile, provider));
-            });
-            selectedTemplateState = linkedState(profile).orElse(selectedTemplateState);
+                // Provider rules and local overrides must use the same immutable auth snapshot.
+                selectedTemplateState = linkedState(authProfile);
+            }
         }
         SessionState templateState = selectedTemplateState;
         for (SessionInjectionRule rule : profile.injectionRules()) {
@@ -475,14 +564,14 @@ public final class SessionManager {
         templates.put(template, template);
     }
 
-    private enum AuthRunMode { ON_DEMAND, FORCED, SCHEDULED }
+    private enum AuthRunMode { ON_DEMAND, FORCED, SCHEDULED, MAINTENANCE }
 
     private SessionProfile runAuthFlowLocked(String profileId, AuthRunMode mode) {
         return runAuthFlowLockedWithResult(profileId, mode).profile().orElseGet(SessionProfile::general);
     }
 
     private SessionAuthenticationResult runAuthFlowLockedWithResult(String profileId, AuthRunMode mode) {
-        ReentrantLock lock = locks.computeIfAbsent(profileId, ignored -> new ReentrantLock());
+        ReentrantLock lock = lockFor(profileId);
         lock.lock();
         try {
             Optional<SessionProfile> current = repository.profile(profileId);
@@ -490,7 +579,10 @@ public final class SessionManager {
                 return SessionAuthenticationResult.failed(profileId,
                         "Session Profile not found: " + profileId, Optional.empty(), List.of());
             }
-            SessionProfile profile = current.orElseThrow();
+            SessionProfile storedProfile = current.orElseThrow();
+            // Another binding for the same actor may already have maintained its state.
+            SessionProfile profile = mode == AuthRunMode.SCHEDULED && linkedKeepAliveEnabled(storedProfile)
+                    ? synchronizeLinkedStateMarker(storedProfile, false) : storedProfile;
             if (!hasAuthentication(profile)) {
                 return SessionAuthenticationResult.skipped(profile,
                         "No linked Auth Profile or standalone auth flow is configured.");
@@ -523,6 +615,10 @@ public final class SessionManager {
                                 + profile.authConfig().mainAuthFlowId(),
                         Optional.of(profile), List.of());
             }
+            // Start a new authentication epoch before network I/O. Responses from requests that
+            // were already in flight belong to the previous epoch and must not overwrite state
+            // produced by this refresh, even when the refresh later fails.
+            advanceAuthenticationGeneration(profile.id());
             SessionGuard.enter();
             Optional<Map<String, String>> updates;
             try {
@@ -558,18 +654,46 @@ public final class SessionManager {
             return SessionAuthenticationResult.failed(profile.id(),
                     "Shared Authentication runtime is unavailable.", Optional.of(profile), List.of());
         }
+        long now = clock.millis();
+        boolean usesKeepAlive = mode != AuthRunMode.FORCED && linkedKeepAliveEnabled(profile);
+        AuthState beforeState = usesKeepAlive
+                ? accessRepository.authProfile(profile.linkedAuthProfileId()).map(AuthProfile::state).orElse(null)
+                : null;
+        boolean startsAuthentication = !usesKeepAlive && (mode != AuthRunMode.ON_DEMAND
+                || profile.state().missingOrExpired(now));
+        if (startsAuthentication) {
+            // Invalidate extraction from requests using the previous auth state before the shared
+            // AuthManager starts its refresh/login sequence.
+            advanceAuthenticationGeneration(profile.id());
+        }
         SessionGuard.enter();
         AuthEnsureResult result;
         try {
-            result = mode == AuthRunMode.ON_DEMAND
-                    ? authManager.ensureAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT)
-                    : authManager.forceAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT);
+            result = switch (mode) {
+                case ON_DEMAND -> authManager.ensureAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT);
+                case SCHEDULED, MAINTENANCE -> authManager.maintainAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT);
+                case FORCED -> authManager.forceAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT);
+            };
         } finally {
             SessionGuard.exit();
         }
         if (result.failed()) {
+            if (usesKeepAlive) advanceAuthenticationGeneration(profile.id());
             return SessionAuthenticationResult.failed(profile.id(), result.reason(),
                     Optional.of(profile), result.warnings());
+        }
+        boolean authValuesChanged = beforeState != null && result.updatedProfile().map(AuthProfile::state)
+                .map(after -> !beforeState.variables().equals(after.variables())
+                        || !beforeState.headers().equals(after.headers())
+                        || !beforeState.cookies().equals(after.cookies())).orElse(false);
+        if (!startsAuthentication && (result.status() == AuthEnsureStatus.LOGGED_IN
+                || result.status() == AuthEnsureStatus.REFRESHED || authValuesChanged)) {
+            // The shared auth state can expire independently of the Session Handler marker.
+            advanceAuthenticationGeneration(profile.id());
+        }
+        if (result.status() == AuthEnsureStatus.DEFERRED) {
+            return new SessionAuthenticationResult(profile.id(), SessionAuthenticationResult.Outcome.SKIPPED,
+                    result.reason(), Optional.of(profile), result.warnings());
         }
         SessionProfile synchronizedProfile = synchronizeLinkedStateMarker(profile, true);
         notifyProfileChanged(new SessionProfileChangeEvent(
@@ -579,6 +703,30 @@ public final class SessionManager {
                     result.reason(), Optional.of(synchronizedProfile), result.warnings());
         }
         return SessionAuthenticationResult.succeeded(synchronizedProfile, result.reason(), result.warnings());
+    }
+
+    private boolean linkedKeepAliveEnabled(SessionProfile profile) {
+        return profile.usesLinkedAuthProfile() && accessRepository != null
+                && accessRepository.authProfile(profile.linkedAuthProfileId())
+                .flatMap(actor -> accessRepository.authProvider(actor.providerId()))
+                .map(provider -> provider.keepAlive().enabled()).orElse(false);
+    }
+
+    private ReentrantLock lockFor(String profileId) {
+        String normalizedId = Objects.requireNonNull(profileId, "profileId").strip();
+        if (normalizedId.isEmpty()) {
+            throw new IllegalArgumentException("profileId must not be blank");
+        }
+        return locks.computeIfAbsent(normalizedId, ignored -> new ReentrantLock());
+    }
+
+    private long authenticationGeneration(String profileId) {
+        AtomicLong generation = authenticationGenerations.get(profileId);
+        return generation == null ? 0L : generation.get();
+    }
+
+    private void advanceAuthenticationGeneration(String profileId) {
+        authenticationGenerations.computeIfAbsent(profileId, ignored -> new AtomicLong()).incrementAndGet();
     }
 
     private SessionProfile synchronizeLinkedStateMarker(SessionProfile profile, boolean markAuthenticatedNow) {
@@ -603,18 +751,13 @@ public final class SessionManager {
         return repository.updateState(profile.id(), ignored -> marker).orElse(profile);
     }
 
-    private Optional<SessionState> linkedState(SessionProfile profile) {
-        if (accessRepository == null) {
-            return Optional.empty();
-        }
-        return accessRepository.authProfile(profile.linkedAuthProfileId()).map(authProfile -> {
-            AuthState state = authProfile.state();
-            LinkedHashMap<String, String> values = new LinkedHashMap<>(state.variables());
-            state.headers().forEach((key, value) -> values.put("header." + key, value));
-            state.cookies().forEach((key, value) -> values.put("cookie." + key, value));
-            return new SessionState(values, state.lastUpdatedAtEpochMillis(),
-                    state.expiresAtEpochMillis(), state.lastUpdatedAtEpochMillis());
-        });
+    private static SessionState linkedState(AuthProfile authProfile) {
+        AuthState state = authProfile.state();
+        LinkedHashMap<String, String> values = new LinkedHashMap<>(state.variables());
+        state.headers().forEach((key, value) -> values.put("header." + key, value));
+        state.cookies().forEach((key, value) -> values.put("cookie." + key, value));
+        return new SessionState(values, state.lastUpdatedAtEpochMillis(),
+                state.expiresAtEpochMillis(), state.lastUpdatedAtEpochMillis());
     }
 
     private boolean updateLinkedAuthState(SessionProfile profile, Map<String, String> updates) {

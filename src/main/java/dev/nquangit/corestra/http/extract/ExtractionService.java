@@ -95,23 +95,30 @@ public final class ExtractionService {
     private ExtractionResult extractCookie(ExtractRule rule, HttpMessageSnapshot snapshot) {
         boolean isResponse = rule.sourceSide() == ExtractRule.SourceSide.RESPONSE;
         String cookieHeaderName = isResponse ? "Set-Cookie" : "Cookie";
-
-        ExtractionResult headerResult = headerExtractor.extract(
-                snapshot.headers(), cookieHeaderName, rule.targetVariableName());
-
-        if (!headerResult.isSuccess()) {
+        boolean matchingHeaderFound = false;
+        for (String headerLine : snapshot.headers()) {
+            int colonIndex = headerLine.indexOf(':');
+            if (colonIndex < 0
+                    || !headerLine.substring(0, colonIndex).strip().equalsIgnoreCase(cookieHeaderName)) {
+                continue;
+            }
+            matchingHeaderFound = true;
+            String headerValue = headerLine.substring(colonIndex + 1).strip();
+            // Each Set-Cookie header defines one cookie. Only its first segment is the
+            // cookie name/value pair; later segments are attributes such as Path and SameSite.
+            String cookieSource = isResponse ? headerValue.split(";", 2)[0] : headerValue;
+            ExtractionResult result = cookieExtractor.extract(
+                    cookieSource, rule.sourceSelector(), rule.targetVariableName());
+            if (result.isSuccess()) {
+                return result;
+            }
+        }
+        if (!matchingHeaderFound) {
             return ExtractionResult.failure(rule.targetVariableName(),
                     cookieHeaderName + " header not found");
         }
-
-        // For Set-Cookie response headers, only the first segment (before the first ';') is the
-        // actual cookie name=value pair. Subsequent segments are cookie attributes (HttpOnly,
-        // Path=/, SameSite=Strict, etc.) and must not be treated as cookies.
-        String cookieSource = isResponse
-                ? headerResult.value().split(";", 2)[0]
-                : headerResult.value();
-
-        return cookieExtractor.extract(cookieSource, rule.sourceSelector(), rule.targetVariableName());
+        return ExtractionResult.failure(rule.targetVariableName(),
+                "Cookie '" + rule.sourceSelector() + "' not found in " + cookieHeaderName + " headers");
     }
 
     private ExtractionResult extractStatusCode(ExtractRule rule, HttpMessageSnapshot snapshot) {

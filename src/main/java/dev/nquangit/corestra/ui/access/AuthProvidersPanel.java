@@ -6,6 +6,7 @@ import dev.nquangit.corestra.access.auth.AuthInjectionLocation;
 import dev.nquangit.corestra.access.auth.AuthInjectionMode;
 import dev.nquangit.corestra.access.auth.AuthInjectionRule;
 import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthKeepAliveConfig;
 import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
 import dev.nquangit.corestra.access.auth.AuthRuleType;
 import dev.nquangit.corestra.access.auth.AuthSuccessRule;
@@ -61,7 +62,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         super(new BorderLayout(8, 8));
         this.controller = controller;
         tableModel = new DefaultTableModel(new Object[]{
-                "Name", "Enabled", "Login Flow", "Refresh Flow", "Validate Flow", "Fallback", "Retry", "TTL (s)", "Id"}, 0) {
+                "Name", "Enabled", "Login Flow", "Refresh Flow", "Validate Flow", "Keep-alive Flow", "Fallback", "Retry", "TTL (s)", "Id"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -78,7 +79,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                 }
             }
         });
-        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(8));
+        table.getColumnModel().removeColumn(table.getColumnModel().getColumn(9));
 
         add(toolbar(), BorderLayout.NORTH);
         add(new JScrollPane(table), BorderLayout.CENTER);
@@ -163,7 +164,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             return java.util.Optional.empty();
         }
         int modelRow = table.convertRowIndexToModel(row);
-        String id = (String) tableModel.getValueAt(modelRow, 8);
+        String id = (String) tableModel.getValueAt(modelRow, 9);
         return controller.authProvider(id);
     }
 
@@ -186,6 +187,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     flowLabel(provider.loginFlowId()),
                     flowLabel(provider.refreshFlowId()),
                     flowLabel(provider.validateFlowId()),
+                    flowLabel(provider.keepAlive().flowId()),
                     provider.fallbackPolicy(),
                     provider.targetRetryPolicy(),
                     provider.stateTtlSeconds(),
@@ -212,6 +214,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         private final JComboBox<FlowOption> loginFlow = new JComboBox<>();
         private final JComboBox<FlowOption> refreshFlow = new JComboBox<>();
         private final JComboBox<FlowOption> validateFlow = new JComboBox<>();
+        private final JComboBox<FlowOption> keepAliveFlow = new JComboBox<>();
         private final JComboBox<AuthFallbackPolicy> fallbackPolicy = new JComboBox<>(AuthFallbackPolicy.values());
         private final JComboBox<AuthRetryPolicy> targetRetryPolicy = new JComboBox<>(AuthRetryPolicy.values());
         private final JSpinner stateTtlSeconds = new JSpinner(new SpinnerNumberModel(
@@ -224,6 +227,8 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         private final InjectionRulesTablePanel injectionRules;
         private final OutcomeRulesTablePanel successRules;
         private final OutcomeRulesTablePanel failureRules;
+        private final OutcomeRulesTablePanel keepAliveSuccessRules;
+        private final OutcomeRulesTablePanel keepAliveExpiredRules;
 
         AuthProviderFormPanel(AuthProviderFormModel model, List<FlowDefinition> flows) {
             this(model, flows, null);
@@ -252,18 +257,22 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     List.of())
                     : model;
             populateFlowChoices(this.flows, initial.loginFlowId(), initial.refreshFlowId(), initial.validateFlowId());
+            addFlowChoices(keepAliveFlow, this.flows, initial.keepAlive().flowId());
             name.setText(initial.name());
             description.setText(initial.description());
             enabled.setSelected(initial.enabled());
             selectFlow(loginFlow, initial.loginFlowId());
             selectFlow(refreshFlow, initial.refreshFlowId());
             selectFlow(validateFlow, initial.validateFlowId());
+            selectFlow(keepAliveFlow, initial.keepAlive().flowId());
             fallbackPolicy.setSelectedItem(initial.fallbackPolicy());
             targetRetryPolicy.setSelectedItem(initial.targetRetryPolicy());
             stateTtlSeconds.setValue(initial.stateTtlSeconds());
             injectionRules = new InjectionRulesTablePanel(initial.injectionRules());
             successRules = new OutcomeRulesTablePanel("Success Rules", initial.successRules(), true);
             failureRules = new OutcomeRulesTablePanel("Failure Rules", initial.failureRules(), false);
+            keepAliveSuccessRules = new OutcomeRulesTablePanel("Keep-alive Success", initial.keepAlive().successRules(), true);
+            keepAliveExpiredRules = new OutcomeRulesTablePanel("Session Expired", initial.keepAlive().expiredRules(), false);
 
             add(buildTopSection(), BorderLayout.NORTH);
             add(buildRuleTabs(), BorderLayout.CENTER);
@@ -285,7 +294,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     ((Number) stateTtlSeconds.getValue()).longValue(),
                     injectionRules.rules(),
                     successRules.successRules(),
-                    failureRules.failureRules());
+                    failureRules.failureRules(), keepAliveConfig());
         }
 
         private JPanel buildFields() {
@@ -303,6 +312,9 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             fields.add(refreshFlow);
             fields.add(new JLabel("Validate Flow"));
             fields.add(validateFlow);
+            fields.add(new JLabel("Keep-alive Flow (optional)"));
+            keepAliveFlow.setToolTipText("Scheduler maintains existing sessions with this flow; None keeps the previous auth behavior.");
+            fields.add(keepAliveFlow);
             fields.add(new JLabel("Fallback Policy"));
             fields.add(fallbackPolicy);
             fields.add(new JLabel("Target Retry Policy"));
@@ -360,7 +372,8 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                 return;
             }
             LinkedHashSet<String> selectedIds = new LinkedHashSet<>(List.of(
-                    selectedFlowId(loginFlow), selectedFlowId(refreshFlow), selectedFlowId(validateFlow)));
+                    selectedFlowId(loginFlow), selectedFlowId(refreshFlow), selectedFlowId(validateFlow),
+                    selectedFlowId(keepAliveFlow)));
             selectedIds.remove("");
             int extractors = 0;
             int references = 0;
@@ -411,6 +424,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             loginFlow.addActionListener(event -> refreshAnalysis());
             refreshFlow.addActionListener(event -> refreshAnalysis());
             validateFlow.addActionListener(event -> refreshAnalysis());
+            keepAliveFlow.addActionListener(event -> refreshAnalysis());
             fallbackPolicy.addActionListener(event -> refreshAnalysis());
             targetRetryPolicy.addActionListener(event -> refreshAnalysis());
             stateTtlSeconds.addChangeListener(event -> refreshAnalysis());
@@ -456,7 +470,7 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                     failureRules.failureRules(),
                     selectedFallbackPolicy(),
                     selectedRetryPolicy(),
-                    ((Number) stateTtlSeconds.getValue()).longValue());
+                    ((Number) stateTtlSeconds.getValue()).longValue(), keepAliveConfig());
         }
 
         private String formatAnalysis(AuthProviderFlowAnalysis analysis) {
@@ -539,7 +553,23 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             tabs.addTab("Injection", injectionRules);
             tabs.addTab("Success", successRules);
             tabs.addTab("Failure", failureRules);
+            JPanel keepAlivePanel = new JPanel(new BorderLayout(6, 6));
+            javax.swing.JSplitPane split = new javax.swing.JSplitPane(javax.swing.JSplitPane.HORIZONTAL_SPLIT,
+                    keepAliveSuccessRules, keepAliveExpiredRules);
+            split.setResizeWeight(0.5);
+            keepAliveSuccessRules.setBorder(BorderFactory.createTitledBorder("Keep-alive Success"));
+            keepAliveExpiredRules.setBorder(BorderFactory.createTitledBorder("Session Expired"));
+            keepAlivePanel.add(split, BorderLayout.CENTER);
+            keepAlivePanel.add(new JLabel("<html>Rules are separate from login/refresh. Any Success rule confirms keep-alive; "
+                    + "any Session Expired rule permits re-authentication.<br>Expired rules take priority. "
+                    + "Timeouts and unknown responses retain state and retry with backoff (30s to 5min).</html>"), BorderLayout.SOUTH);
+            tabs.addTab("Keep-alive", keepAlivePanel);
             return tabs;
+        }
+
+        private AuthKeepAliveConfig keepAliveConfig() {
+            return new AuthKeepAliveConfig(selectedFlowId(keepAliveFlow),
+                    keepAliveSuccessRules.successRules(), keepAliveExpiredRules.failureRules());
         }
 
         private AuthFallbackPolicy selectedFallbackPolicy() {

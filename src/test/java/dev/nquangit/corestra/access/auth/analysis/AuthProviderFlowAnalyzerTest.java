@@ -5,6 +5,9 @@ import dev.nquangit.corestra.access.auth.AuthInjectionLocation;
 import dev.nquangit.corestra.access.auth.AuthInjectionMode;
 import dev.nquangit.corestra.access.auth.AuthInjectionRule;
 import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthKeepAliveConfig;
+import dev.nquangit.corestra.access.auth.AuthSuccessRule;
+import dev.nquangit.corestra.access.auth.AuthRuleType;
 import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
 import dev.nquangit.corestra.access.auth.analysis.AuthProviderFlowAnalyzer.AuthProviderFlowAnalysis;
 import dev.nquangit.corestra.access.auth.analysis.AuthProviderFlowAnalyzer.Severity;
@@ -26,6 +29,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AuthProviderFlowAnalyzerTest {
     private final AuthProviderFlowAnalyzer analyzer = new AuthProviderFlowAnalyzer();
+
+    @Test
+    void optionalKeepAliveMustReferenceEnabledFlowAndHaveIndependentSuccessRules() {
+        AuthProvider original = provider("login", List.of());
+        AuthKeepAliveConfig config = new AuthKeepAliveConfig("keep", List.of(), List.of());
+        AuthProvider provider = withKeepAlive(original, config);
+        FlowDefinition login = flow("login", true, List.of(step(List.of(), List.of())));
+        AuthProviderFlowAnalysis missing = analyzer.analyze(provider, List.of(login));
+        assertTrue(missing.hasErrors());
+        assertTrue(missing.issues().stream().anyMatch(issue -> issue.title().equals("Keep-alive Flow is missing")));
+        assertTrue(missing.issues().stream().anyMatch(issue -> issue.title().contains("success rule")));
+
+        config = new AuthKeepAliveConfig("keep", List.of(new AuthSuccessRule("alive", "Alive", true,
+                AuthRuleType.BODY_CONTAINS, "alive", "")), List.of());
+        provider = withKeepAlive(original, config);
+        FlowDefinition disabled = flow("keep", false, List.of(step(List.of(), List.of())));
+        assertTrue(analyzer.analyze(provider, List.of(login, disabled)).hasErrors());
+        FlowDefinition enabled = flow("keep", true, List.of(step(List.of(), List.of(variableInject("auth.token")))));
+        AuthProviderFlowAnalysis valid = analyzer.analyze(provider, List.of(login, enabled));
+        assertFalse(valid.hasErrors());
+        assertTrue(valid.requiredInputs().contains("auth.token"));
+        assertTrue(valid.issues().stream().anyMatch(issue -> issue.title().contains("Keep-alive input")));
+    }
+
+    private static AuthProvider withKeepAlive(AuthProvider p, AuthKeepAliveConfig config) {
+        return new AuthProvider(p.id(), p.name(), p.description(), p.enabled(), p.loginFlowId(), p.refreshFlowId(),
+                p.validateFlowId(), p.injectionRules(), p.successRules(), p.failureRules(), p.fallbackPolicy(),
+                p.targetRetryPolicy(), p.stateTtlSeconds(), config);
+    }
 
     @Test
     void derivesCanonicalOutputsInputsAndInjectionSuggestions() {

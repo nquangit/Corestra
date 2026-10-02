@@ -120,7 +120,7 @@ public final class SessionSchedulerService implements AutoCloseable {
 
     private void refreshProfileSafely(String profileId) {
         try {
-            sessionManager.forceAuthenticate(profileId);
+            sessionManager.maintainAuthenticationWithResult(profileId);
         } catch (RuntimeException ignored) {
             // One broken scheduled auth flow must not stop other scheduled profiles.
         }

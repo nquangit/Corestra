@@ -27,6 +27,8 @@ public final class AuthManager {
     private final AuthRuleEvaluator authRuleEvaluator;
     private final Clock clock;
     private final ConcurrentHashMap<String, ReentrantLock> locksByProfileId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, KeepAliveBackoff> keepAliveBackoffs = new ConcurrentHashMap<>();
+    private final AuthKeepAliveEvaluator keepAliveEvaluator;
 
     /**
      * Creates an auth manager.
@@ -44,6 +46,7 @@ public final class AuthManager {
         this.accessRepository = Objects.requireNonNull(accessRepository, "accessRepository");
         this.authFlowRunner = Objects.requireNonNull(authFlowRunner, "authFlowRunner");
         this.authRuleEvaluator = Objects.requireNonNull(authRuleEvaluator, "authRuleEvaluator");
+        this.keepAliveEvaluator = new AuthKeepAliveEvaluator(authRuleEvaluator);
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -84,7 +87,7 @@ public final class AuthManager {
                     Optional.of(initialProfile),
                     List.of());
         }
-        if (stateFresh(initialProfile.state())) {
+        if (stateFresh(initialProfile.state()) && !initialProvider.keepAlive().enabled()) {
             return AuthEnsureResult.success(normalizedId, AuthEnsureStatus.VALID,
                     "Auth state is still valid", initialProfile, List.of());
         }
@@ -114,9 +117,18 @@ public final class AuthManager {
                         Optional.of(profile),
                         List.of());
             }
+            if (provider.keepAlive().enabled()) {
+                KeepAliveBackoff backoff = currentBackoff(profile, provider);
+                if (backoff != null && backoff.authenticationFailed()) {
+                    return maintainAuth(normalizedId, environmentId, env, renderMode);
+                }
+            }
             if (stateFresh(profile.state())) {
                 return AuthEnsureResult.success(normalizedId, AuthEnsureStatus.VALID,
                         "Auth state was refreshed by another thread", profile, List.of());
+            }
+            if (provider.keepAlive().enabled()) {
+                return maintainAuth(normalizedId, environmentId, env, renderMode);
             }
             return ensureWithProvider(
                     profile,
@@ -129,8 +141,127 @@ public final class AuthManager {
     }
 
     /**
+     * Maintains an actor's existing session on a scheduler tick, regardless of local TTL.
+     * Providers without keep-alive retain their previous forced-authentication behavior.
+     * Empty state uses the original auth policy; transient keep-alive failures never re-login.
+     */
+    public AuthEnsureResult maintainAuth(String authProfileId, String environmentId,
+                                         Map<String, String> env, RenderMode renderMode) {
+        String id = normalizeRequiredText(authProfileId, "authProfileId");
+        ReentrantLock lock = locksByProfileId.computeIfAbsent(id, ignored -> new ReentrantLock());
+        lock.lock();
+        try {
+            AuthProfile profile = accessRepository.authProfile(id).orElse(null);
+            if (profile == null || isManual(profile)) {
+                return forceAuth(id, environmentId, env, renderMode);
+            }
+            AuthProvider provider = accessRepository.authProvider(profile.providerId()).orElse(null);
+            if (provider == null || !provider.enabled() || !provider.keepAlive().enabled()) {
+                return forceAuth(id, environmentId, env, renderMode);
+            }
+            RenderMode mode = Objects.requireNonNullElse(renderMode, RenderMode.STRICT);
+            Map<String, String> variables = environmentVariables(environmentId, env);
+            KeepAliveBackoff backoff = currentBackoff(profile, provider);
+            if (backoff != null && clock.millis() < backoff.nextAttemptAt()) {
+                return deferred(profile, backoff, "Authentication maintenance is backing off", List.of());
+            }
+            if (!hasAcquiredState(profile.state())) {
+                return authenticateForMaintenance(profile, provider, variables, mode);
+            }
+            return maintainKeepAlive(profile, provider, variables, mode);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private AuthEnsureResult maintainKeepAlive(AuthProfile profile, AuthProvider provider,
+                                               Map<String, String> env, RenderMode mode) {
+        KeepAliveBackoff backoff = currentBackoff(profile, provider);
+        if (backoff != null && clock.millis() < backoff.nextAttemptAt()) {
+            return deferred(profile, backoff, "Keep-alive is backing off", List.of());
+        }
+        AuthFlowRunResult run;
+        try {
+            run = authFlowRunner.runAuthFlow(provider.keepAlive().flowId(), profile, provider,
+                    env, AuthFlowPurpose.KEEP_ALIVE, mode);
+        } catch (RuntimeException exception) {
+            return deferred(profile, recordBackoff(profile, provider),
+                    "Keep-alive execution failed: " + exception.getMessage(), List.of());
+        }
+        AuthKeepAliveEvaluator.Result evaluation = keepAliveEvaluator.evaluate(provider.keepAlive(), run);
+        if (evaluation.outcome() == AuthKeepAliveEvaluator.Outcome.ALIVE) {
+            AuthProfile updated = updateAuthState(profile, provider, run);
+            accessRepository.saveAuthProfile(updated);
+            keepAliveBackoffs.remove(profile.id());
+            return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.KEPT_ALIVE,
+                    evaluation.reason(), updated, evaluation.warnings());
+        }
+        if (evaluation.outcome() == AuthKeepAliveEvaluator.Outcome.EXPIRED) {
+            return authenticateForMaintenance(profile, provider, env, mode);
+        }
+        return deferred(profile, recordBackoff(profile, provider), evaluation.reason(), evaluation.warnings());
+    }
+
+    private AuthEnsureResult authenticateForMaintenance(AuthProfile profile, AuthProvider provider,
+                                                         Map<String, String> env, RenderMode mode) {
+        AuthEnsureResult result;
+        try {
+            result = ensureWithProvider(profile, provider, env, mode);
+        } catch (RuntimeException exception) {
+            result = AuthEnsureResult.failed(profile.id(), "Authentication failed: " + exception.getMessage(),
+                    Optional.of(profile), List.of());
+        }
+        if (result.failed()) recordBackoff(profile, provider, true);
+        else keepAliveBackoffs.remove(profile.id());
+        return result;
+    }
+
+    private static boolean hasAcquiredState(AuthState state) {
+        return state.lastUpdatedAtEpochMillis() > 0 || !state.variables().isEmpty()
+                || !state.headers().isEmpty() || !state.cookies().isEmpty();
+    }
+
+    private KeepAliveBackoff currentBackoff(AuthProfile profile, AuthProvider provider) {
+        KeepAliveBackoff backoff = keepAliveBackoffs.get(profile.id());
+        if (backoff != null && (!backoff.flowId().equals(provider.keepAlive().flowId())
+                || !backoff.state().equals(profile.state()))) {
+            keepAliveBackoffs.remove(profile.id(), backoff);
+            return null;
+        }
+        return backoff;
+    }
+
+    private KeepAliveBackoff recordBackoff(AuthProfile profile, AuthProvider provider) {
+        return recordBackoff(profile, provider, false);
+    }
+
+    private KeepAliveBackoff recordBackoff(AuthProfile profile, AuthProvider provider, boolean authenticationFailed) {
+        KeepAliveBackoff previous = currentBackoff(profile, provider);
+        int failures = previous == null ? 1 : Math.min(5, previous.failures() + 1);
+        long delay = Math.min(300_000L, 30_000L << (failures - 1));
+        KeepAliveBackoff next = new KeepAliveBackoff(provider.keepAlive().flowId(), profile.state(),
+                failures, clock.millis() + delay, authenticationFailed);
+        keepAliveBackoffs.put(profile.id(), next);
+        return next;
+    }
+
+    private AuthEnsureResult deferred(AuthProfile profile, KeepAliveBackoff backoff,
+                                       String reason, List<String> warnings) {
+        long seconds = Math.max(0, (backoff.nextAttemptAt() - clock.millis() + 999) / 1_000);
+        if (backoff.authenticationFailed() || !hasAcquiredState(profile.state())) {
+            return AuthEnsureResult.failed(profile.id(), reason + "; retry in " + seconds
+                    + "s. Authentication has not been established.", Optional.of(profile), warnings);
+        }
+        return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.DEFERRED,
+                reason + "; retry in " + seconds + "s. Existing auth state is unchanged.", profile, warnings);
+    }
+
+    private record KeepAliveBackoff(String flowId, AuthState state, int failures,
+                                    long nextAttemptAt, boolean authenticationFailed) { }
+
+    /**
      * Runs the configured provider policy even when the current state is still fresh.
-     * This is used by explicit and scheduled Session Handler refresh actions.
+     * Used by explicit auth actions and legacy scheduler maintenance without keep-alive.
      *
      * @param authProfileId auth profile id
      * @param environmentId environment id

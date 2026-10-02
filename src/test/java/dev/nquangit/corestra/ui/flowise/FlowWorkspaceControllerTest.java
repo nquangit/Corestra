@@ -150,11 +150,25 @@ class FlowWorkspaceControllerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void setActiveFlowClearsSelectedStep() {
-        FlowDefinition flow = emptyFlow("f1", "F");
+    void setActiveFlowSelectsFirstStep() {
+        FlowStep first = step("s1", "First");
+        FlowStep second = step("s2", "Second");
+        FlowDefinition flow = flow("f1", "F", List.of(first, second));
         controller.addFlow(flow);
-        controller.setSelectedStep(step("s1", "S"));
         controller.setActiveFlow(flow);
+        assertSame(first, controller.selectedStep());
+    }
+
+    @Test
+    void setActiveEmptyFlowClearsSelectedStep() {
+        FlowDefinition populated = flow("f1", "Populated", List.of(step("s1", "S")));
+        FlowDefinition empty = emptyFlow("f2", "Empty");
+        controller.addFlow(populated);
+        controller.addFlow(empty);
+        controller.setActiveFlow(populated);
+
+        controller.setActiveFlow(empty);
+
         assertNull(controller.selectedStep());
     }
 
@@ -186,7 +200,11 @@ class FlowWorkspaceControllerTest {
     }
 
     private static FlowDefinition emptyFlow(String id, String name) {
-        return new FlowDefinition(id, name, "", true, List.of(),
+        return flow(id, name, List.of());
+    }
+
+    private static FlowDefinition flow(String id, String name, List<FlowStep> steps) {
+        return new FlowDefinition(id, name, "", true, steps,
                 FlowRuleSet.empty(), AggregationPlan.disabled(), FlowTriggerConfig.none());
     }
 

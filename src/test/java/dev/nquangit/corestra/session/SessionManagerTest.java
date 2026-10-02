@@ -293,6 +293,56 @@ class SessionManagerTest {
         assertTrue(repository.profile(profile.id()).isEmpty());
     }
 
+    @Test
+    void responseFromPreviousAuthenticationGenerationCannotOverwriteFreshState() {
+        SessionProfileRepository repository = new SessionProfileRepository();
+        SessionState oldState = new SessionState(
+                Map.of("accessToken", "old-token"), 900L, 9_000L, 900L);
+        SessionProfile profile = SessionProfile.general().withConfig(
+                "General",
+                SessionScope.custom(List.of()),
+                new SessionAuthConfig("login", 180L, List.of()),
+                SessionSchedulerConfig.disabled(),
+                List.of(new SessionInjectionRule(
+                        "inject-token", true, InjectRule.Target.REQUEST_HEADER,
+                        "Authorization", "Bearer {{session.accessToken}}",
+                        InjectRule.WriteStrategy.OVERWRITE, List.of("PROXY"))),
+                List.of(new SessionExtractionRule(
+                        "extract-token", true, ExtractRule.SourceSide.RESPONSE,
+                        ExtractRule.ExtractorType.HEADER, "X-Token", "accessToken",
+                        List.of("PROXY")))).withState(oldState);
+        repository.saveProfile(profile);
+
+        FlowStep loginStep = new FlowStep(
+                "login-step", "Login", true, "",
+                new StoredRequestTemplate("POST", "https", "example.com", 443,
+                        "/login", List.of("Host: example.com"), "deviceid=fixed"),
+                List.of(), List.of(), List.of(), StepErrorStrategy.FAIL_FLOW);
+        FlowDefinition login = new FlowDefinition(
+                "login", "Login", "", true, List.of(loginStep), null, null, null);
+        ExtractionService extractionService = new ExtractionService();
+        SessionManager manager = new SessionManager(
+                repository,
+                () -> List.of(login),
+                TestFlowEngineFactory.withHttpClient(request -> noopResponse()),
+                extractionService,
+                Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneOffset.UTC));
+
+        SessionInjectionPlan oldPlan = manager.prepareInjectionRules(
+                repository.profile(SessionProfile.GENERAL_ID).orElseThrow(),
+                context("PROXY", true, "api.example"));
+        assertEquals(0L, oldPlan.authenticationGeneration());
+
+        manager.forceAuthenticate(SessionProfile.GENERAL_ID);
+        manager.applyExtractionRulesIfCurrent(
+                oldPlan.profileId(), oldPlan.authenticationGeneration(),
+                context("PROXY", true, "api.example"),
+                requestSnapshot(), responseSnapshot("stale-token"));
+
+        assertEquals("old-token", repository.profile(SessionProfile.GENERAL_ID).orElseThrow()
+                .state().values().get("accessToken"));
+    }
+
     private static SessionManager managerWithProfiles(List<SessionProfile> profiles) {
         SessionProfileRepository repository = new SessionProfileRepository();
         repository.saveProfiles(profiles);

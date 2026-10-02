@@ -231,16 +231,17 @@ public final class ProjectPanel extends JPanel {
 
     private JPanel buildFormSection() {
         JPanel form = new JPanel(new GridBagLayout());
+        form.setBorder(BorderFactory.createTitledBorder("Project Details"));
 
         GridBagConstraints lc = new GridBagConstraints();
         lc.anchor = GridBagConstraints.WEST;
-        lc.insets = new Insets(3, 0, 3, 8);
+        lc.insets = new Insets(4, 8, 4, 10);
         lc.gridx  = 0;
 
         GridBagConstraints fc = new GridBagConstraints();
         fc.fill    = GridBagConstraints.HORIZONTAL;
         fc.weightx = 1;
-        fc.insets  = new Insets(3, 0, 3, 0);
+        fc.insets  = new Insets(4, 0, 4, 8);
         fc.gridx   = 1;
 
         noteArea.setLineWrap(true);

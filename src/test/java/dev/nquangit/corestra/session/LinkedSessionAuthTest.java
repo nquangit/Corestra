@@ -21,6 +21,7 @@ import dev.nquangit.corestra.flow.execution.FlowEngine;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.http.extract.ExtractionService;
+import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +38,40 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LinkedSessionAuthTest {
+    @Test
+    void sharedStateExpiryInvalidatesOldResponsesEvenWhenSessionMarkerStillLooksFresh() {
+        Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC);
+        InMemoryAccessRepository accessRepository = new InMemoryAccessRepository();
+        AuthProvider provider = provider();
+        accessRepository.saveAuthProvider(provider);
+        AuthProfile actor = new AuthProfile("alice", "Alice", "USER", provider.id(), Map.of(),
+                new AuthState(Map.of("accessToken", "old"), Map.of(), Map.of(), 10_000, 500), true);
+        accessRepository.saveAuthProfile(actor);
+        AuthManager authManager = new AuthManager(accessRepository,
+                (flowId, profile, p, env, purpose, mode) -> AuthFlowRunResult.executed(
+                        true, "ok", 200, Map.of("accessToken", "new"), "", List.of()),
+                new AuthRuleEvaluator(), clock);
+        SessionProfileRepository sessionRepository = new SessionProfileRepository();
+        SessionProfile binding = new SessionProfile("proxy-user", "Proxy user", true, false,
+                SessionScope.custom(List.of()), "alice", SessionAuthConfig.defaults(),
+                SessionSchedulerConfig.disabled(), new SessionState(Map.of(), 500, 10_000, 500), List.of(),
+                List.of(new SessionExtractionRule("extract", true, ExtractRule.SourceSide.RESPONSE,
+                        ExtractRule.ExtractorType.HEADER, "X-Token", "accessToken", List.of("PROXY"))));
+        sessionRepository.saveProfile(binding);
+        SessionManager manager = manager(sessionRepository, accessRepository, authManager, clock);
+        SessionInjectionPlan oldPlan = manager.prepareInjectionRules(binding, context());
+
+        // Shared Authentication can invalidate state without changing the session binding marker.
+        accessRepository.saveAuthProfile(new AuthProfile(actor.id(), actor.name(), actor.role(), actor.providerId(),
+                actor.credentials(), AuthState.empty(), actor.enabled()));
+        SessionInjectionPlan newPlan = manager.prepareInjectionRules(binding, context());
+        assertTrue(newPlan.authenticationGeneration() > oldPlan.authenticationGeneration());
+        manager.applyExtractionRulesIfCurrent(binding.id(), oldPlan.authenticationGeneration(), context(),
+                new HttpMessageSnapshot("GET /api HTTP/1.1", List.of(), ""),
+                new HttpMessageSnapshot("HTTP/1.1 200", List.of("X-Token: stale"), ""));
+        assertEquals("new", accessRepository.authProfile("alice").orElseThrow().state().variables().get("accessToken"));
+    }
+
     @Test
     void linkedSessionReusesActorCredentialsStateAndProviderInjection() {
         Clock clock = Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneOffset.UTC);

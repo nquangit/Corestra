@@ -6,5 +6,6 @@ package dev.nquangit.corestra.access.auth.runtime;
 public enum AuthFlowPurpose {
     VALIDATE,
     REFRESH,
-    LOGIN
+    LOGIN,
+    KEEP_ALIVE
 }

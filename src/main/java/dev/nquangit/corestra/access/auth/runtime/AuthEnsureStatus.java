@@ -7,6 +7,8 @@ public enum AuthEnsureStatus {
     VALID,
     REFRESHED,
     LOGGED_IN,
+    KEPT_ALIVE,
+    DEFERRED,
     MANUAL,
     SKIPPED,
     FAILED

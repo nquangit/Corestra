@@ -64,7 +64,7 @@ public final class AuthRuleEvaluator {
         return AuthRuleEvaluationResult.failure(runResult.reason(), warnings);
     }
 
-    private boolean matches(
+    boolean matches(
             AuthRuleType type,
             String expression,
             String expectedValue,

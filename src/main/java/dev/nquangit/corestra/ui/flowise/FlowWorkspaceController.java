@@ -93,13 +93,17 @@ public final class FlowWorkspaceController {
     /**
      * Sets the active flow and notifies all registered change listeners.
      *
-     * <p>Passing {@code null} clears the active selection and also clears the selected step.</p>
+     * <p>The first step is selected automatically so the request/response editors are useful as
+     * soon as the user enters a flow. Passing {@code null}, or selecting an empty flow, clears the
+     * step selection.</p>
      *
      * @param flow the flow definition to make active, or {@code null} to clear the selection
      */
     public void setActiveFlow(FlowDefinition flow) {
         this.activeFlow = flow;
-        this.selectedStep = null;
+        this.selectedStep = flow == null || flow.steps().isEmpty()
+                ? null
+                : flow.steps().getFirst();
         notifyListeners();
     }
 

@@ -155,6 +155,22 @@ class ExtractionServiceTest {
         }
 
         @Test
+        void extractsCookieFromLaterResponseSetCookieHeader() {
+            ExtractRule rule = rule(ExtractRule.ExtractorType.COOKIE, ExtractRule.SourceSide.RESPONSE, "token");
+            HttpMessageSnapshot resp = responseWith("HTTP/1.1 200 OK",
+                    List.of(
+                            "Set-Cookie: JSESSIONID=first-cookie; Path=/; HttpOnly",
+                            "set-cookie: route=node-1; Path=/",
+                            "Set-Cookie: token=expected-token; Path=/; Secure; HttpOnly"),
+                    "");
+
+            ExtractionResult result = service.extract(rule, null, resp);
+
+            assertTrue(result.isSuccess());
+            assertEquals("expected-token", result.value());
+        }
+
+        @Test
         void returnsFailureWhenCookieHeaderAbsent() {
             ExtractRule rule = rule(ExtractRule.ExtractorType.COOKIE, ExtractRule.SourceSide.REQUEST, "session");
             HttpMessageSnapshot req = requestWith(List.of("Host: example.com"), "");

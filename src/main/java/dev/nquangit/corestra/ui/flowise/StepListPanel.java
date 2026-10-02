@@ -120,6 +120,11 @@ public final class StepListPanel extends JPanel {
         if (draggedStepId != null) return; // don't interrupt an active drag
         FlowDefinition active = controller.activeFlow();
         List<FlowStep> steps = (active == null) ? List.of() : active.steps();
+        FlowStep controllerSelection = controller.selectedStep();
+        selectedStepId = controllerSelection != null
+                && steps.stream().anyMatch(step -> step.id().equals(controllerSelection.id()))
+                ? controllerSelection.id()
+                : null;
 
         listContainer.removeAll();
         boolean dark = UiTheme.isDark();

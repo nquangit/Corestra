@@ -2,6 +2,9 @@ package dev.nquangit.corestra.ui.access;
 
 import dev.nquangit.corestra.access.auth.AuthFallbackPolicy;
 import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthKeepAliveConfig;
+import dev.nquangit.corestra.access.auth.AuthSuccessRule;
+import dev.nquangit.corestra.access.auth.AuthRuleType;
 import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
 import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
@@ -29,6 +32,25 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AuthProvidersPanelTest {
+    @Test
+    void editingProviderPreservesKeepAliveFlowAndIndependentRules() throws Exception {
+        AuthKeepAliveConfig config = new AuthKeepAliveConfig("keep", List.of(new AuthSuccessRule(
+                "alive", "Success 200", true, AuthRuleType.STATUS_CODE, "200", "")), List.of());
+        AuthProvider p = new AuthProvider("provider", "Provider", "", true, "login", "", "",
+                List.of(), List.of(), List.of(), AuthFallbackPolicy.LOGIN_ONLY, AuthRetryPolicy.NO_RETRY, 180L, config);
+        assertEquals(p, AuthProviderFormModel.from(p).toAuthProvider(p.id()));
+        JPanel form = constructForm(AuthProviderFormModel.from(p), List.of(loginFlow(),
+                new FlowDefinition("keep", "Keep alive", "", true, loginFlow().steps(), null, null, null)));
+        var method = form.getClass().getDeclaredMethod("toModel");
+        method.setAccessible(true);
+        AtomicReference<AuthProviderFormModel> restored = new AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> {
+            try { restored.set((AuthProviderFormModel) method.invoke(form)); }
+            catch (ReflectiveOperationException e) { throw new AssertionError(e); }
+        });
+        assertEquals(config, restored.get().keepAlive());
+    }
+
     @Test
     void providerFormShowsFlowContractAndGeneratesSuggestedBearerRule() throws Exception {
         FlowDefinition login = loginFlow();

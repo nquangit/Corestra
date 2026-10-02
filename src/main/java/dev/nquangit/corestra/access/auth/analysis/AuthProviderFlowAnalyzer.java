@@ -65,6 +65,21 @@ public final class AuthProviderFlowAnalyzer {
         resolveFlow(provider.loginFlowId(), AuthFlowPurpose.LOGIN, requiresLogin(provider), byId, selected, issues);
         resolveFlow(provider.refreshFlowId(), AuthFlowPurpose.REFRESH, requiresRefresh(provider), byId, selected, issues);
         resolveFlow(provider.validateFlowId(), AuthFlowPurpose.VALIDATE, requiresValidate(provider), byId, selected, issues);
+        resolveFlow(provider.keepAlive().flowId(), AuthFlowPurpose.KEEP_ALIVE, false, byId, selected, issues);
+        if (provider.keepAlive().enabled()) {
+            if (provider.keepAlive().successRules().stream().noneMatch(rule -> rule.enabled())) {
+                issues.add(new AuthProviderFlowIssue(Severity.ERROR, "Keep-alive success rule is required",
+                        "Add a rule that confirms the existing session is alive. Login success rules are separate."));
+            }
+            if (provider.keepAlive().expiredRules().stream().noneMatch(rule -> rule.enabled())) {
+                issues.add(new AuthProviderFlowIssue(Severity.WARNING, "Keep-alive will not re-authenticate on failure",
+                        "No session-expired rule is enabled. Unconfirmed responses only retry with backoff."));
+            }
+            provider.keepAlive().successRules().stream().filter(rule -> rule.enabled()).forEach(rule ->
+                    validateKeepAliveRule(rule.type(), rule.expression(), rule.expectedValue(), issues));
+            provider.keepAlive().expiredRules().stream().filter(rule -> rule.enabled()).forEach(rule ->
+                    validateKeepAliveRule(rule.type(), rule.expression(), rule.expectedValue(), issues));
+        }
 
         for (Map.Entry<AuthFlowPurpose, FlowDefinition> entry : selected.entrySet()) {
             analyzeFlow(entry.getKey(), entry.getValue(), outputs, requiredInputs, issues);
@@ -86,6 +101,28 @@ public final class AuthProviderFlowAnalyzer {
 
         List<AuthInjectionSuggestion> suggestions = suggestions(outputs);
         return new AuthProviderFlowAnalysis(outputs, List.copyOf(requiredInputs), suggestions, issues);
+    }
+
+    private void validateKeepAliveRule(dev.nquangit.corestra.access.auth.AuthRuleType type,
+                                      String expression, String expectedValue,
+                                      List<AuthProviderFlowIssue> issues) {
+        String text = expectedValue.isBlank() ? expression : expectedValue;
+        boolean valid = !text.isBlank();
+        switch (type) {
+            case STATUS_CODE -> {
+                try {
+                    int code = Integer.parseInt(text.strip());
+                    valid = code >= 100 && code <= 599;
+                } catch (NumberFormatException ignored) { valid = false; }
+            }
+            case HEADER_EXISTS -> valid = !expression.isBlank();
+            case JSON_PATH, CUSTOM -> valid = false;
+            case BODY_CONTAINS, BODY_NOT_CONTAINS -> { }
+        }
+        if (!valid) {
+            issues.add(new AuthProviderFlowIssue(Severity.ERROR, "Invalid keep-alive outcome rule",
+                    "Use a supported rule type with a non-empty expression; status codes must be 100–599."));
+        }
     }
 
     private void resolveFlow(
@@ -275,7 +312,13 @@ public final class AuthProviderFlowAnalyzer {
             Map<AuthFlowPurpose, FlowDefinition> selected,
             List<AuthFlowOutput> outputs,
             List<AuthProviderFlowIssue> issues) {
-        FlowDefinition refresh = selected.get(AuthFlowPurpose.REFRESH);
+        validateStateInputs(AuthFlowPurpose.REFRESH, selected, outputs, issues);
+        validateStateInputs(AuthFlowPurpose.KEEP_ALIVE, selected, outputs, issues);
+    }
+
+    private void validateStateInputs(AuthFlowPurpose purpose, Map<AuthFlowPurpose, FlowDefinition> selected,
+                                    List<AuthFlowOutput> outputs, List<AuthProviderFlowIssue> issues) {
+        FlowDefinition refresh = selected.get(purpose);
         if (refresh == null) {
             return;
         }
@@ -306,8 +349,8 @@ public final class AuthProviderFlowAnalyzer {
             if (!loginOutputs.contains(key)) {
                 issues.add(new AuthProviderFlowIssue(
                         Severity.WARNING,
-                        "Refresh input is not produced by Login Flow",
-                        "Refresh Flow requires auth." + key + ", but Login Flow does not extract '" + key
+                        label(purpose) + " input is not produced by Login Flow",
+                        label(purpose) + " Flow requires auth." + key + ", but Login Flow does not extract '" + key
                                 + "'. Existing/manual Auth State must provide it."));
             }
         }
@@ -377,6 +420,7 @@ public final class AuthProviderFlowAnalyzer {
     }
 
     private static String label(AuthFlowPurpose purpose) {
+        if (purpose == AuthFlowPurpose.KEEP_ALIVE) return "Keep-alive";
         String lower = purpose.name().toLowerCase(Locale.ROOT);
         return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
     }

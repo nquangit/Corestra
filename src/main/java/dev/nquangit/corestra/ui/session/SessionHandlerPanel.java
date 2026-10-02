@@ -18,6 +18,7 @@ import dev.nquangit.corestra.session.SessionScope;
 import dev.nquangit.corestra.session.SessionScopeCriterion;
 import dev.nquangit.corestra.session.SessionScopeMode;
 import dev.nquangit.corestra.session.SessionState;
+import dev.nquangit.corestra.ui.component.StyledButton;
 
 import javax.swing.AbstractCellEditor;
 import javax.swing.BorderFactory;
@@ -106,7 +107,8 @@ public final class SessionHandlerPanel extends JPanel {
     private final JTable extractionTable = new JTable(extractionModel);
     private final JTable stateTable = new JTable(stateModel);
     private final JLabel statusLabel = new JLabel(" ");
-    private final JButton runAuthButton = new JButton("Run Auth Now");
+    private final JButton runAuthButton = StyledButton.success("Run Auth Now");
+    private final JButton maintainAuthButton = StyledButton.neutral("Maintain Session Now");
     private final Consumer<SessionProfileChangeEvent> profileChangeListener = this::handleProfileChange;
     private final AtomicBoolean stateRefreshQueued = new AtomicBoolean();
     private JButton addCriterionButton;
@@ -184,8 +186,8 @@ public final class SessionHandlerPanel extends JPanel {
             }
         });
 
-        JButton addButton = new JButton("Add");
-        JButton deleteButton = new JButton("Delete");
+        JButton addButton = StyledButton.primary("Add Profile");
+        JButton deleteButton = StyledButton.danger("Delete");
         addButton.addActionListener(event -> addProfile());
         deleteButton.addActionListener(event -> deleteSelectedProfile());
 
@@ -198,6 +200,7 @@ public final class SessionHandlerPanel extends JPanel {
 
         JPanel side = new JPanel(new BorderLayout(0, 8));
         side.setPreferredSize(new Dimension(240, 500));
+        side.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 6));
         side.add(new JLabel("Profiles"), BorderLayout.NORTH);
         side.add(new JScrollPane(profileList), BorderLayout.CENTER);
         side.add(buttons, BorderLayout.SOUTH);
@@ -215,11 +218,14 @@ public final class SessionHandlerPanel extends JPanel {
         tabs.setToolTipTextAt(2, "Optional traffic-specific rules applied after linked Auth Provider injection rules.");
         tabs.setToolTipTextAt(3, "Can update standalone state or the linked actor's auth variables from live traffic.");
 
-        runAuthButton.addActionListener(event -> runSelectedAuthFlow());
+        runAuthButton.addActionListener(event -> runSelectedAuthFlow(false));
+        maintainAuthButton.addActionListener(event -> runSelectedAuthFlow(true));
+        maintainAuthButton.setToolTipText("Use the provider's keep-alive flow when configured; otherwise run its existing auth policy.");
 
         JPanel actions = new JPanel();
         actions.setLayout(new BoxLayout(actions, BoxLayout.X_AXIS));
         actions.add(runAuthButton);
+        actions.add(maintainAuthButton);
         actions.add(Box.createHorizontalStrut(10));
         actions.add(statusLabel);
         actions.add(Box.createHorizontalGlue());
@@ -245,7 +251,7 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     private JPanel buildLinkedAuthProfileSelector() {
-        JButton reload = new JButton("Reload");
+        JButton reload = StyledButton.neutral("Reload");
         reload.setToolTipText("Reload shared profiles from Authentication.");
         reload.addActionListener(event -> {
             AuthProfileOption selected = (AuthProfileOption) linkedAuthProfileCombo.getSelectedItem();
@@ -260,8 +266,8 @@ public final class SessionHandlerPanel extends JPanel {
 
     private JPanel buildScopeTab() {
         criteriaTable.setFillsViewportHeight(true);
-        addCriterionButton = new JButton("Add Criterion");
-        removeCriterionButton = new JButton("Remove");
+        addCriterionButton = StyledButton.primary("Add Criterion");
+        removeCriterionButton = StyledButton.neutral("Remove");
         addCriterionButton.addActionListener(event -> criteriaModel.addRow(new Object[]{SessionCriterionType.HOST, "", ""}));
         removeCriterionButton.addActionListener(event -> removeSelectedRow(criteriaTable, criteriaModel));
 
@@ -279,8 +285,8 @@ public final class SessionHandlerPanel extends JPanel {
 
     private JPanel buildRuleTab(JTable table, Runnable addAction, Runnable removeAction) {
         table.setFillsViewportHeight(true);
-        JButton addButton = new JButton("Add Rule");
-        JButton removeButton = new JButton("Remove");
+        JButton addButton = StyledButton.primary("Add Rule");
+        JButton removeButton = StyledButton.neutral("Remove");
         addButton.addActionListener(event -> addAction.run());
         removeButton.addActionListener(event -> removeAction.run());
 
@@ -297,13 +303,18 @@ public final class SessionHandlerPanel extends JPanel {
         addLabeled(panel, 0, "Scheduler:", schedulerEnabledCheck);
         addLabeled(panel, 1, "Interval seconds:", schedulerIntervalField);
         addLabeled(panel, 2, "Startup:", schedulerStartupCheck);
-        addFiller(panel, 3);
+        JLabel guidance = new JLabel("<html>TTL controls when on-demand auth becomes stale; it does not send requests. "
+                + "With a linked provider's Keep-alive Flow, Scheduler maintains the existing session. "
+                + "Without it, scheduled runs use the existing authentication policy.</html>");
+        guidance.setToolTipText("For keep-alive sessions, use an interval safely below the server timeout.");
+        addLabeled(panel, 3, "How it works:", guidance);
+        addFiller(panel, 4);
         return panel;
     }
 
     private JPanel buildStateTab() {
         stateTable.setFillsViewportHeight(true);
-        JButton clearButton = new JButton("Clear State");
+        JButton clearButton = StyledButton.danger("Clear State");
         clearButton.addActionListener(event -> clearSelectedState());
         revealStateCheck.addActionListener(event -> loadSelectedProfile());
 
@@ -865,7 +876,7 @@ public final class SessionHandlerPanel extends JPanel {
         }
     }
 
-    private void runSelectedAuthFlow() {
+    private void runSelectedAuthFlow(boolean maintenance) {
         SessionProfile profile = profileList.getSelectedValue();
         if (profile == null) {
             return;
@@ -874,11 +885,13 @@ public final class SessionHandlerPanel extends JPanel {
             return;
         }
         runAuthButton.setEnabled(false);
-        setStatus("Authentication is running...");
+        maintainAuthButton.setEnabled(false);
+        setStatus(maintenance ? "Session maintenance is running..." : "Authentication is running...");
         new SwingWorker<SessionAuthenticationResult, Void>() {
             @Override
             protected SessionAuthenticationResult doInBackground() {
-                return sessionManager.forceAuthenticateWithResult(profile.id());
+                return maintenance ? sessionManager.maintainAuthenticationWithResult(profile.id())
+                        : sessionManager.forceAuthenticateWithResult(profile.id());
             }
 
             @Override
@@ -897,6 +910,7 @@ public final class SessionHandlerPanel extends JPanel {
                     setStatus("Authentication failed: " + detail);
                 } finally {
                     runAuthButton.setEnabled(true);
+                    maintainAuthButton.setEnabled(true);
                 }
             }
         }.execute();

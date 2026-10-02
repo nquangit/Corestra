@@ -150,6 +150,14 @@ For a linked profile, use `{{auth.accessToken}}` in a local Injection Rule. The 
 
 Do not recreate `Authorization`, Cookie, or query injection in Session Handler when the Auth Provider already defines it. Provider rules run first automatically. Add a local rule only for a traffic/tool-specific addition or override.
 
+TTL and Scheduler solve different problems. The provider TTL marks Auth State stale; it never sends a request by itself. With Scheduler disabled, matching traffic checks stale authentication on demand. With an optional **Keep-alive Flow** configured in the linked Auth Provider, Scheduler maintains the actor's current session and extends local TTL on success. Without that flow, scheduled runs retain the previous behavior of forcing the provider's auth policy. Set the interval safely below the server timeout without sending excessive traffic.
+
+Configure keep-alive's independent **Success** and **Session Expired** rules in the provider's **Keep-alive** tab. Timeout/network/unknown failures keep state unchanged and retry with backoff; only an explicit expiry match permits re-authentication. The keep-alive step needs its own `auth.*` injection rules. **Maintain Session Now** tests maintenance immediately; **Run Auth Now** continues to run the original authentication policy. See [Keep-alive setup for one or multiple actors](guides/KEEP_ALIVE.md).
+
+During a Session Handler renewal, matching requests wait until authentication finishes, then render all injection rules from the latest state. Linked provider rules and local overrides use the same Auth Profile snapshot, so cookies such as `JSESSIONID` and `token` are injected together. Internal login traffic through Proxy Pipeline is excluded from live session extraction even after its internal marker header is removed. Responses from requests sent before renewal cannot overwrite the new state. Responses without a tracked outgoing request (including expired or evicted tracking entries) are forwarded without extracting session values.
+
+Refreshing authentication does not rebuild application form or transaction context. A queued request can still contain page IDs, processor IDs, or hidden fields from the previous session even when its cookies are correct. Use a setup flow to obtain those fields with the current authentication before sending the target. See [Session renewal and stale form context](guides/SESSION_RENEWAL.md) for an evidence-based example and the current auto-trigger input limitations.
+
 Linked mode shares credentials, token/cookie state, provider login/refresh/validate flows, TTL, and injection rules with Access Testing. **Clear State** clears the linked actor's auth state while preserving credentials. **Standalone Flow (legacy)** remains available for existing projects and specialized session-only flows.
 
 ## 6. Scoped Variables
@@ -197,6 +205,8 @@ When adding or editing a provider:
 11. Configure success and failure rules.
 
 The Login, Refresh, and Validate controls list flows already created in Flowise. Use **None** when a policy does not need that flow.
+
+**Produced Auth State** is the declared contract derived from enabled extractor rules. It does not mean that every extractor matched the latest live response. Only successful runtime extractions are written to the selected Auth Profile's State.
 
 Corestra accepts legacy extractor names such as `auth.accessToken` and normalizes them to `accessToken` when Auth State is updated. Flow Contract reports these names as warnings. **Fix auth.* extractor names** performs an explicit atomic cleanup on the selected auth flows and updates later Flowise injection references; ambiguous collisions are skipped. If both forms are returned together at runtime, the canonical unscoped name takes precedence.
 

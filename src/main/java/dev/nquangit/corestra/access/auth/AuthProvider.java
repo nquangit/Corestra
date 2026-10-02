@@ -30,6 +30,7 @@ public final class AuthProvider {
     private final AuthFallbackPolicy fallbackPolicy;
     private final AuthRetryPolicy targetRetryPolicy;
     private final long stateTtlSeconds;
+    private final AuthKeepAliveConfig keepAlive;
 
     /**
      * Creates an auth provider configuration.
@@ -66,7 +67,6 @@ public final class AuthProvider {
     }
 
     /** Creates an auth provider configuration with a fallback state lifetime. */
-    @JsonCreator
     public AuthProvider(
             @JsonProperty("id") String id,
             @JsonProperty("name") String name,
@@ -81,6 +81,25 @@ public final class AuthProvider {
             @JsonProperty("fallbackPolicy") AuthFallbackPolicy fallbackPolicy,
             @JsonProperty("targetRetryPolicy") AuthRetryPolicy targetRetryPolicy,
             @JsonProperty("stateTtlSeconds") Long stateTtlSeconds) {
+        this(id, name, description, enabled, loginFlowId, refreshFlowId, validateFlowId,
+                injectionRules, successRules, failureRules, fallbackPolicy, targetRetryPolicy,
+                stateTtlSeconds, AuthKeepAliveConfig.disabled());
+    }
+
+    /** Creates a provider with optional independent keep-alive configuration. */
+    @JsonCreator
+    public AuthProvider(
+            @JsonProperty("id") String id, @JsonProperty("name") String name,
+            @JsonProperty("description") String description, @JsonProperty("enabled") boolean enabled,
+            @JsonProperty("loginFlowId") String loginFlowId, @JsonProperty("refreshFlowId") String refreshFlowId,
+            @JsonProperty("validateFlowId") String validateFlowId,
+            @JsonProperty("injectionRules") List<AuthInjectionRule> injectionRules,
+            @JsonProperty("successRules") List<AuthSuccessRule> successRules,
+            @JsonProperty("failureRules") List<AuthFailureRule> failureRules,
+            @JsonProperty("fallbackPolicy") AuthFallbackPolicy fallbackPolicy,
+            @JsonProperty("targetRetryPolicy") AuthRetryPolicy targetRetryPolicy,
+            @JsonProperty("stateTtlSeconds") Long stateTtlSeconds,
+            @JsonProperty("keepAlive") AuthKeepAliveConfig keepAlive) {
         this.id = normalizeRequiredText(id, "id");
         this.name = normalizeRequiredText(name, "name");
         this.description = normalizeOptionalText(description);
@@ -98,6 +117,7 @@ public final class AuthProvider {
             throw new IllegalArgumentException("stateTtlSeconds must be between 0 and " + MAX_STATE_TTL_SECONDS);
         }
         this.stateTtlSeconds = ttl;
+        this.keepAlive = Objects.requireNonNullElseGet(keepAlive, AuthKeepAliveConfig::disabled);
     }
 
     /**
@@ -213,6 +233,11 @@ public final class AuthProvider {
         return stateTtlSeconds;
     }
 
+    /** Returns the optional keep-alive flow and its independent outcome rules. */
+    public AuthKeepAliveConfig keepAlive() {
+        return keepAlive;
+    }
+
     /**
      * Compares this provider to another object.
      *
@@ -238,6 +263,7 @@ public final class AuthProvider {
                 && Objects.equals(injectionRules, that.injectionRules)
                 && Objects.equals(successRules, that.successRules)
                 && Objects.equals(failureRules, that.failureRules)
+                && Objects.equals(keepAlive, that.keepAlive)
                 && fallbackPolicy == that.fallbackPolicy
                 && targetRetryPolicy == that.targetRetryPolicy;
     }
@@ -250,7 +276,7 @@ public final class AuthProvider {
     @Override
     public int hashCode() {
         return Objects.hash(id, name, description, enabled, loginFlowId, refreshFlowId, validateFlowId,
-                injectionRules, successRules, failureRules, fallbackPolicy, targetRetryPolicy, stateTtlSeconds);
+                injectionRules, successRules, failureRules, fallbackPolicy, targetRetryPolicy, stateTtlSeconds, keepAlive);
     }
 
     /**

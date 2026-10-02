@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.nquangit.corestra.access.auth.AuthProfile;
+import dev.nquangit.corestra.access.auth.AuthKeepAliveConfig;
 import dev.nquangit.corestra.access.auth.AuthProvider;
 import dev.nquangit.corestra.access.auth.AuthFailureRule;
 import dev.nquangit.corestra.access.auth.AuthInjectionRule;
@@ -251,7 +252,12 @@ public final class AccessWorkspaceSerializer {
                         .map(rule -> transformAuthSuccessRule(rule, excludeSecrets)).toList(),
                 provider.failureRules().stream()
                         .map(rule -> transformAuthFailureRule(rule, excludeSecrets)).toList(),
-                provider.fallbackPolicy(), provider.targetRetryPolicy(), provider.stateTtlSeconds());
+                provider.fallbackPolicy(), provider.targetRetryPolicy(), provider.stateTtlSeconds(),
+                new AuthKeepAliveConfig(provider.keepAlive().flowId(),
+                        provider.keepAlive().successRules().stream()
+                                .map(rule -> transformAuthSuccessRule(rule, excludeSecrets)).toList(),
+                        provider.keepAlive().expiredRules().stream()
+                                .map(rule -> transformAuthFailureRule(rule, excludeSecrets)).toList()));
     }
 
     private AuthInjectionRule transformAuthInjectionRule(AuthInjectionRule rule, boolean excludeSecrets) {

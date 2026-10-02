@@ -153,6 +153,8 @@ Session Handler gọi chung auth runtime của Authentication. Login/refresh/val
 
 Trong Injection Rule cục bộ của linked profile, dùng `{{auth.accessToken}}`. Dropdown **Value Template** gợi ý output của login/refresh/validate flow kể cả trước lần login đầu tiên, đồng thời gợi ý Auth State hiện có như `{{auth.csrfToken}}`, `{{auth.header.Authorization}}` và `{{auth.cookie.SESSION}}`. Không cần tạo lại rule Authorization/Cookie nếu Auth Provider đã có rule tương ứng, vì provider rule được áp dụng tự động trước local Session rule.
 
+TTL và Scheduler có vai trò khác nhau. TTL chỉ đánh dấu Auth State đã cũ và không tự gửi request. Khi Scheduler tắt, request phù hợp sau khi TTL hết sẽ kiểm tra auth theo nhu cầu. Bật Scheduler nếu cần giữ session sống khi idle. Nếu provider chọn **Keep-alive Flow**, scheduler ưu tiên duy trì session hiện tại; nếu không chọn, scheduled run giữ hành vi chạy provider policy cũ. Xem [hướng dẫn Keep-alive](KEEP_ALIVE.md) để cấu hình flow dùng chung nhiều actor, outcome rules riêng và backoff khi lỗi mạng.
+
 Khi muốn đổi user đang dùng cho traffic thủ công, đổi **Shared Auth Profile** thay vì sao chép flow. Nếu vừa tạo actor ở Authentication, bấm **Reload** cạnh danh sách profile.
 
 ## 6. Data Profile và bài test nhiều actor

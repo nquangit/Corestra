@@ -7,8 +7,8 @@ import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
 import dev.nquangit.corestra.session.SessionGuard;
+import dev.nquangit.corestra.session.SessionInjectionPlan;
 import dev.nquangit.corestra.session.SessionManager;
-import dev.nquangit.corestra.session.SessionProfile;
 import dev.nquangit.corestra.session.SessionProfileSelection;
 import dev.nquangit.corestra.session.SessionTrafficContext;
 
@@ -91,8 +91,9 @@ public final class SessionAwareHttpClient implements HttpClient {
         // 5–9. Run with guard active so any auth-refresh HTTP calls don't loop back here.
         try {
             SessionGuard.enter();
-            SessionProfile profile = manager.ensureAuthenticated(selection.profile().orElseThrow(), context);
-            List<InjectRule> rules = manager.renderedInjectionRules(profile, context.toolTypeName());
+            SessionInjectionPlan plan = manager.prepareInjectionRules(
+                    selection.profile().orElseThrow(), context);
+            List<InjectRule> rules = plan.rules();
             if (rules.isEmpty()) {
                 return delegate.send(request);
             }

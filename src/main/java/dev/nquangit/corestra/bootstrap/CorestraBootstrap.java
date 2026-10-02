@@ -259,7 +259,9 @@ public final class CorestraBootstrap {
                 controller::flows, runFlowAction::run, new SessionHandlingFlowMapper()));
 
         // Project-level Session Handler: scoped extraction/injection for live Burp/Corestra traffic.
-        api.http().registerHttpHandler(new CorestraSessionHttpHandler(sessionManager, injectionService));
+        CorestraSessionHttpHandler sessionHttpHandler = new CorestraSessionHttpHandler(sessionManager, injectionService);
+        registry.registerCloseable(sessionHttpHandler);
+        api.http().registerHttpHandler(sessionHttpHandler);
 
         // Observe the pipeline marker before AutoTrigger removes it from requests reaching Burp.
         // This keeps extension-origin proxy traffic out of the passive parameter dictionary.

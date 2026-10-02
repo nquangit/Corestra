@@ -4,6 +4,7 @@ import dev.nquangit.corestra.access.auth.AuthFailureRule;
 import dev.nquangit.corestra.access.auth.AuthFallbackPolicy;
 import dev.nquangit.corestra.access.auth.AuthInjectionRule;
 import dev.nquangit.corestra.access.auth.AuthProvider;
+import dev.nquangit.corestra.access.auth.AuthKeepAliveConfig;
 import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
 import dev.nquangit.corestra.access.auth.AuthSuccessRule;
 
@@ -24,6 +25,7 @@ final class AuthProviderFormModel {
     private final List<AuthInjectionRule> injectionRules;
     private final List<AuthSuccessRule> successRules;
     private final List<AuthFailureRule> failureRules;
+    private final AuthKeepAliveConfig keepAlive;
 
     AuthProviderFormModel(
             String name,
@@ -55,6 +57,16 @@ final class AuthProviderFormModel {
             List<AuthInjectionRule> injectionRules,
             List<AuthSuccessRule> successRules,
             List<AuthFailureRule> failureRules) {
+        this(name, description, enabled, loginFlowId, refreshFlowId, validateFlowId,
+                fallbackPolicy, targetRetryPolicy, stateTtlSeconds, injectionRules, successRules,
+                failureRules, AuthKeepAliveConfig.disabled());
+    }
+
+    AuthProviderFormModel(String name, String description, boolean enabled, String loginFlowId,
+                         String refreshFlowId, String validateFlowId, AuthFallbackPolicy fallbackPolicy,
+                         AuthRetryPolicy targetRetryPolicy, long stateTtlSeconds,
+                         List<AuthInjectionRule> injectionRules, List<AuthSuccessRule> successRules,
+                         List<AuthFailureRule> failureRules, AuthKeepAliveConfig keepAlive) {
         this.name = normalizeRequiredText(name, "name");
         this.description = normalizeOptionalText(description);
         this.enabled = enabled;
@@ -71,6 +83,7 @@ final class AuthProviderFormModel {
         this.injectionRules = copyList(injectionRules, "injectionRules");
         this.successRules = copyList(successRules, "successRules");
         this.failureRules = copyList(failureRules, "failureRules");
+        this.keepAlive = Objects.requireNonNullElseGet(keepAlive, AuthKeepAliveConfig::disabled);
     }
 
     static AuthProviderFormModel from(AuthProvider provider) {
@@ -87,7 +100,7 @@ final class AuthProviderFormModel {
                 provider.stateTtlSeconds(),
                 provider.injectionRules(),
                 provider.successRules(),
-                provider.failureRules());
+                provider.failureRules(), provider.keepAlive());
     }
 
     AuthProvider toAuthProvider(String id) {
@@ -104,7 +117,7 @@ final class AuthProviderFormModel {
                 failureRules,
                 fallbackPolicy,
                 targetRetryPolicy,
-                stateTtlSeconds);
+                stateTtlSeconds, keepAlive);
     }
 
     String name() {
@@ -153,6 +166,10 @@ final class AuthProviderFormModel {
 
     List<AuthFailureRule> failureRules() {
         return failureRules;
+    }
+
+    AuthKeepAliveConfig keepAlive() {
+        return keepAlive;
     }
 
     private static <T> List<T> copyList(List<T> values, String fieldName) {

@@ -8,6 +8,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Insets;
 import java.awt.RenderingHints;
+import java.awt.Cursor;
 
 /**
  * A flat, pastel-style {@link JButton} that adapts its colour palette to Burp Suite's
@@ -58,7 +59,7 @@ public final class StyledButton extends JButton {
             new Palette(new Color(0x1F2937), new Color(0x374151), new Color(0x4B5563),
                         new Color(0xD1D5DB), new Color(0x4B5563)));
 
-    private static final int ARC = 6;
+    private static final int ARC = 8;
 
     private final Variant variant;
 
@@ -69,7 +70,9 @@ public final class StyledButton extends JButton {
         setContentAreaFilled(false);
         setBorderPainted(false);
         setFocusPainted(false);
-        setMargin(new Insets(3, 10, 3, 10));
+        setRolloverEnabled(true);
+        setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        setMargin(new Insets(4, 11, 4, 11));
     }
 
     /** Primary (indigo) — main creation actions such as «+ New Flow». */
@@ -125,6 +128,12 @@ public final class StyledButton extends JButton {
         g2.setStroke(new BasicStroke(1.0f));
         g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, ARC, ARC);
 
+        if (hasFocus() && isEnabled()) {
+            g2.setColor(UiTheme.pick(new Color(0x6366F1), new Color(0xA5B4FC)));
+            g2.setStroke(new BasicStroke(1.5f));
+            g2.drawRoundRect(2, 2, Math.max(0, getWidth() - 5), Math.max(0, getHeight() - 5), ARC - 2, ARC - 2);
+        }
+
         g2.dispose();
         super.paintComponent(g);
     }
@@ -132,6 +141,6 @@ public final class StyledButton extends JButton {
     @Override
     public Dimension getPreferredSize() {
         Dimension d = super.getPreferredSize();
-        return new Dimension(d.width + 4, d.height + 2);
+        return new Dimension(d.width + 4, Math.max(28, d.height + 2));
     }
 }

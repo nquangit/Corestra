@@ -14,6 +14,7 @@ import javax.swing.UIManager;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Font;
+import java.awt.GridBagLayout;
 import java.util.Objects;
 
 /**
@@ -88,9 +89,14 @@ public final class FlowisePanel extends JPanel {
     // -------------------------------------------------------------------------
 
     private JPanel buildEmptyState() {
-        JLabel hint = new JLabel("No flows yet.", SwingConstants.CENTER);
+        JLabel title = new JLabel("Build your first HTTP flow", SwingConstants.CENTER);
         Font base = UIManager.getFont("Label.font");
-        if (base != null) hint.setFont(base.deriveFont(Font.ITALIC));
+        if (base != null) title.setFont(base.deriveFont(Font.BOLD, base.getSize2D() + 2f));
+
+        JLabel hint = new JLabel(
+                "<html><div style='text-align:center'>Capture a request from Burp or create a flow, then add extraction, "
+                        + "injection, conditions, and execution rules.</div></html>",
+                SwingConstants.CENTER);
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
 
         StyledButton createBtn = StyledButton.primary("+ New Flow");
@@ -100,14 +106,18 @@ public final class FlowisePanel extends JPanel {
         JPanel inner = new JPanel();
         inner.setLayout(new BoxLayout(inner, BoxLayout.Y_AXIS));
         inner.setOpaque(false);
+        title.setAlignmentX(0.5f);
         hint.setAlignmentX(0.5f);
         createBtn.setAlignmentX(0.5f);
+        inner.add(title);
+        inner.add(Box.createVerticalStrut(6));
         inner.add(hint);
-        inner.add(Box.createVerticalStrut(10));
+        inner.add(Box.createVerticalStrut(14));
         inner.add(createBtn);
 
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.add(inner, BorderLayout.CENTER);
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(javax.swing.BorderFactory.createEmptyBorder(24, 24, 24, 24));
+        panel.add(inner);
         return panel;
     }
 

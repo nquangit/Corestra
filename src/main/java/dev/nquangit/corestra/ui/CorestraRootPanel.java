@@ -7,6 +7,7 @@ import dev.nquangit.corestra.ui.flowise.FlowisePanel;
 import dev.nquangit.corestra.ui.project.ProjectPanel;
 import dev.nquangit.corestra.ui.project.ParameterDictionaryPanel;
 import dev.nquangit.corestra.ui.session.SessionHandlerPanel;
+import dev.nquangit.corestra.ui.component.UiPolish;
 
 import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
@@ -70,15 +71,21 @@ public final class CorestraRootPanel extends JPanel {
 
         JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
         tabs.addTab("Flowise", flowisePanel);
+        tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Build and run reusable multi-step HTTP flows.");
         if (authenticationPanel != null) {
             tabs.addTab("Authentication", authenticationPanel);
+            tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Manage shared providers, actors, credentials, and auth state.");
         }
         tabs.addTab("Session Handler", sessionHandlerPanel);
+        tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Apply scoped authentication and session state to Burp traffic.");
         tabs.addTab("Access Testing", accessTestingPanel);
+        tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Build and execute access-control test matrices.");
         if (parameterDictionaryPanel != null) {
             tabs.addTab("Parameters", parameterDictionaryPanel);
+            tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Inspect parameters discovered from in-scope traffic.");
         }
         tabs.addTab("Project", projectPanel);
+        tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Project metadata, transport settings, import/export, and storage.");
         tabs.addChangeListener(event -> {
             if (tabs.getSelectedComponent() == projectPanel) {
                 projectPanel.refreshProjectDataUsage();
@@ -97,5 +104,6 @@ public final class CorestraRootPanel extends JPanel {
         add(tabs, BorderLayout.CENTER);
 
         ThemeCoordinator.applyTheme(this, api);
+        UiPolish.apply(this);
     }
 }

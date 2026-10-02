@@ -38,6 +38,9 @@ import java.util.Objects;
  */
 public final class FlowWorkspacePanel extends JPanel {
 
+    private static final int MAX_DEFAULT_DETAIL_HEIGHT = 210;
+    private static final int MIN_DEFAULT_DETAIL_HEIGHT = 130;
+
     /**
      * Creates a workspace panel for one flow, wired to the supplied controller.
      *
@@ -80,9 +83,22 @@ public final class FlowWorkspacePanel extends JPanel {
                 Objects.requireNonNull(executionLog, "executionLog"));
 
         JSplitPane rightSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, reqResp, detailTabs);
-        rightSplit.setResizeWeight(0.65);
-        rightSplit.setDividerSize(4);
+        rightSplit.setName("flowRequestDetailSplit");
+        rightSplit.setResizeWeight(1.0);
+        rightSplit.setOneTouchExpandable(true);
+        rightSplit.setDividerSize(7);
         rightSplit.setBorder(BorderFactory.createEmptyBorder());
+        rightSplit.addComponentListener(new ComponentAdapter() {
+            private boolean positioned;
+
+            @Override
+            public void componentResized(ComponentEvent event) {
+                if (!positioned && rightSplit.getHeight() > 0) {
+                    rightSplit.setDividerLocation(defaultDetailDividerLocation(rightSplit.getHeight()));
+                    positioned = true;
+                }
+            }
+        });
 
         JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, stepList, rightSplit);
         mainSplit.setDividerSize(4);
@@ -99,6 +115,13 @@ public final class FlowWorkspacePanel extends JPanel {
         });
 
         add(mainSplit, BorderLayout.CENTER);
+    }
+
+    static int defaultDetailDividerLocation(int availableHeight) {
+        int proportionalHeight = (int) Math.round(availableHeight * 0.26);
+        int detailHeight = Math.min(MAX_DEFAULT_DETAIL_HEIGHT,
+                Math.max(MIN_DEFAULT_DETAIL_HEIGHT, proportionalHeight));
+        return Math.max(0, availableHeight - detailHeight);
     }
 
     // -------------------------------------------------------------------------

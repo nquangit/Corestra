@@ -189,6 +189,13 @@ public final class AccessProjectValidator {
                         "Set validateFlowId or choose a policy that does not validate.");
             }
             validateAuthInjectionRules(provider, state);
+            if (provider.keepAlive().enabled()
+                    && provider.keepAlive().successRules().stream().noneMatch(rule -> rule.enabled())) {
+                state.add(AccessValidationSeverity.ERROR, AccessValidationCategory.AUTH_PROVIDER,
+                        "Keep-alive success rule is required",
+                        "AuthProvider '" + provider.name() + "' has a keep-alive flow without a success rule.",
+                        "AuthProvider", provider.id(), "Configure independent keep-alive success rules.");
+            }
         }
     }
 
