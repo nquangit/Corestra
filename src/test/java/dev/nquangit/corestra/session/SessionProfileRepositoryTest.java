@@ -15,8 +15,48 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 class SessionProfileRepositoryTest {
+
+    @Test
+    void loadsPersistenceOnceAndKeepsWritesStateUpdatesAndDeletesInCache() {
+        FakePersistence persistence = new FakePersistence();
+        SessionProfile profile = SessionProfile.general();
+        new SessionProfileRepository(persistence.persistence()).saveProfiles(List.of(profile));
+        SessionProfileRepository repository = new SessionProfileRepository(persistence.persistence());
+        List<SessionProfile> first = repository.loadProfiles();
+        int reads = persistence.state().reads;
+        for (int tick = 0; tick < 100; tick++) {
+            assertSame(first, repository.loadProfiles());
+            repository.profile(SessionProfile.GENERAL_ID);
+        }
+        assertEquals(reads, persistence.state().reads, "Polling and lookups must not reread project JSON");
+        repository.updateState(profile.id(), state -> state.withAuthenticatedValues(Map.of("token", "new"), 2000, 60));
+        assertEquals("new", repository.profile(profile.id()).orElseThrow().state().values().get("token"));
+        assertEquals(reads, persistence.state().reads);
+        assertEquals("new", new SessionProfileRepository(persistence.persistence()).profile(profile.id())
+                .orElseThrow().state().values().get("token"));
+        repository.clear();
+        int afterClearReads = persistence.state().reads;
+        assertEquals(SessionState.empty(), repository.loadProfiles().getFirst().state());
+        assertEquals(afterClearReads, persistence.state().reads);
+        assertNull(persistence.state().getString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT));
+    }
+
+    @Test
+    void failedWriteOrClearDoesNotReplaceValidCachedProfiles() {
+        FakePersistence persistence = new FakePersistence();
+        SessionProfileRepository repository = new SessionProfileRepository(persistence.persistence());
+        repository.saveProfile(SessionProfile.general());
+        List<SessionProfile> before = repository.loadProfiles();
+        persistence.state().failWrites = true;
+        assertThrows(IllegalStateException.class, () -> repository.saveProfile(SessionProfile.general().withEnabled(false)));
+        assertSame(before, repository.loadProfiles());
+        assertThrows(IllegalStateException.class, repository::clear);
+        assertSame(before, repository.loadProfiles());
+    }
 
     @Test
     void profileToStringUsesDisplayNameInsteadOfObjectIdentity() {
@@ -101,6 +141,9 @@ class SessionProfileRepositoryTest {
         assertEquals(SessionProfile.GENERAL_ID, profiles.getFirst().id());
         assertNotNull(persistence.state().getString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT_QUARANTINE));
         assertNull(persistence.state().getString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT));
+        int reads = persistence.state().reads;
+        repository.loadProfiles();
+        assertEquals(reads, persistence.state().reads, "Recovered defaults must also be cached");
     }
 
     private static final class FakePersistence {
@@ -127,16 +170,23 @@ class SessionProfileRepositoryTest {
 
     private static final class FakeState {
         private final Map<String, String> data = new HashMap<>();
+        int reads;
+        boolean failWrites;
         private final PersistedObject proxy = (PersistedObject) Proxy.newProxyInstance(
                 PersistedObject.class.getClassLoader(),
                 new Class<?>[]{PersistedObject.class},
                 (instance, method, args) -> switch (method.getName()) {
-                    case "getString" -> data.get((String) args[0]);
+                    case "getString" -> {
+                        reads++;
+                        yield data.get((String) args[0]);
+                    }
                     case "setString" -> {
+                        if (failWrites) throw new IllegalStateException("failed write");
                         data.put((String) args[0], (String) args[1]);
                         yield null;
                     }
                     case "deleteString" -> {
+                        if (failWrites) throw new IllegalStateException("failed delete");
                         data.remove((String) args[0]);
                         yield null;
                     }

@@ -546,6 +546,8 @@ Access Testing sends actor-prepared authentication directly through the selected
 
 Use full export only inside trusted storage or when the recipient is authorized to receive secrets.
 
+**Project > Scheduler Jobs** shows Session Handler maintenance jobs, actor/flow names, current phase, interval, last start/end, duration, last outcome, and estimated next run including backoff. Worker and queue counts help explain delayed runs. The monitor refreshes once per second only while Project is visible; hiding it does not stop scheduling. It keeps only runtime metadata in memory, adds no job history to Burp project persistence, and shows no HTTP messages or auth values. Manual or traffic-triggered authentication can move the next due time without appearing as a scheduler attempt. See [Keep-alive guide](guides/KEEP_ALIVE.md) for setup and state explanations.
+
 The **Danger Zone** displays the exact UTF-8 size of Corestra's serialized string documents and the number of extension project entries. Burp container overhead is not included. **Clean Burp Project Data** removes all project-scoped Corestra flows, Authentication and Access Testing configuration/results/evidence, Session Handler profiles/state, metadata, settings, and quarantine data. Export anything needed before confirming. UI preferences stored outside project data are preserved.
 
 ## 24. Troubleshooting

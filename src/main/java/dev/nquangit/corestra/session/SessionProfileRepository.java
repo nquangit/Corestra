@@ -16,11 +16,14 @@ import java.util.function.UnaryOperator;
 
 /**
  * Stores session profiles in Burp project persistence or an in-memory test store.
+ * Loads the project document once and keeps an immutable cache updated after successful writes.
+ * Imports and project cleanup must use this shared repository so the cache stays authoritative.
  */
 public final class SessionProfileRepository {
     private final PersistedObject extensionData;
     private final ObjectMapper objectMapper;
     private List<SessionProfile> inMemoryProfiles;
+    private boolean profilesLoaded;
 
     /**
      * Creates an in-memory repository.
@@ -29,6 +32,7 @@ public final class SessionProfileRepository {
         this.extensionData = null;
         this.objectMapper = mapper();
         this.inMemoryProfiles = SessionProfilesDocument.defaults().profiles();
+        this.profilesLoaded = true;
     }
 
     /**
@@ -48,20 +52,23 @@ public final class SessionProfileRepository {
      * @return immutable profiles
      */
     public synchronized List<SessionProfile> loadProfiles() {
-        if (extensionData == null) {
+        if (profilesLoaded) {
             return inMemoryProfiles;
         }
         String json = extensionData.getString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT);
         if (json == null || json.isBlank()) {
-            return SessionProfilesDocument.defaults().profiles();
+            profilesLoaded = true;
+            return inMemoryProfiles;
         }
         try {
             SessionProfilesDocument document = objectMapper.readValue(json, SessionProfilesDocument.class);
-            return document.profiles();
+            inMemoryProfiles = document.profiles();
         } catch (JsonProcessingException | IllegalArgumentException exception) {
             quarantineInvalidDocument(json);
-            return SessionProfilesDocument.defaults().profiles();
+            inMemoryProfiles = SessionProfilesDocument.defaults().profiles();
         }
+        profilesLoaded = true;
+        return inMemoryProfiles;
     }
 
     /**
@@ -89,6 +96,8 @@ public final class SessionProfileRepository {
         try {
             extensionData.setString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT,
                     objectMapper.writeValueAsString(new SessionProfilesDocument(normalized)));
+            inMemoryProfiles = normalized;
+            profilesLoaded = true;
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Failed to serialize session profiles", exception);
         }
@@ -159,9 +168,12 @@ public final class SessionProfileRepository {
 
     /** Removes all persisted profiles and restores the in-memory default General profile. */
     public synchronized void clear() {
-        inMemoryProfiles = SessionProfilesDocument.defaults().profiles();
         if (extensionData != null) {
             extensionData.deleteString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT);
+        }
+        inMemoryProfiles = SessionProfilesDocument.defaults().profiles();
+        profilesLoaded = true;
+        if (extensionData != null) {
             extensionData.deleteString(CorestraSettingsKeys.SESSION_PROFILES_DOCUMENT_QUARANTINE);
         }
     }

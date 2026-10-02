@@ -259,6 +259,17 @@ public final class AuthManager {
     private record KeepAliveBackoff(String flowId, AuthState state, int failures,
                                     long nextAttemptAt, boolean authenticationFailed) { }
 
+    /** Returns the current maintenance backoff deadline, or zero, without waiting for auth I/O. */
+    public long maintenanceRetryAtEpochMillis(String authProfileId) {
+        AuthProfile profile = accessRepository.authProfile(authProfileId).orElse(null);
+        if (profile == null) return 0L;
+        AuthProvider provider = accessRepository.authProvider(profile.providerId()).orElse(null);
+        if (provider == null || !provider.keepAlive().enabled()) return 0L;
+        KeepAliveBackoff backoff = keepAliveBackoffs.get(profile.id());
+        return backoff == null || !backoff.flowId().equals(provider.keepAlive().flowId())
+                || !backoff.state().equals(profile.state()) ? 0L : backoff.nextAttemptAt();
+    }
+
     /**
      * Runs the configured provider policy even when the current state is still fresh.
      * Used by explicit auth actions and legacy scheduler maintenance without keep-alive.

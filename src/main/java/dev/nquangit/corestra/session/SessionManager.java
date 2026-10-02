@@ -31,6 +31,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -133,6 +134,27 @@ public final class SessionManager {
     public List<SessionProfile> profiles() {
         return repository.loadProfiles();
     }
+
+    Optional<SessionProfile> profile(String profileId) {
+        return repository.profile(profileId);
+    }
+
+    ScheduledAuthInfo scheduledAuthInfo(SessionProfile profile) {
+        if (!profile.usesLinkedAuthProfile() || accessRepository == null) {
+            return new ScheduledAuthInfo("Standalone", "Authentication", profile.authConfig().mainAuthFlowId(),
+                    profile.state(), 0L);
+        }
+        AuthProfile actor = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
+        AuthProvider provider = actor == null ? null : accessRepository.authProvider(actor.providerId()).orElse(null);
+        boolean keepAlive = provider != null && provider.keepAlive().enabled();
+        return new ScheduledAuthInfo(actor == null ? profile.linkedAuthProfileId() : actor.name(),
+                keepAlive ? "Keep-alive" : "Authentication",
+                provider == null ? "" : keepAlive ? provider.keepAlive().flowId() : provider.loginFlowId(),
+                keepAlive && actor != null ? linkedState(actor) : profile.state(),
+                authManager == null ? 0L : authManager.maintenanceRetryAtEpochMillis(profile.linkedAuthProfileId()));
+    }
+
+    record ScheduledAuthInfo(String actorName, String mode, String flowId, SessionState state, long retryAt) { }
 
     /**
      * Adds a listener for profile and state changes.
@@ -321,7 +343,11 @@ public final class SessionManager {
      * @return current profile state after the refresh check
      */
     public SessionProfile refreshScheduledProfile(String profileId) {
-        return runAuthFlowLocked(profileId, AuthRunMode.SCHEDULED);
+        return refreshScheduledProfileWithResult(profileId).profile().orElseGet(SessionProfile::general);
+    }
+
+    SessionAuthenticationResult refreshScheduledProfileWithResult(String profileId) {
+        return runAuthFlowLockedWithResult(profileId, AuthRunMode.SCHEDULED);
     }
 
     /** Runs maintenance immediately, preferring a configured keep-alive flow for linked actors. */
@@ -590,7 +616,7 @@ public final class SessionManager {
             long now = clock.millis();
             if (mode == AuthRunMode.SCHEDULED) {
                 long last = profile.state().lastAuthenticatedAtEpochMillis();
-                long intervalMillis = profile.scheduler().intervalSeconds() * 1000L;
+                long intervalMillis = TimeUnit.SECONDS.toMillis(profile.scheduler().intervalSeconds());
                 if (!profile.enabled() || !profile.scheduler().enabled()
                         || (last > 0L && now - last < intervalMillis && !profile.state().missingOrExpired(now))) {
                     return SessionAuthenticationResult.skipped(profile,

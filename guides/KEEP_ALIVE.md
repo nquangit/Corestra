@@ -67,6 +67,44 @@ Không có Session Expired rule thì lỗi keep-alive **không tự chạy login
 3. Bấm **Maintain Session Now** để kiểm tra ngay; xem thông báo kết quả và state.
 4. **Run Auth Now** vẫn cố ý chạy chính sách xác thực cũ; nó không ưu tiên keep-alive.
 
+Scheduler kiểm tra lịch mỗi **1 giây**, bắt đầu sau khoảng 5 giây khi extension
+khởi động. Interval tính từ lúc maintenance/authentication thành công gần nhất
+**hoàn tất**. Với interval 10 giây và flow mất 200 ms, khoảng cách giữa hai lần
+bắt đầu gửi thường khoảng 10–11,2 giây khi worker rảnh. Đây không phải cam kết
+thời gian chính xác: flow nhiều bước, mạng chậm, Burp Proxy Intercept hoặc worker
+đang bận có thể kéo dài khoảng cách. Mỗi profile/actor chỉ có một lượt maintenance
+đang chờ hoặc đang chạy; không bắn dồn để bù các lượt trễ.
+
+Nếu lần thử không cập nhật timestamp thành công, scheduler đợi ít nhất một interval
+trước khi thử lại, đồng thời vẫn tuân thủ backoff của Auth Profile bên dưới.
+
+### Theo dõi lịch chạy trong Project
+
+Mở **Project > Scheduler Jobs** để xem các Session Handler, actor và flow đang dùng.
+Bảng hiển thị interval, trạng thái hiện tại, lần bắt đầu/kết thúc gần nhất, thời lượng,
+kết quả gần nhất và countdown cho lần chạy tiếp theo. Phía trên có số worker đang
+bận và số job đang xếp hàng.
+
+- **Waiting for schedule**: chưa đến hạn.
+- **Due / waiting for worker**: đến hạn nhưng chưa được nhận; có thể đang chờ worker
+  hoặc lượt maintenance của một binding khác dùng cùng actor.
+- **Queued / Running**: đã được nhận vào hàng đợi hoặc worker đang thực hiện.
+- **Retry / backoff**: lần thử chưa làm mới timestamp hoặc Auth Profile đang backoff.
+- **Disabled / No auth configured**: handler/scheduler bị tắt hoặc thiếu cấu hình auth.
+
+**Last result** thuộc lần thử gần nhất của scheduler; nó độc lập với trạng thái hiện
+tại. `SKIPPED` có thể xuất hiện khi đang backoff hoặc khi một lượt authentication
+khác đã làm mới state trước đó. Thời lượng tính cả thời gian chờ khóa authentication.
+Login thủ công hoặc authentication do traffic cũng có thể dời lịch tiếp theo,
+nhưng không tạo thêm lịch sử thực thi trong bảng này. Flow/Mode là cấu hình maintenance;
+Keep-alive vẫn có thể chuyển sang login theo chính sách khi xác nhận session hết hạn.
+
+Job và kết quả gần nhất chỉ giữ trong RAM, không có request/response, cookie/token
+hay lịch sử dài hạn. Reload extension sẽ xóa các thời gian thực thi này. Giao diện
+refresh mỗi giây chỉ khi Project đang hiển thị; ẩn tab không dừng scheduler.
+Session Profiles được cache trong RAM và cập nhật qua repository khi lưu/import,
+thay đổi state hoặc clean project, nên tick scheduler không đọc/parse JSON từ Burp.
+
 Hành vi runtime:
 
 | Trạng thái | Xử lý |
@@ -98,9 +136,11 @@ credentials riêng và state riêng. Mỗi actor cần scheduler có một Sessi
 liên kết. Request keep-alive được render từ đúng actor, không lấy cookie của profile
 đang được chọn trong Proxy.
 
-Các binding cùng actor dùng chung timestamp auth để tránh gửi keep-alive lặp trong
-cùng khoảng lịch. Backoff của Alice không chặn maintenance của Bob; scheduler hiện
-chạy tuần tự nên một flow chậm vẫn có thể làm actor sau chạy muộn.
+Các binding cùng actor dùng chung timestamp auth và giới hạn một lượt maintenance
+để tránh gửi keep-alive lặp trong cùng khoảng lịch. Scheduler chạy tối đa **4** lượt
+maintenance cho các actor khác nhau đồng thời; flow chạy trên worker riêng, không
+chặn luồng kiểm tra lịch. Khi cả 4 worker đều bận, actor tiếp theo vẫn phải chờ.
+Hàng đợi giới hạn 64 lượt; khi đầy, profile chưa được nhận sẽ thử ở tick sau.
 
 Để inject live traffic đúng actor, scope cần phân biệt các Session Profile. Nếu
 nhiều profile cùng match, Session Handler chọn profile khớp đầu tiên. Access Testing

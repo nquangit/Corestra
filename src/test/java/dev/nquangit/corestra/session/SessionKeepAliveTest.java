@@ -55,7 +55,7 @@ class SessionKeepAliveTest {
     void scheduledLoginWithoutExtractionWaitsThreeMinutesDespiteTrafficAndSchedulerTicks() {
         SessionManager manager = manager(0, false);
         RecordingExecutor executor = new RecordingExecutor();
-        try (SessionSchedulerService scheduler = new SessionSchedulerService(manager, clock, executor)) {
+        try (SessionSchedulerService scheduler = new SessionSchedulerService(manager, clock, executor, new DirectSessionExecutor())) {
             scheduler.start();
             executor.tick.run();
             assertEquals(1, sends.get());
@@ -154,7 +154,7 @@ class SessionKeepAliveTest {
         var locks = (java.util.Map<?, ?>) field.get(manager);
         var lock = (java.util.concurrent.locks.ReentrantLock) locks.get("keep-alive");
         RecordingExecutor executor = new RecordingExecutor();
-        try (SessionSchedulerService scheduler = new SessionSchedulerService(manager, clock, executor)) {
+        try (SessionSchedulerService scheduler = new SessionSchedulerService(manager, clock, executor, new DirectSessionExecutor())) {
             scheduler.start();
             Thread tick = new Thread(executor.tick, "scheduler-race-test");
             lock.lock();
@@ -217,7 +217,7 @@ class SessionKeepAliveTest {
         private Runnable tick;
         private RecordingExecutor() { super(1); }
         @Override public ScheduledFuture<?> schedule(Runnable task, long delay, TimeUnit unit) { return null; }
-        @Override public ScheduledFuture<?> scheduleWithFixedDelay(
+        @Override public ScheduledFuture<?> scheduleAtFixedRate(
                 Runnable task, long initialDelay, long delay, TimeUnit unit) {
             tick = task;
             return null;

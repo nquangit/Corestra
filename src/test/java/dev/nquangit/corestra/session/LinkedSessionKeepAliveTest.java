@@ -12,14 +12,84 @@ import org.junit.jupiter.api.Test;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class LinkedSessionKeepAliveTest {
     private static final Clock CLOCK = Clock.fixed(Instant.ofEpochMilli(61_000), ZoneOffset.UTC);
+
+    @Test
+    void schedulerSnapshotShowsActorBackoffAndKeepAliveFlowWithoutSendingRequests() {
+        Fixture f = new Fixture(CLOCK, 10);
+        f.status = 500;
+        ManualTimer timer = new ManualTimer();
+        try (SessionSchedulerService service = new SessionSchedulerService(f.manager, CLOCK, timer, new DirectSessionExecutor())) {
+            service.start();
+            timer.tick.run();
+            SessionScheduledJob job = service.snapshot().jobs().stream()
+                    .filter(row -> row.profileId().equals("first")).findFirst().orElseThrow();
+            assertEquals("Alice", job.actorName());
+            assertEquals("Keep-alive", job.mode());
+            assertEquals("keep", job.flowId());
+            assertEquals(SessionScheduledJob.Status.BACKOFF, job.status());
+            assertEquals(91_000, job.nextRunAtEpochMillis(), "Auth backoff overrides the shorter scheduler interval");
+            assertEquals("SKIPPED", job.lastOutcome());
+            assertFalse(service.snapshot().toString().contains("old-token"));
+            assertEquals(1, f.runs.size());
+        }
+    }
+
+    @Test
+    void tenSecondSchedulerMaintainsSharedActorOncePerInterval() {
+        MutableClock clock = new MutableClock();
+        Fixture f = new Fixture(clock, 10L);
+        ManualTimer timer = new ManualTimer();
+        try (SessionSchedulerService scheduler = new SessionSchedulerService(
+                f.manager, clock, timer, new DirectSessionExecutor())) {
+            scheduler.start();
+            for (long now = 2_000; now <= 41_000; now += 1_000) {
+                clock.now = now;
+                timer.tick.run();
+                int expectedRuns = (int) ((now - 1_000) / 10_000);
+                assertEquals(expectedRuns, f.runs.size(), "Keep-alive cadence at " + now);
+            }
+            assertEquals(List.of(AuthFlowPurpose.KEEP_ALIVE, AuthFlowPurpose.KEEP_ALIVE,
+                    AuthFlowPurpose.KEEP_ALIVE, AuthFlowPurpose.KEEP_ALIVE), f.runs);
+        }
+    }
+
+    @Test
+    void queuedBindingsForSameActorDoNotSendDuplicateKeepAlive() {
+        Fixture f = new Fixture();
+        ManualTimer timer = new ManualTimer();
+        List<Runnable> queue = new ArrayList<>();
+        var worker = new java.util.concurrent.AbstractExecutorService() {
+            boolean closed;
+            @Override public void shutdown() { closed = true; }
+            @Override public List<Runnable> shutdownNow() { shutdown(); return List.copyOf(queue); }
+            @Override public boolean isShutdown() { return closed; }
+            @Override public boolean isTerminated() { return closed; }
+            @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return closed; }
+            @Override public void execute(Runnable task) { queue.add(task); }
+        };
+        try (SessionSchedulerService scheduler = new SessionSchedulerService(f.manager, CLOCK, timer, worker)) {
+            scheduler.start();
+            timer.tick.run();
+            timer.tick.run();
+            assertEquals(1, queue.size(), "Bindings for one actor share scheduler admission");
+            queue.removeFirst().run();
+            timer.tick.run();
+            while (!queue.isEmpty()) queue.removeFirst().run();
+            assertEquals(List.of(AuthFlowPurpose.KEEP_ALIVE), f.runs);
+        }
+    }
 
     @Test
     void successfulKeepAliveDoesNotInvalidatePendingResponseOrRunLogin() {
@@ -87,6 +157,10 @@ class LinkedSessionKeepAliveTest {
         int status = 200;
 
         Fixture() {
+            this(CLOCK, 60L);
+        }
+
+        Fixture(Clock clock, long interval) {
             AuthKeepAliveConfig config = new AuthKeepAliveConfig("keep", List.of(
                     new AuthSuccessRule("success", "Alive", true, AuthRuleType.BODY_CONTAINS, "alive", "")), List.of(
                     new AuthFailureRule("expired", "Expired", true, AuthRuleType.STATUS_CODE, "401", "")));
@@ -96,7 +170,7 @@ class LinkedSessionKeepAliveTest {
                     new AuthState(Map.of("token", "old-token"), Map.of(), Map.of(), 1_000_000, 1_000), true));
             for (String id : List.of("first", "second")) {
                 repository.saveProfile(new SessionProfile(id, id, true, false, SessionScope.custom(List.of()),
-                        "alice", SessionAuthConfig.defaults(), new SessionSchedulerConfig(true, 60, false),
+                        "alice", SessionAuthConfig.defaults(), new SessionSchedulerConfig(true, interval, false),
                         new SessionState(Map.of(), 1_000, 1_000_000, 1_000), List.of(), List.of(
                         new SessionExtractionRule("extract", true, ExtractRule.SourceSide.RESPONSE,
                                 ExtractRule.ExtractorType.HEADER, "X-Token", "token", List.of("PROXY")))));
@@ -107,10 +181,29 @@ class LinkedSessionKeepAliveTest {
                         ? AuthFlowRunResult.executed(true, "ok", 200, Map.of("token", "new-token"), "", List.of())
                         : AuthFlowRunResult.executed(true, "response", status, Map.of(),
                         "HTTP/1.1 " + status + "\r\n\r\nalive", List.of());
-            }, new AuthRuleEvaluator(), CLOCK);
+            }, new AuthRuleEvaluator(), clock);
             manager = new SessionManager(repository, List::of,
                     TestFlowEngineFactory.withHttpClient(req -> { throw new AssertionError("No standalone login"); }),
-                    new ExtractionService(), CLOCK, access, auth, new AuthInjectionRuleRenderer());
+                    new ExtractionService(), clock, access, auth, new AuthInjectionRuleRenderer());
+        }
+    }
+
+    private static final class MutableClock extends Clock {
+        long now = 1_000;
+        @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+        @Override public Clock withZone(ZoneId zone) { return this; }
+        @Override public Instant instant() { return Instant.ofEpochMilli(now); }
+        @Override public long millis() { return now; }
+    }
+
+    private static final class ManualTimer extends ScheduledThreadPoolExecutor {
+        Runnable tick;
+        ManualTimer() { super(1); }
+        @Override public ScheduledFuture<?> schedule(Runnable task, long delay, TimeUnit unit) { return null; }
+        @Override public ScheduledFuture<?> scheduleAtFixedRate(
+                Runnable task, long initialDelay, long period, TimeUnit unit) {
+            tick = task;
+            return null;
         }
     }
 }

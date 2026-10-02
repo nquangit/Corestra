@@ -239,7 +239,8 @@ public final class CorestraBootstrap {
                         throw new IllegalStateException("Stop the active Access Testing plan before cleaning project data");
                     }
                     sessionManager.clearAllProfiles();
-                });
+                }, sessionSchedulerService);
+        registry.registerCloseable(projectPanel);
         ParameterDictionary parameterDictionary = new ParameterDictionary();
         ParameterDiscoveryHandler parameterDiscoveryHandler =
                 new ParameterDiscoveryHandler(parameterDictionary, redactionService);

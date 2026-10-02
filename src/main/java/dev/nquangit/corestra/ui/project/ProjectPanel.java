@@ -13,6 +13,7 @@ import dev.nquangit.corestra.persistence.ProjectSerializer;
 import dev.nquangit.corestra.persistence.ProjectSettings;
 import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
 import dev.nquangit.corestra.session.SessionProfileRepository;
+import dev.nquangit.corestra.session.SessionSchedulerService;
 import dev.nquangit.corestra.ui.component.StyledButton;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
 
@@ -28,6 +29,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
+import javax.swing.Scrollable;
 import javax.swing.JSeparator;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
@@ -40,6 +42,7 @@ import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.awt.Rectangle;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.io.File;
@@ -59,7 +62,7 @@ import java.util.stream.Collectors;
 /**
  * Project metadata and import/export panel.
  */
-public final class ProjectPanel extends JPanel {
+public final class ProjectPanel extends JPanel implements AutoCloseable {
 
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm");
     private static final ExportMode DEFAULT_ACCESS_EXPORT_MODE = ExportMode.SANITIZED_EXPORT;
@@ -73,6 +76,8 @@ public final class ProjectPanel extends JPanel {
     private final ProjectDataMaintenanceService dataMaintenanceService;
     private final Runnable accessRefreshCallback;
     private final Runnable beforeProjectDataClear;
+
+    private final SchedulerJobsPanel schedulerJobsPanel;
 
     private ProjectMetadata currentMeta;
     private ProjectSettings currentSettings;
@@ -152,6 +157,21 @@ public final class ProjectPanel extends JPanel {
                         Runnable accessRefreshCallback,
                         ProjectDataMaintenanceService dataMaintenanceService,
                         Runnable beforeProjectDataClear) {
+        this(controller, metadataRepo, projectSerializer, settingsRepo, accessRepository,
+                sessionRepository, accessRefreshCallback, dataMaintenanceService, beforeProjectDataClear, null);
+    }
+
+    /** Creates a project panel with a runtime scheduler monitor. */
+    public ProjectPanel(FlowWorkspaceController controller,
+                        ProjectMetadataRepository metadataRepo,
+                        ProjectSerializer projectSerializer,
+                        ProjectSettingsRepository settingsRepo,
+                        InMemoryAccessRepository accessRepository,
+                        SessionProfileRepository sessionRepository,
+                        Runnable accessRefreshCallback,
+                        ProjectDataMaintenanceService dataMaintenanceService,
+                        Runnable beforeProjectDataClear,
+                        SessionSchedulerService schedulerService) {
         super(new BorderLayout());
         this.controller        = Objects.requireNonNull(controller,        "controller");
         this.metadataRepo      = Objects.requireNonNull(metadataRepo,      "metadataRepo");
@@ -163,6 +183,8 @@ public final class ProjectPanel extends JPanel {
         this.dataMaintenanceService = Objects.requireNonNull(dataMaintenanceService, "dataMaintenanceService");
         this.beforeProjectDataClear = Objects.requireNonNull(beforeProjectDataClear, "beforeProjectDataClear");
 
+        this.schedulerJobsPanel = schedulerService == null ? null
+                : new SchedulerJobsPanel(schedulerService::snapshot, controller::flows);
         this.currentMeta = metadataRepo.load();
         this.currentSettings = settingsRepo.load();
 
@@ -174,18 +196,29 @@ public final class ProjectPanel extends JPanel {
         accessExportModeCombo.addActionListener(event ->
                 accessExportModeCombo.setToolTipText(exportModeDescription(currentAccessExportMode())));
 
-        // All content anchored at the top; CENTER stays empty to absorb extra height.
-        add(buildContent(), BorderLayout.NORTH);
+        if (schedulerJobsPanel == null) {
+            add(buildContent(), BorderLayout.NORTH);
+        } else {
+            JScrollPane content = new JScrollPane(buildContent());
+            content.setBorder(BorderFactory.createEmptyBorder());
+            content.getVerticalScrollBar().setUnitIncrement(16);
+            add(content, BorderLayout.CENTER);
+        }
 
         wireListeners();
         refreshAll();
         controller.addFlowChangeListener(this::refreshStats);
     }
 
+    /** Stops the runtime monitor when the extension unloads. */
+    @Override public void close() {
+        if (schedulerJobsPanel != null) schedulerJobsPanel.close();
+    }
+
     // ── Layout ───────────────────────────────────────────────────────────────
 
     private JPanel buildContent() {
-        JPanel panel = new JPanel(new GridBagLayout());
+        JPanel panel = new ProjectContent();
         panel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
 
         GridBagConstraints gbc = new GridBagConstraints();
@@ -217,6 +250,11 @@ public final class ProjectPanel extends JPanel {
         gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
         panel.add(new JSeparator(), gbc);
 
+        if (schedulerJobsPanel != null) {
+            gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
+            panel.add(schedulerJobsPanel, gbc);
+        }
+
         gbc.gridy = row++; gbc.insets = new Insets(0, 0, 10, 0);
         panel.add(buildTransferSection(), gbc);
 
@@ -227,6 +265,17 @@ public final class ProjectPanel extends JPanel {
         panel.add(buildDangerZone(), gbc);
 
         return panel;
+    }
+
+    private static final class ProjectContent extends JPanel implements Scrollable {
+        private ProjectContent() { super(new GridBagLayout()); }
+        @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+        @Override public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) { return 16; }
+        @Override public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) {
+            return Math.max(16, (orientation == javax.swing.SwingConstants.VERTICAL ? visible.height : visible.width) - 16);
+        }
+        @Override public boolean getScrollableTracksViewportWidth() { return true; }
+        @Override public boolean getScrollableTracksViewportHeight() { return false; }
     }
 
     private JPanel buildFormSection() {
