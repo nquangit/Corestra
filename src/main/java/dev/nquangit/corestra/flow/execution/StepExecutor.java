@@ -74,6 +74,13 @@ public class StepExecutor {
         Objects.requireNonNull(httpClient, "httpClient");
 
         long startedAt = System.currentTimeMillis();
+        boolean requireInputs = "true".equals(context.metadata().get(FlowInputValidator.REQUIRE_INPUTS));
+        if (requireInputs) {
+            List<String> missing = FlowInputValidator.missingStepVariables(step, context.variables());
+            if (!missing.isEmpty()) {
+                return injectionFailure(step, startedAt, "missing variables: " + String.join(", ", missing));
+            }
+        }
 
         // 1. Build MutableHttpRequest from template
         StoredRequestTemplate template = step.requestTemplate();
@@ -84,10 +91,15 @@ public class StepExecutor {
                 template.body());
 
         // 2. Apply inject rules
-        RequestMutationResult mutationResult = injectionService.apply(
-                step.injectRules(),
-                context.variables(),
-                mutableRequest);
+        RequestMutationResult mutationResult;
+        try {
+            mutationResult = requireInputs
+                    ? injectionService.applyRequired(step.injectRules(), context.variables(), mutableRequest)
+                    : injectionService.apply(step.injectRules(), context.variables(), mutableRequest);
+        } catch (IllegalArgumentException exception) {
+            if (!requireInputs) throw exception;
+            return injectionFailure(step, startedAt, exception.getMessage());
+        }
 
         String renderedRequestLine = mutationResult.requestLine();
         List<String> renderedHeaders = mutationResult.headers();
@@ -202,6 +214,12 @@ public class StepExecutor {
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+
+    private StepExecutionRecord injectionFailure(FlowStep step, long startedAt, String reason) {
+        return new StepExecutionRecord(step.id(), "", "", 0, false,
+                FlowInputValidator.FAILURE_PREFIX + reason, startedAt,
+                Math.max(startedAt, System.currentTimeMillis()), Map.of());
+    }
 
     private String buildRenderedRequest(String requestLine, List<String> headers, String body) {
         StringBuilder sb = new StringBuilder();

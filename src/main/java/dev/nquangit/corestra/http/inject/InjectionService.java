@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Orchestrates HTTP request mutation by applying a list of {@link InjectRule} objects.
@@ -65,6 +66,26 @@ public final class InjectionService {
             List<InjectRule> rules,
             Map<String, String> context,
             MutableHttpRequest request) {
+        return apply(rules, context, request, false);
+    }
+
+    /**
+     * Applies mandatory injection rules, rejecting missing/blank variables and failed mutations.
+     * The caller must not send the original request when this method fails.
+     *
+     * @param rules ordered injection rules
+     * @param context actor-specific variables
+     * @param request stored request to mutate
+     * @return successfully mutated request
+     * @throws IllegalArgumentException when an enabled rule cannot be applied
+     */
+    public RequestMutationResult applyRequired(List<InjectRule> rules, Map<String, String> context,
+                                               MutableHttpRequest request) {
+        return apply(rules, context, request, true);
+    }
+
+    private RequestMutationResult apply(List<InjectRule> rules, Map<String, String> context,
+                                        MutableHttpRequest request, boolean required) {
 
         Objects.requireNonNull(rules, "rules");
         Objects.requireNonNull(context, "context");
@@ -80,12 +101,23 @@ public final class InjectionService {
                 continue;
             }
 
+            if (required) {
+                for (String key : rule.referencedVariableKeys()) {
+                    if (context.get(key) == null || context.get(key).isBlank()) {
+                        throw new IllegalArgumentException("Rule '" + rule.name()
+                                + "': required variable '" + key + "' is missing or blank");
+                    }
+                }
+            }
+
             String value = resolveValue(rule, context, diagnostics);
             if (value == null) {
+                if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': value could not be resolved");
                 continue;
             }
             ValueTransformResult transformed = transformService.apply(value, rule.transformChain());
             if (!transformed.success()) {
+                if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': transform failed");
                 diagnostics.add("Rule '" + rule.name() + "': transform failed: " + transformed.error());
                 continue;
             }
@@ -113,16 +145,21 @@ public final class InjectionService {
                         body = outcome.body();
                         diagnostics.add("Rule '" + rule.name() + "': injected JSON path '" + rule.targetSelector() + "'");
                     } else {
+                        if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': JSON injection failed");
                         diagnostics.add("Rule '" + rule.name() + "': " + outcome.message());
                     }
                 }
                 case REQUEST_REGEX_REPLACEMENT -> {
+                    if (required && !Pattern.compile(rule.targetSelector()).matcher(body).find()) {
+                        throw new IllegalArgumentException("Rule '" + rule.name() + "': regex did not match request body");
+                    }
                     RegexBodyInjector.ReplaceOutcome outcome =
                             regexBodyInjector.inject(body, rule.targetSelector(), value);
                     if (outcome.succeeded()) {
                         body = outcome.body();
                         diagnostics.add("Rule '" + rule.name() + "': regex replacement applied for pattern '" + rule.targetSelector() + "'");
                     } else {
+                        if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': regex injection failed");
                         diagnostics.add("Rule '" + rule.name() + "': " + outcome.failureReason());
                     }
                 }

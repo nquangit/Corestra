@@ -66,6 +66,24 @@ auth.sessionId
 
 Flow phải extract lại token mới và expiry mới. Nếu server xoay refresh token, extract cả `refreshToken` mới.
 
+**Lần chạy đầu chưa có refresh token**: với policy REFRESH_THEN_LOGIN, Corestra kiểm tra input trước khi gửi refresh. Nếu Inject Rule cần `auth.refreshToken` nhưng profile chưa có key đó, hoặc giá trị rỗng/toàn khoảng trắng, refresh không được gửi; runtime chuyển sang login của đúng profile. Khi login đã extract token, các lần refresh sau mới dùng token của profile đó.
+
+Tên key phải khớp chính xác. Nếu login extract vào `refresh_token`, refresh phải inject `auth.refresh_token`, không phải `auth.refreshToken`. Ví dụ refresh bằng header:
+
+```text
+Target: REQUEST_HEADER
+Selector: Authorization
+Value source: TEMPLATE
+Value template: Bearer {{auth.refresh_token}}
+Write strategy: OVERWRITE
+```
+
+Flow auth kiểm tra tất cả biến mà enabled Inject Rules tham chiếu, gồm VARIABLE và TEMPLATE. Không giữ token/credential gốc trong request mẫu để gửi khi thiếu biến. Nếu extractor ở bước trước không lấy được giá trị cần cho bước sau, request phụ thuộc bị chặn và flow auth thất bại, kể cả step chọn CONTINUE_FLOW. Lỗi transform/JSON injection hoặc regex không match trong flow auth cũng chặn request. Success rule HTTP 200 không được biến lỗi thực thi thành thành công.
+
+Biến do step trước thực sự extract có thể dùng ở step sau trong cùng auth flow bằng tên thuần hoặc `auth.*`. Các output chưa sinh vì chưa chạy login không được coi là state có sẵn chỉ vì Flow Contract liệt kê chúng. Diagnostics giữ lý do refresh bị bỏ qua khi fallback login thành công.
+
+Nếu project đã chạy bằng bản cũ và state có thể được lấy từ token của actor khác, reload extension rồi **Clear State** của linked Session Handler hoặc **Clear Auth State** của Auth Profile bị ảnh hưởng. Sau đó **Run Auth Now** để lấy lại state đúng actor. Cấu hình credentials và tên key vẫn được giữ.
+
 ### Validate flow
 
 Tạo flow nhẹ như `GET /api/me` hoặc `GET /session/status`. Flow này không cần extract token mới. Auth Provider dùng success/failure rule trên response cuối để biết session còn hợp lệ hay không.

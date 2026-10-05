@@ -189,8 +189,16 @@ public final class FlowEngine {
             StepExecutionRecord record = stepExecutor.execute(step, currentContext, httpClient);
             allRecords.add(record);
 
+            if ("true".equals(currentContext.metadata().get(FlowInputValidator.REQUIRE_INPUTS))
+                    && !record.success() && record.errorMessage().startsWith(FlowInputValidator.FAILURE_PREFIX)) {
+                return ExecutionResult.failure(flow.id(), flow.name(), List.copyOf(allRecords),
+                        List.copyOf(actionRecords), "Step '" + step.id() + "' failed: " + record.errorMessage(),
+                        complete(currentContext.withStepRecord(record)));
+            }
+
             // Store extracted variables in context for subsequent steps
-            for (Map.Entry<String, String> entry : record.extractedVariables().entrySet()) {
+            for (Map.Entry<String, String> entry : FlowInputValidator.scopedOutputs(record.extractedVariables(),
+                    currentContext.metadata().get(FlowInputValidator.OUTPUT_SCOPE)).entrySet()) {
                 currentContext = currentContext.withVariable(entry.getKey(), entry.getValue());
             }
 

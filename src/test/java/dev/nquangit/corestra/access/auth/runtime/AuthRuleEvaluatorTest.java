@@ -18,6 +18,17 @@ class AuthRuleEvaluatorTest {
     private final AuthRuleEvaluator evaluator = new AuthRuleEvaluator();
 
     @Test
+    void successRuleCannotOverrideExecutionFailure() {
+        AuthProvider provider = provider(List.of(new AuthSuccessRule(
+                "success", "HTTP 200", true, AuthRuleType.STATUS_CODE, "200", "")), List.of());
+        AuthFlowRunResult run = AuthFlowRunResult.executed(false, "Required input missing", 200,
+                Map.of(), "HTTP/1.1 200 OK\r\n\r\n{}", List.of());
+        AuthRuleEvaluationResult result = evaluator.evaluate(provider, AuthFlowPurpose.REFRESH, run);
+        assertFalse(result.success());
+        assertTrue(result.reason().contains("Required input missing"));
+    }
+
+    @Test
     void failureRuleTakesPrecedenceOverSuccessRule() {
         AuthProvider provider = provider(
                 List.of(new AuthSuccessRule("success-1", "HTTP 200", true, AuthRuleType.STATUS_CODE, "200", "")),

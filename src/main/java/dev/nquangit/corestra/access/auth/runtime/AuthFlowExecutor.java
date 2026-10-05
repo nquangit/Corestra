@@ -7,6 +7,7 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.execution.ExecutionContext;
 import dev.nquangit.corestra.flow.execution.ExecutionResult;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
+import dev.nquangit.corestra.flow.execution.FlowInputValidator;
 import dev.nquangit.corestra.flow.execution.StepExecutionRecord;
 import dev.nquangit.corestra.persistence.FlowRepository;
 
@@ -77,11 +78,17 @@ public final class AuthFlowExecutor implements AuthFlowRunner {
         }
 
         try {
+            Map<String, String> variables = initialVariables(profile, env);
+            List<String> missing = FlowInputValidator.missingExternalVariables(flow.get(), variables, "auth");
+            if (!missing.isEmpty()) {
+                return AuthFlowRunResult.notExecuted("Auth " + purposeName(purpose)
+                        + " flow cannot run: missing required injection variables: " + String.join(", ", missing));
+            }
             ExecutionContext context = new ExecutionContext(
                     "auth-" + purpose.name().toLowerCase(Locale.ROOT) + "-" + UUID.randomUUID(),
                     flow.get().id(),
                     metadata(profile, provider, purpose),
-                    initialVariables(profile, env),
+                    variables,
                     "",
                     Map.of(),
                     clock.millis(),
@@ -131,7 +138,9 @@ public final class AuthFlowExecutor implements AuthFlowRunner {
         return Map.of(
                 "authProfileId", profile.id(),
                 "authProviderId", provider.id(),
-                "authFlowPurpose", purpose.name());
+                "authFlowPurpose", purpose.name(),
+                FlowInputValidator.REQUIRE_INPUTS, "true",
+                FlowInputValidator.OUTPUT_SCOPE, "auth");
     }
 
     private Map<String, String> initialVariables(AuthProfile profile, Map<String, String> env) {

@@ -29,7 +29,7 @@ public final class AuthRuleEvaluator {
         Objects.requireNonNull(provider, "provider");
         Objects.requireNonNull(purpose, "purpose");
         Objects.requireNonNull(runResult, "runResult");
-        if (!runResult.executed()) {
+        if (!runResult.executed() || !runResult.success()) {
             return AuthRuleEvaluationResult.failure(runResult.reason(), runResult.warnings());
         }
 

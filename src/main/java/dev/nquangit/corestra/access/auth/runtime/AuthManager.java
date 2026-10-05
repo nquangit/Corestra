@@ -466,7 +466,7 @@ public final class AuthManager {
             AuthProfile updated = updateAuthState(profile, provider, login.runResult());
             accessRepository.saveAuthProfile(updated);
             return AuthEnsureResult.success(profile.id(), AuthEnsureStatus.LOGGED_IN,
-                    login.reason(), updated, login.warnings());
+                    login.reason(), updated, combined(priorMessages, login.warnings()));
         }
         return AuthEnsureResult.failed(profile.id(), String.join("; ", messages),
                 Optional.of(profile), combined(priorMessages, login.warnings()));
