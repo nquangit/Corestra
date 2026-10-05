@@ -1,6 +1,7 @@
 package dev.nquangit.corestra.http.inject;
 
 import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.flow.rule.InjectValueTemplate;
 import dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy;
 import dev.nquangit.corestra.http.transform.ValueTransformResult;
 import dev.nquangit.corestra.http.transform.ValueTransformService;
@@ -21,7 +22,8 @@ import java.util.Objects;
  * <ol>
  *   <li>Resolves the value — either from the supplied context map (for
  *       {@link InjectRule.ValueSourceType#VARIABLE}) or directly (for
- *       {@link InjectRule.ValueSourceType#STATIC}).</li>
+ *       {@link InjectRule.ValueSourceType#STATIC}), or by rendering
+ *       {@link InjectRule.ValueSourceType#TEMPLATE} placeholders.</li>
  *   <li>Dispatches to the appropriate injector based on {@link InjectRule#target()}.</li>
  *   <li>Accumulates per-rule diagnostic messages.</li>
  * </ol>
@@ -148,6 +150,14 @@ public final class InjectionService {
     private String resolveValue(InjectRule rule, Map<String, String> context, List<String> diagnostics) {
         if (rule.valueSourceType() == InjectRule.ValueSourceType.STATIC) {
             return rule.staticValue();
+        }
+        if (rule.valueSourceType() == InjectRule.ValueSourceType.TEMPLATE) {
+            try {
+                return InjectValueTemplate.render(rule.staticValue(), context);
+            } catch (IllegalArgumentException exception) {
+                diagnostics.add("Rule '" + rule.name() + "': skipped — " + exception.getMessage());
+                return null;
+            }
         }
         String key = rule.valueSourceKey();
         if (!context.containsKey(key)) {

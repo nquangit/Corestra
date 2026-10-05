@@ -261,12 +261,13 @@ public final class ExecutionPanel extends JPanel {
                 continue;
             }
             for (InjectRule rule : step.injectRules()) {
-                if (!rule.enabled() || rule.valueSourceType() != InjectRule.ValueSourceType.VARIABLE) {
+                if (!rule.enabled()) {
                     continue;
                 }
-                String key = rule.valueSourceKey();
-                if (isProfileScoped(key) && !available.contains(key)) {
-                    missing.add(key);
+                for (String key : rule.referencedVariableKeys()) {
+                    if (isProfileScoped(key) && !available.contains(key)) {
+                        missing.add(key);
+                    }
                 }
             }
             step.extractRules().stream().filter(rule -> rule.enabled())

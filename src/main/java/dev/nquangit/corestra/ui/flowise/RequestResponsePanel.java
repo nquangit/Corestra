@@ -184,6 +184,8 @@ public final class RequestResponsePanel extends JPanel {
         bar.add(nameField);
         bar.add(Box.createHorizontalStrut(8));
         bar.add(enabledBox);
+        bar.add(Box.createHorizontalStrut(12));
+        bar.add(new RequestSendModeControl(workspaceController));
         return bar;
     }
 

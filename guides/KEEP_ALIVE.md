@@ -67,6 +67,12 @@ Không có Session Expired rule thì lỗi keep-alive **không tự chạy login
 3. Bấm **Maintain Session Now** để kiểm tra ngay; xem thông báo kết quả và state.
 4. **Run Auth Now** vẫn cố ý chạy chính sách xác thực cũ; nó không ưu tiên keep-alive.
 
+Để chọn đường gửi riêng cho request keep-alive/login, mở flow trong Flowise,
+chọn từng request và đổi **Send via** phía trên request/response editor.
+**Use Project settings** là mặc định; **Standard** hoặc **Proxy Pipeline** sẽ
+ưu tiên hơn setting Project. Proxy Pipeline vẫn dùng proxy host/port của Project.
+Không có setting ở cấp flow; muốn đổi cả flow thì cấu hình từng request.
+
 Scheduler kiểm tra lịch mỗi **1 giây**, bắt đầu sau khoảng 5 giây khi extension
 khởi động. Interval tính từ lúc maintenance/authentication thành công gần nhất
 **hoàn tất**. Với interval 10 giây và flow mất 200 ms, khoảng cách giữa hai lần

@@ -92,6 +92,19 @@ Add a step from Burp:
 2. Use the Corestra context-menu action to add it to a flow.
 3. Review the stored request in Flowise.
 
+Choose how an individual request is sent:
+
+1. Select its step in the flow.
+2. Use **Send via** above the request/response editors:
+   - **Use Project settings** (default): follows the current Project sending mode.
+   - **Standard**: sends through Montoya, overriding a Project Proxy Pipeline default.
+   - **Proxy Pipeline**: sends through the proxy listener configured in Project, overriding a Standard default.
+3. The choice is saved immediately for that request and survives reload and project export/import.
+
+Project proxy host/port remain editable even when the default is Standard, so per-request Proxy Pipeline overrides can use a custom listener without changing the global sending mode.
+
+There is no flow-wide sending setting. To set the route for an entire flow, configure every request separately. A flow can mix Standard, Proxy Pipeline, and inherited requests. Overrides apply to extension-generated flow sends, including login/keep-alive, setup, Access Flow Targets, teardown, retries, and auto-trigger prerequisite/downstream steps. Each nested flow uses its own request settings. Sending to Repeater opens a Burp tab; subsequent Repeater sends and the original live request matched by Auto Trigger remain under Burp's control. Saved Access Flow Targets retain their snapshot's request settings; create a new snapshot to pick up later source-flow edits.
+
 Add extract rules:
 
 - Use extract rules when a response or request contains a value needed later.
@@ -109,12 +122,14 @@ Add inject rules:
 - For a variable-based Flowise inject rule, the editable selector groups known keys from earlier enabled extractors, Auth Profile credentials/auth state, and Data Profiles. Profile-backed choices store only a reusable key such as `credentials.username`, `auth.accessToken`, or `data.accountId`; they never bind the flow to Alice, Bob, or a particular Data Profile.
 - The preview masks credentials, tokens, headers, and cookies. Data values may be shown in abbreviated form. Profile names identify where a known key was found, but the preview profile is not persisted in the flow.
 - Enter any custom variable key when it does not exist in the catalog. Context guidance below the selector explains where that key must be supplied.
+- Choose **TEMPLATE** as the Value source to combine text and variables. For a refresh request, set Target to `REQUEST_HEADER`, Selector to `Authorization`, and Value template to `Bearer {{auth.refreshToken}}`. Select a key in the variable picker and click **Insert selected variable** to insert its placeholder at the cursor. You can also type templates yourself, including several placeholders.
+- **VARIABLE** reads one exact key such as `auth.refreshToken` (without braces). **STATIC** keeps the entered text literal, including any braces. **TEMPLATE** resolves `{{key}}` once against the current execution context; malformed placeholders are rejected when saving. A missing runtime variable skips that whole injection rule with a diagnostic, rather than injecting a partial value.
 - For a new `credentials.*` or `data.*` key, click **Save value to profile…**. Choose an existing profile or explicitly create one, enter the value, and confirm. Existing profile state and unrelated values are preserved; saving an existing key replaces that key only. Closing the Inject Rule with **OK** never creates or changes a profile by itself.
 - Click **Suggest** above the injection-rule table to scan the current request for header, cookie, query, form, and JSON field names matching earlier extractor variables. Review the suggestions and select only the rules to add.
 - Session Handler value-template cells are editable dropdowns. A linked Auth Profile offers `{{auth.key}}`, `{{auth.header.Name}}`, and `{{auth.cookie.Name}}` from the selected provider's flow contract and current actor state. A standalone profile offers `{{session.key}}`. Enabled local extractors are included with the matching namespace.
-- Optional transforms run after resolving the variable or static value and before writing it into the request. This is useful for adding/removing prefixes, slicing a value, changing case, URL/Base64 encoding, or regex replacement.
+- Optional transforms run after resolving the variable, static value, or complete template and before writing it into the request. Click **Syntax & test…** in either rule editor for the full syntax and a sample-value tester. **Add Bearer prefix** inserts `prefix:Bearer ` with the required trailing space; this also works with a VARIABLE source. Add that prefix only once.
 - Common examples:
-  - Inject `{{auth.accessToken}}` into the `Authorization` header.
+  - Use TEMPLATE `Bearer {{auth.accessToken}}` for the `Authorization` header.
   - Inject `{{scenario.confirmToken}}` into a JSON body.
   - Inject `{{data.accountId}}` into a request path or body.
 
@@ -128,6 +143,8 @@ To run a parameterized flow manually, open its **Execution** sub-tab and click *
 Run Context is local UI state and does not change the flow definition or Access Matrix. Access Testing rows continue to obtain their actor and data bindings from the row configuration.
 
 Supported value transforms are `trim`, `lowercase`, `uppercase`, `urlDecode`, `urlEncode`, `base64Decode`, `base64Encode`, `substring:START[:END]`, `prefix:TEXT`, `suffix:TEXT`, `stripPrefix:TEXT`, `stripSuffix:TEXT`, and `replaceRegex:PATTERN=>REPLACEMENT`.
+
+See [Injection templates and transform syntax](guides/TRANSFORMS.md) for step-by-step Bearer setup, examples for every operation, whitespace handling, and error behavior.
 
 Keep flows small and purpose-specific. It is usually better to have separate login, refresh, setup, target, post-check, and teardown flows than one large flow that does everything.
 

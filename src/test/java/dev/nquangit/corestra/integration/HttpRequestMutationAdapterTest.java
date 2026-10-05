@@ -13,13 +13,61 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
+import java.time.Clock;
+import java.util.concurrent.atomic.AtomicReference;
+import dev.nquangit.corestra.persistence.HttpSendMode;
+import dev.nquangit.corestra.session.SessionAuthConfig;
+import dev.nquangit.corestra.session.SessionGuard;
+import dev.nquangit.corestra.session.SessionInjectionRule;
+import dev.nquangit.corestra.session.SessionManager;
+import dev.nquangit.corestra.session.SessionProfile;
+import dev.nquangit.corestra.session.SessionProfileRepository;
+import dev.nquangit.corestra.session.SessionSchedulerConfig;
+import dev.nquangit.corestra.session.SessionScope;
+import dev.nquangit.corestra.flow.execution.FlowEngine;
+import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.http.extract.ExtractionService;
+import dev.nquangit.corestra.http.inject.InjectionService;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 @ResourceLock("MontoyaObjectFactory")
 class HttpRequestMutationAdapterTest {
     private MontoyaObjectFactory previousFactory;
+
+    @Test
+    void sessionInjectionForwardsOverrideWithTheMutatedRequestAndReleasesGuard() {
+        SessionProfileRepository repository = new SessionProfileRepository();
+        repository.saveProfile(SessionProfile.general().withConfig("General", SessionScope.custom(List.of()),
+                SessionAuthConfig.defaults(), SessionSchedulerConfig.disabled(), List.of(new SessionInjectionRule(
+                        "token", true, InjectRule.Target.REQUEST_HEADER, "Authorization", "Bearer actor",
+                        InjectRule.WriteStrategy.OVERWRITE, List.of("PROXY"))), List.of()));
+        ExtractionService extraction = new ExtractionService();
+        HttpResponse response = proxy(HttpResponse.class, (p, method, args) -> null);
+        SessionManager manager = new SessionManager(repository, List::of,
+                new FlowEngine(extraction, new InjectionService(), request -> response), extraction, Clock.systemUTC());
+        AtomicReference<HttpRequest> sent = new AtomicReference<>();
+        AtomicReference<HttpSendMode> route = new AtomicReference<>();
+        HttpClient delegate = new HttpClient() {
+            @Override public HttpResponse send(HttpRequest request) { throw new AssertionError("Override dropped"); }
+            @Override public HttpResponse send(HttpRequest request, HttpSendMode mode) {
+                sent.set(request);
+                route.set(mode);
+                return response;
+            }
+        };
+        SessionAwareHttpClient client = new SessionAwareHttpClient(delegate, () -> manager, new InjectionService());
+        HttpRequest original = request(new RequestState("GET", "/target", "HTTP/2", "",
+                List.of(header("Host", "example.test"))));
+        assertSame(response, client.send(original, HttpSendMode.PROXY_PIPELINE));
+        assertEquals("Bearer actor", sent.get().headerValue("Authorization"));
+        assertEquals(HttpSendMode.PROXY_PIPELINE, route.get());
+        assertEquals("HTTP/2", sent.get().httpVersion());
+        assertFalse(SessionGuard.isActive());
+    }
 
     @BeforeEach
     void installHeaderFactory() {
@@ -74,6 +122,13 @@ class HttpRequestMutationAdapterTest {
 
     private static HttpRequest request(RequestState state) {
         return proxy(HttpRequest.class, (p, method, args) -> switch (method.getName()) {
+            case "isInScope" -> true;
+            case "httpService" -> proxy(burp.api.montoya.http.HttpService.class, (service, m, a) -> switch (m.getName()) {
+                case "host" -> "example.test";
+                case "port" -> 443;
+                case "secure" -> true;
+                default -> throw new UnsupportedOperationException(m.getName());
+            });
             case "method" -> state.method();
             case "path" -> state.path();
             case "httpVersion" -> state.version();

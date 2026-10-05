@@ -74,7 +74,9 @@ public final class InjectionSuggestionService {
 
         Set<String> existing = new LinkedHashSet<>();
         for (InjectRule rule : currentStep.injectRules()) {
-            existing.add(identity(rule.target(), rule.targetSelector(), rule.valueSourceKey()));
+            for (String key : rule.referencedVariableKeys()) {
+                existing.add(identity(rule.target(), rule.targetSelector(), key));
+            }
         }
         return suggestions.stream()
                 .filter(suggestion -> !existing.contains(identity(

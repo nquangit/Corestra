@@ -497,7 +497,7 @@ public final class TeardownFlowRunner {
         String rawRequest = requestAdapter.rawRequest(renderedTemplate);
 
         try {
-            HttpResponse response = httpClient.send(requestAdapter.toHttpRequest(renderedTemplate));
+            HttpResponse response = httpClient.send(requestAdapter.toHttpRequest(renderedTemplate), step.sendModeOverride());
             String rawResponse = rawResponse(response);
             Map<String, String> extractedVariables = extractedVariables(step, renderedTemplate, response);
             TeardownStepEvidence evidence = new TeardownStepEvidence(

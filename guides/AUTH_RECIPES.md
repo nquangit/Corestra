@@ -133,6 +133,8 @@ refreshToken
 expiresIn
 ```
 
+Nếu endpoint refresh nhận token trong `Authorization: Bearer ...`, tạo Inject Rule ở chính request refresh: Target `REQUEST_HEADER`, Selector `Authorization`, Value source `TEMPLATE`, Value template `Bearer {{auth.refreshToken}}`, Write strategy `OVERWRITE`. Dropdown biến và **Insert selected variable** giúp nhập placeholder. Xem [hướng dẫn template và transform](TRANSFORMS.md) để dùng `prefix:Bearer ` hoặc thử chain trong UI.
+
 AuthManager merge extracted variables vào state hiện tại, nên refresh token mới sẽ thay refresh token cũ. Nếu flow không extract refresh token mới, giá trị cũ được giữ.
 
 ## 10. Validate bằng endpoint `/me`

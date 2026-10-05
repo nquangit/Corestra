@@ -11,6 +11,9 @@ import dev.nquangit.corestra.flow.FlowTriggerConfig;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
 import dev.nquangit.corestra.flow.execution.ExecutionResult;
 import dev.nquangit.corestra.persistence.FlowRepository;
+import dev.nquangit.corestra.persistence.HttpSendMode;
+import javax.swing.JComboBox;
+import javax.swing.SwingUtilities;
 import dev.nquangit.corestra.persistence.FlowSerializer;
 import dev.nquangit.corestra.persistence.PersistenceMigrationService;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +40,38 @@ class FlowWorkspaceControllerTest {
     void setUp() {
         persistence = new InMemoryPersistence();
         controller = new FlowWorkspaceController(flowRepository(persistence));
+    }
+
+    @Test
+    void routeSelectorSavesOnlySelectedRequestAndRestoresInheritanceWithoutChangingOtherSteps() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            FlowDefinition initial = flow("f1", "Flow", List.of(step("s1", "One"), step("s2", "Two")));
+            controller.addFlow(initial);
+            controller.setActiveFlow(initial);
+            controller.setSelectedStep(initial.steps().getFirst());
+            RequestSendModeControl control = new RequestSendModeControl(controller);
+            JComboBox<?> combo = (JComboBox<?>) control.getComponent(1);
+            assertTrue(combo.isEnabled());
+            assertEquals("Use Project settings", combo.getSelectedItem().toString());
+            combo.setSelectedIndex(2);
+            assertEquals(HttpSendMode.PROXY_PIPELINE, controller.selectedStep().sendModeOverride());
+            assertNull(controller.activeFlow().steps().get(1).sendModeOverride());
+            FlowDefinition restored = flowRepository(persistence).loadAll().getFirst();
+            assertEquals(HttpSendMode.PROXY_PIPELINE, restored.steps().getFirst().sendModeOverride());
+            controller.setSelectedStep(controller.activeFlow().steps().get(1));
+            assertEquals("Use Project settings", combo.getSelectedItem().toString());
+            combo.setSelectedIndex(1);
+            assertEquals(HttpSendMode.STANDARD, controller.selectedStep().sendModeOverride());
+            controller.setSelectedStep(controller.activeFlow().steps().getFirst());
+            assertEquals("Proxy Pipeline", combo.getSelectedItem().toString());
+            combo.setSelectedIndex(0);
+            assertNull(controller.selectedStep().sendModeOverride());
+            assertEquals(HttpSendMode.STANDARD, controller.activeFlow().steps().get(1).sendModeOverride());
+            controller.setSelectedStep(step("foreign", "Not in this flow"));
+            assertFalse(combo.isEnabled());
+            controller.setSelectedStepSendModeOverride(HttpSendMode.PROXY_PIPELINE);
+            assertNull(controller.activeFlow().steps().getFirst().sendModeOverride());
+        });
     }
 
     // -------------------------------------------------------------------------

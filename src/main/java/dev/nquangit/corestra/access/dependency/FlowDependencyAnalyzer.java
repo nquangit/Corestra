@@ -107,14 +107,16 @@ public final class FlowDependencyAnalyzer {
     private Set<ScopedVariableRef> injectRuleRefs(FlowStep step, RenderMode mode, List<String> warnings) {
         LinkedHashSet<ScopedVariableRef> refs = new LinkedHashSet<>();
         for (InjectRule rule : step.injectRules()) {
-            if (!rule.enabled() || rule.valueSourceType() != InjectRule.ValueSourceType.VARIABLE) {
+            if (!rule.enabled()) {
                 continue;
             }
-            parseExpression(rule.valueSourceKey(), mode)
-                    .ifPresentOrElse(
-                            refs::add,
-                            () -> warnings.add("Inject rule variable is not a supported scoped ref: step="
-                                    + step.id() + ", rule=" + rule.id() + ", key=" + rule.valueSourceKey()));
+            for (String key : rule.referencedVariableKeys()) {
+                parseExpression(key, mode)
+                        .ifPresentOrElse(
+                                refs::add,
+                                () -> warnings.add("Inject rule variable is not a supported scoped ref: step="
+                                        + step.id() + ", rule=" + rule.id() + ", key=" + key));
+            }
         }
         return Set.copyOf(refs);
     }

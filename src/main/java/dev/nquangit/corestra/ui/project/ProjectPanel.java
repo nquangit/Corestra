@@ -346,10 +346,12 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
 
         lc.gridy = 1; fc.gridy = 1;
         section.add(new JLabel("Proxy host:"), lc);
+        proxyHostField.setToolTipText("Listener used by any Proxy Pipeline request, including per-request overrides.");
         section.add(proxyHostField, fc);
 
         lc.gridy = 2; fc.gridy = 2;
         section.add(new JLabel("Proxy port:"), lc);
+        proxyPortField.setToolTipText("Listener port used by any Proxy Pipeline request, including per-request overrides.");
         section.add(proxyPortField, fc);
 
         return section;
@@ -500,9 +502,9 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
             proxyPipelineRadio.setSelected(currentSettings.sendMode() == HttpSendMode.PROXY_PIPELINE);
             proxyHostField.setText(currentSettings.proxyHost());
             proxyPortField.setText(Integer.toString(currentSettings.proxyPort()));
-            boolean proxyEnabled = currentSettings.sendMode() == HttpSendMode.PROXY_PIPELINE;
-            proxyHostField.setEnabled(proxyEnabled);
-            proxyPortField.setEnabled(proxyEnabled);
+            // Requests may opt into Proxy Pipeline even when the project default is Standard.
+            proxyHostField.setEnabled(true);
+            proxyPortField.setEnabled(true);
         } finally {
             refreshingSettingsControls = false;
         }

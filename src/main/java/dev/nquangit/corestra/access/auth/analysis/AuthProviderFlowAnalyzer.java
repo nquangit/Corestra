@@ -244,12 +244,13 @@ public final class AuthProviderFlowAnalyzer {
             List<AuthProviderFlowIssue> issues,
             FlowDefinition flow) {
         for (InjectRule rule : step.injectRules()) {
-            if (!rule.enabled() || rule.valueSourceType() != InjectRule.ValueSourceType.VARIABLE) {
+            if (!rule.enabled()) {
                 continue;
             }
-            String key = rule.valueSourceKey();
-            if (!availableInsideFlow.contains(key)) {
-                requiredInputs.add(key);
+            for (String key : rule.referencedVariableKeys()) {
+                if (!availableInsideFlow.contains(key)) {
+                    requiredInputs.add(key);
+                }
             }
         }
         StoredRequestTemplate request = step.requestTemplate();
@@ -332,8 +333,7 @@ public final class AuthProviderFlowAnalyzer {
             if (!step.enabled()) continue;
             step.injectRules().stream()
                     .filter(InjectRule::enabled)
-                    .filter(rule -> rule.valueSourceType() == InjectRule.ValueSourceType.VARIABLE)
-                    .map(InjectRule::valueSourceKey)
+                    .flatMap(rule -> rule.referencedVariableKeys().stream())
                     .filter(key -> key.startsWith("auth."))
                     .map(key -> key.substring("auth.".length()))
                     .filter(key -> !producedInsideRefresh.contains(key))

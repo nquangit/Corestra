@@ -28,6 +28,18 @@ class FlowDependencyAnalyzerTest {
     private final FlowDependencyAnalyzer analyzer = new FlowDependencyAnalyzer();
 
     @Test
+    void templateInjectionRequiresAllReferencedScopedVariables() {
+        InjectRule rule = new InjectRule("template", "Template", true, InjectRule.Target.REQUEST_HEADER,
+                "Authorization", InjectRule.ValueSourceType.TEMPLATE, "",
+                "Bearer {{auth.refreshToken}}/{{data.accountId}}", InjectRule.WriteStrategy.OVERWRITE);
+        FlowDependencyGraph graph = analyzer.analyze(
+                flow(List.of(step("target", "/refresh", List.of(), List.of(rule)))), RenderMode.STRICT);
+        assertEquals(Set.of(new ScopedVariableRef(VariableScope.AUTH, "refreshToken"),
+                        new ScopedVariableRef(VariableScope.DATA, "accountId")),
+                graph.metadataForStep("target").orElseThrow().requires());
+    }
+
+    @Test
     void stepRequiresScenarioVariableFromStoredRequestPlaceholder() {
         FlowDefinition flow = flow(List.of(
                 step("target", "/confirm/{{scenario.confirmToken}}", List.of(), List.of())));

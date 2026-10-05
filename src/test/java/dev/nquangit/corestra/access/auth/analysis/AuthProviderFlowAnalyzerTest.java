@@ -31,6 +31,24 @@ class AuthProviderFlowAnalyzerTest {
     private final AuthProviderFlowAnalyzer analyzer = new AuthProviderFlowAnalyzer();
 
     @Test
+    void keepAliveContractRecognizesTemplateInputsAndWarnsAboutMissingLoginOutput() {
+        AuthProvider p = withKeepAlive(provider("login", List.of()), new AuthKeepAliveConfig("keep",
+                List.of(new AuthSuccessRule("ok", "OK", true, AuthRuleType.BODY_CONTAINS, "alive", "")), List.of()));
+        InjectRule rule = new InjectRule("template", "Template", true, InjectRule.Target.REQUEST_HEADER,
+                "Authorization", InjectRule.ValueSourceType.TEMPLATE, "",
+                "Bearer {{auth.refreshToken}}", InjectRule.WriteStrategy.OVERWRITE);
+        FlowDefinition login = flow("login", true, List.of(step(List.of(), List.of())));
+        FlowDefinition keep = flow("keep", true, List.of(step(List.of(), List.of(rule))));
+        var analysis = analyzer.analyze(p, List.of(login, keep));
+        assertTrue(analysis.requiredInputs().contains("auth.refreshToken"));
+        assertTrue(analysis.issues().stream().anyMatch(issue -> issue.title().contains("Keep-alive input")));
+        login = flow("login", true, List.of(step(List.of(extract("token", ExtractRule.ExtractorType.HEADER,
+                "X-Token", "refreshToken")), List.of())));
+        assertFalse(analyzer.analyze(p, List.of(login, keep)).issues().stream()
+                .anyMatch(issue -> issue.title().contains("Keep-alive input")));
+    }
+
+    @Test
     void optionalKeepAliveMustReferenceEnabledFlowAndHaveIndependentSuccessRules() {
         AuthProvider original = provider("login", List.of());
         AuthKeepAliveConfig config = new AuthKeepAliveConfig("keep", List.of(), List.of());

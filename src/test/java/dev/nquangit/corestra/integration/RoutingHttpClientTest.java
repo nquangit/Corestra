@@ -14,6 +14,25 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class RoutingHttpClientTest {
 
     @Test
+    void requestOverridesProjectInBothDirectionsAndDoesNotChangeNextInheritedSend() {
+        AtomicReference<ProjectSettings> settings = new AtomicReference<>(ProjectSettings.defaults());
+        CountingClient standard = new CountingClient();
+        CountingClient proxy = new CountingClient();
+        RoutingHttpClient client = new RoutingHttpClient(settings::get, standard, proxy);
+        client.send(null, HttpSendMode.PROXY_PIPELINE);
+        client.send(null, null);
+        assertEquals(HttpSendMode.STANDARD, settings.get().sendMode());
+        assertEquals(1, proxy.count());
+        assertEquals(1, standard.count());
+        settings.set(new ProjectSettings(HttpSendMode.PROXY_PIPELINE, "localhost", 9090));
+        client.send(null, HttpSendMode.STANDARD);
+        client.send(null, null);
+        assertEquals(HttpSendMode.PROXY_PIPELINE, settings.get().sendMode());
+        assertEquals(2, proxy.count());
+        assertEquals(2, standard.count());
+    }
+
+    @Test
     void standardModeDelegatesToStandardClientOnly() {
         AtomicReference<ProjectSettings> settings = new AtomicReference<>(ProjectSettings.defaults());
         CountingClient standard = new CountingClient();

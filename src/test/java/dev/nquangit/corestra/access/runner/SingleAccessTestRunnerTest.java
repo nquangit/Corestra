@@ -59,6 +59,7 @@ import dev.nquangit.corestra.access.variable.VariableScope;
 import dev.nquangit.corestra.access.workspace.AccessWorkspace;
 import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.persistence.HttpSendMode;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
 import dev.nquangit.corestra.flow.FlowStep;
@@ -750,6 +751,33 @@ class SingleAccessTestRunnerTest {
     }
 
     @Test
+    void flowTargetAndTeardownPreservePerRequestSendingModes() {
+        CountingHttpClient httpClient = new CountingHttpClient(403, "{}", 200);
+        FlowDefinition original = flowWithOverrideableTarget();
+        FlowDefinition mixed = new FlowDefinition(original.id(), original.name(), original.description(), true,
+                List.of(original.steps().get(0).withSendModeOverride(HttpSendMode.STANDARD),
+                        original.steps().get(1).withSendModeOverride(HttpSendMode.PROXY_PIPELINE)),
+                original.rules(), original.aggregation(), original.triggerConfig());
+        AccessFlowTarget target = flowTarget(mixed);
+        AccessRunResult result = runner(httpClient).run(flowTargetTestCase(target.id(), ExpectedResult.ALLOW),
+                workspace(true, true, true).withFlowTarget(target), Map.of(), Map.of(), Map.of(), RenderMode.STRICT);
+        assertEquals(RunStatus.COMPLETED, result.result().runStatus());
+        assertEquals(List.of(HttpSendMode.STANDARD, HttpSendMode.PROXY_PIPELINE), httpClient.sendModes);
+
+        CountingHttpClient teardownClient = new CountingHttpClient(403, 200);
+        FlowDefinition cleanup = teardownFlow();
+        cleanup = new FlowDefinition(cleanup.id(), cleanup.name(), cleanup.description(), true,
+                List.of(cleanup.steps().getFirst().withSendModeOverride(HttpSendMode.PROXY_PIPELINE)),
+                cleanup.rules(), cleanup.aggregation(), cleanup.triggerConfig());
+        AccessRunResult cleaned = runnerWithTeardown(teardownClient, List.of(cleanup)).run(
+                testCaseWithTeardown(teardownConfig(true, false, false, TeardownAuthBinding.TARGET_ACTOR)),
+                workspace(true, true, true), Map.of(), Map.of(), Map.of(), RenderMode.STRICT);
+        assertEquals(2, teardownClient.count());
+        assertFalse(cleaned.evidence().orElseThrow().teardownEvidence().isEmpty());
+        assertEquals(List.of(HttpSendMode.PROXY_PIPELINE), teardownClient.sendModes);
+    }
+
+    @Test
     void flowTargetExecutesSnapshotThroughTargetStepAndUsesTargetResponseForEvaluation() {
         CountingHttpClient httpClient = new CountingHttpClient(403, "{}", 200);
         AccessFlowTarget flowTarget = flowTarget(flowWithOverrideableTarget());
@@ -1400,6 +1428,7 @@ class SingleAccessTestRunnerTest {
         private final List<Short> statusCodes;
         private final String responseBody;
         private final List<String> requests = new ArrayList<>();
+        private final List<HttpSendMode> sendModes = new ArrayList<>();
         private int count;
         private String lastRequest = "";
 
@@ -1415,6 +1444,12 @@ class SingleAccessTestRunnerTest {
             }
             this.statusCodes = List.copyOf(statuses);
             this.responseBody = responseBody;
+        }
+
+        @Override
+        public HttpResponse send(HttpRequest request, HttpSendMode mode) {
+            sendModes.add(mode);
+            return send(request);
         }
 
         @Override

@@ -25,6 +25,35 @@ class InjectionServiceTest {
         service = new InjectionService();
     }
 
+    @Test
+    void injectsBearerTemplateAndAppliesTransformsToCompleteValue() {
+        InjectRule rule = new InjectRule("bearer", "Bearer", true, Target.REQUEST_HEADER, "Authorization",
+                ValueSourceType.TEMPLATE, "", "Bearer {{auth.refreshToken}}", WriteStrategy.OVERWRITE,
+                List.of("suffix:-done"));
+        RequestMutationResult result = service.apply(List.of(rule), Map.of("auth.refreshToken", "new-token"),
+                request("POST /refresh HTTP/1.1", List.of("Authorization: Bearer old-token"), ""));
+        assertEquals(List.of("Authorization: Bearer new-token-done"), result.headers());
+    }
+
+    @Test
+    void missingTemplateVariablePreservesRequestInsteadOfInjectingPartialValue() {
+        InjectRule rule = new InjectRule("bearer", "Bearer", true, Target.REQUEST_HEADER, "Authorization",
+                ValueSourceType.TEMPLATE, "", "Bearer {{auth.refreshToken}}/{{missing}}", WriteStrategy.OVERWRITE);
+        RequestMutationResult result = service.apply(List.of(rule), Map.of("auth.refreshToken", "secret"),
+                request("POST /refresh HTTP/1.1", List.of("Authorization: Bearer old-token"), ""));
+        assertEquals(List.of("Authorization: Bearer old-token"), result.headers());
+        assertTrue(result.diagnostics().stream().anyMatch(message -> message.contains("missing")));
+        assertTrue(result.diagnostics().stream().noneMatch(message -> message.contains("secret")));
+    }
+
+    @Test
+    void staticSourceKeepsPlaceholderTextLiteralForCompatibility() {
+        InjectRule rule = staticRule("static", Target.REQUEST_HEADER, "X-Value", "{{token}}", WriteStrategy.OVERWRITE);
+        RequestMutationResult result = service.apply(List.of(rule), Map.of("token", "resolved"),
+                request("GET / HTTP/1.1", List.of(), ""));
+        assertEquals(List.of("X-Value: {{token}}"), result.headers());
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------

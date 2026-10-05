@@ -2,6 +2,7 @@ package dev.nquangit.corestra.flow.rule;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
@@ -35,7 +36,7 @@ public final class InjectRule {
      * @param targetSelector the selector inside the target
      * @param valueSourceType the source of the injected value
      * @param valueSourceKey the execution variable name when the source is variable-based
-     * @param staticValue the inline value when the source is static
+     * @param staticValue the inline value for STATIC or the placeholder expression for TEMPLATE
      * @param writeStrategy the write strategy
      */
     @JsonCreator
@@ -60,7 +61,10 @@ public final class InjectRule {
         validateTargetSelector(this.target, this.targetSelector);
         this.valueSourceType = Objects.requireNonNull(valueSourceType, "valueSourceType");
         this.valueSourceKey = normalizeValueSourceKey(valueSourceType, valueSourceKey);
-        this.staticValue = valueSourceType == ValueSourceType.STATIC ? Objects.requireNonNullElse(staticValue, "") : "";
+        this.staticValue = valueSourceType == ValueSourceType.VARIABLE ? "" : Objects.requireNonNullElse(staticValue, "");
+        if (valueSourceType == ValueSourceType.TEMPLATE) {
+            InjectValueTemplate.variableKeys(this.staticValue);
+        }
         this.writeStrategy = Objects.requireNonNullElse(writeStrategy, WriteStrategy.OVERWRITE);
         this.transformChain = normalizeStringList(transformChain);
     }
@@ -75,7 +79,7 @@ public final class InjectRule {
      * @param targetSelector the selector inside the target
      * @param valueSourceType the source of the injected value
      * @param valueSourceKey the execution variable name when the source is variable-based
-     * @param staticValue the inline value when the source is static
+     * @param staticValue the inline value for STATIC or the placeholder expression for TEMPLATE
      * @param writeStrategy the write strategy
      */
     public InjectRule(
@@ -102,7 +106,7 @@ public final class InjectRule {
      * @param targetSelector selector inside the target
      * @param valueSourceType source type
      * @param valueSourceKey context variable key
-     * @param staticValue inline static value
+     * @param staticValue inline STATIC value or TEMPLATE expression
      * @param writeStrategy write strategy
      * @param transformChain transforms applied before injection
      */
@@ -187,19 +191,29 @@ public final class InjectRule {
     /**
      * Returns the execution variable name used by variable-based injection.
      *
-     * @return the execution variable name, or an empty string for static injection
+     * @return the execution variable name, or an empty string for inline values/templates
      */
     public String valueSourceKey() {
         return valueSourceKey;
     }
 
     /**
-     * Returns the inline static value.
+     * Returns the inline static value or the unrendered TEMPLATE expression.
      *
-     * @return the inline static value, or an empty string for variable-based injection
+     * @return the inline value/template, or an empty string for variable-based injection
      */
     public String staticValue() {
         return staticValue;
+    }
+
+    /** Returns all variable keys required by this rule, without resolving their values. */
+    @JsonIgnore
+    public List<String> referencedVariableKeys() {
+        return switch (valueSourceType) {
+            case VARIABLE -> List.of(valueSourceKey);
+            case STATIC -> List.of();
+            case TEMPLATE -> InjectValueTemplate.variableKeys(staticValue);
+        };
     }
 
     /**
@@ -337,7 +351,10 @@ public final class InjectRule {
         /**
          * Uses an inline static value.
          */
-        STATIC
+        STATIC,
+
+        /** Combines literal text and {@code {{variableKey}}} placeholders from the execution context. */
+        TEMPLATE
     }
 
     /**
@@ -405,7 +422,7 @@ public final class InjectRule {
     }
 
     private static String normalizeValueSourceKey(ValueSourceType valueSourceType, String valueSourceKey) {
-        if (valueSourceType == ValueSourceType.STATIC) {
+        if (valueSourceType != ValueSourceType.VARIABLE) {
             return "";
         }
         return normalizeRequiredText(valueSourceKey, "valueSourceKey");

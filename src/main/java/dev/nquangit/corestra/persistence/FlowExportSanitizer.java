@@ -121,12 +121,12 @@ public final class FlowExportSanitizer {
                 null,
                 step.triggerRule(),
                 step.includeInAggregation(),
-                step.conditionActionRules());
+                step.conditionActionRules(), step.sendModeOverride());
     }
 
     private InjectRule sanitizeInjectRule(InjectRule rule, boolean excludeSecrets) {
         String staticValue = rule.staticValue();
-        if (rule.valueSourceType() == InjectRule.ValueSourceType.STATIC) {
+        if (rule.valueSourceType() != InjectRule.ValueSourceType.VARIABLE) {
             staticValue = sanitizeConfiguredValue(
                     rule.targetSelector(), staticValue, excludeSecrets, true);
         }

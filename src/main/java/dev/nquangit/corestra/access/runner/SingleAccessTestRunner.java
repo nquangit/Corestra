@@ -775,7 +775,7 @@ public final class SingleAccessTestRunner {
             }
 
             try {
-                HttpResponse response = httpClient.send(requestAdapter.toHttpRequest(preparation.request()));
+                HttpResponse response = httpClient.send(requestAdapter.toHttpRequest(preparation.request()), step.sendModeOverride());
                 requestSent = true;
                 String rawResponse = rawResponse(response);
                 SentTargetRequest sent = new SentTargetRequest(

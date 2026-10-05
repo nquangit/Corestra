@@ -103,7 +103,7 @@ public class StepExecutor {
 
         try {
             HttpRequest montoyaRequest = buildMontoyaRequest(template, renderedRequestLine, renderedHeaders, renderedBody);
-            response = httpClient.send(montoyaRequest);
+            response = httpClient.send(montoyaRequest, step.sendModeOverride());
             receivedResponse = response.toString();
             statusCode = response.statusCode();
         } catch (Exception e) {

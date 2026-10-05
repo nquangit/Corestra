@@ -40,8 +40,15 @@ public final class RoutingHttpClient implements HttpClient {
      */
     @Override
     public HttpResponse send(HttpRequest request) {
-        ProjectSettings settings = Objects.requireNonNullElse(settingsSupplier.get(), ProjectSettings.defaults());
-        if (settings.sendMode() == HttpSendMode.PROXY_PIPELINE) {
+        return send(request, null);
+    }
+
+    /** Sends using the request override when present, otherwise current Project settings. */
+    @Override
+    public HttpResponse send(HttpRequest request, HttpSendMode sendModeOverride) {
+        HttpSendMode mode = sendModeOverride != null ? sendModeOverride
+                : Objects.requireNonNullElse(settingsSupplier.get(), ProjectSettings.defaults()).sendMode();
+        if (mode == HttpSendMode.PROXY_PIPELINE) {
             return proxyPipelineClient.send(request);
         }
         return standardClient.send(request);

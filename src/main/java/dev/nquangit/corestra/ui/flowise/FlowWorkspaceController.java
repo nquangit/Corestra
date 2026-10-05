@@ -6,6 +6,7 @@ import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.execution.ExecutionResult;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
 import dev.nquangit.corestra.persistence.FlowRepository;
+import dev.nquangit.corestra.persistence.HttpSendMode;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -114,6 +115,18 @@ public final class FlowWorkspaceController {
      */
     public FlowStep selectedStep() {
         return selectedStep;
+    }
+
+    /** Saves a transport override for the selected request, or null to inherit Project settings. */
+    public void setSelectedStepSendModeOverride(HttpSendMode mode) {
+        if (activeFlow == null || selectedStep == null) return;
+        FlowStep current = activeFlow.steps().stream()
+                .filter(step -> step.id().equals(selectedStep.id())).findFirst().orElse(null);
+        if (current == null || current.sendModeOverride() == mode) return;
+        List<FlowStep> updated = activeFlow.steps().stream()
+                .map(step -> step.id().equals(current.id()) ? step.withSendModeOverride(mode) : step).toList();
+        updateFlow(new FlowDefinition(activeFlow.id(), activeFlow.name(), activeFlow.description(),
+                activeFlow.enabled(), updated, activeFlow.rules(), activeFlow.aggregation(), activeFlow.triggerConfig()));
     }
 
     /**

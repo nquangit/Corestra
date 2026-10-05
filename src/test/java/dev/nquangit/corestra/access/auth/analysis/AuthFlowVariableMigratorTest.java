@@ -2,6 +2,7 @@ package dev.nquangit.corestra.access.auth.analysis;
 
 import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.persistence.HttpSendMode;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
@@ -21,14 +22,31 @@ class AuthFlowVariableMigratorTest {
     private final AuthFlowVariableMigrator migrator = new AuthFlowVariableMigrator();
 
     @Test
+    void migratesOnlyTemplateKeysProducedByEarlierEnabledExtractors() {
+        InjectRule template = new InjectRule("template", "Template", true, InjectRule.Target.REQUEST_HEADER,
+                "Authorization", InjectRule.ValueSourceType.TEMPLATE, "",
+                "Bearer {{auth.accessToken}}/{{auth.other}}", InjectRule.WriteStrategy.OVERWRITE);
+        FlowDefinition flow = flow(List.of(
+                step("login", List.of(extract("auth.accessToken")), List.of(template)),
+                step("target", List.of(), List.of(template))));
+        var result = migrator.migrate(flow);
+        assertEquals(template, result.flow().steps().getFirst().injectRules().getFirst());
+        assertEquals("Bearer {{accessToken}}/{{auth.other}}", result.flow().steps().get(1).injectRules().getFirst().staticValue());
+        assertEquals(1, result.renamedReferences());
+    }
+
+    @Test
     void renamesLegacyExtractorAndOnlyLaterInjectionReferences() {
         FlowDefinition flow = flow(List.of(
-                step("login", List.of(extract("auth.accessToken")), List.of(variableInject("credentials.username"))),
+                step("login", List.of(extract("auth.accessToken")), List.of(variableInject("credentials.username")))
+                        .withSendModeOverride(HttpSendMode.STANDARD),
                 step("target", List.of(), List.of(variableInject("auth.accessToken")))));
 
         AuthFlowVariableMigrator.MigrationResult result = migrator.migrate(flow);
 
         assertTrue(result.changed());
+        assertEquals(HttpSendMode.STANDARD,
+                result.flow().steps().getFirst().sendModeOverride());
         assertEquals(1, result.renamedExtractors());
         assertEquals(1, result.renamedReferences());
         assertEquals("accessToken", result.flow().steps().getFirst().extractRules().getFirst().targetVariableName());

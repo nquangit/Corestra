@@ -17,6 +17,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class ExecutionPanelContextTest {
     @Test
+    void templateInputsAreValidatedAgainstProfileStateAndEarlierExtractors() {
+        InjectRule template = new InjectRule("template", "Template", true, InjectRule.Target.REQUEST_HEADER,
+                "Authorization", InjectRule.ValueSourceType.TEMPLATE, "",
+                "Bearer {{auth.refreshToken}}/{{credentials.username}}", InjectRule.WriteStrategy.OVERWRITE);
+        FlowStep login = step("login", List.of(extract("auth.refreshToken")), List.of());
+        FlowStep target = step("target", List.of(), List.of(template));
+        FlowDefinition flow = flow(login, target);
+        assertEquals(List.of("credentials.username"), ExecutionPanel.missingScopedVariables(flow, null, Map.of()));
+        assertEquals(List.of("auth.refreshToken", "credentials.username"),
+                ExecutionPanel.missingScopedVariables(flow, target, Map.of()));
+        assertEquals(List.of(), ExecutionPanel.missingScopedVariables(flow, null, Map.of("credentials.username", "alice")));
+    }
+
+    @Test
     void wholeFlowAcceptsScopedValueExtractedBeforeInjection() {
         FlowStep login = step("login", List.of(extract("auth.accessToken")), List.of());
         FlowStep target = step("target", List.of(), List.of(inject("auth.accessToken")));

@@ -2,6 +2,7 @@ package dev.nquangit.corestra.integration;
 
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import dev.nquangit.corestra.persistence.HttpSendMode;
 import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
@@ -64,18 +65,24 @@ public final class SessionAwareHttpClient implements HttpClient {
      */
     @Override
     public HttpResponse send(HttpRequest request) {
+        return send(request, null);
+    }
+
+    /** Preserves a request-specific transport override through this decoration. */
+    @Override
+    public HttpResponse send(HttpRequest request, HttpSendMode sendModeOverride) {
         // 0. Null guard — forward null requests to the delegate unchanged.
-        if (request == null) return delegate.send(request);
+        if (request == null) return delegate.send(request, sendModeOverride);
 
         // 1. Recursion guard — we're already inside a session-refresh on this thread.
         if (SessionGuard.isActive()) {
-            return delegate.send(request);
+            return delegate.send(request, sendModeOverride);
         }
 
         // 2. Startup safety — manager may not be wired yet.
         SessionManager manager = sessionManagerSupplier.get();
         if (manager == null) {
-            return delegate.send(request);
+            return delegate.send(request, sendModeOverride);
         }
 
         // 3. Build traffic context — always pretend we're PROXY so injection rules for
@@ -85,7 +92,7 @@ public final class SessionAwareHttpClient implements HttpClient {
         // 4. Profile selection.
         SessionProfileSelection selection = manager.selectProfile(context);
         if (selection.profile().isEmpty()) {
-            return delegate.send(request);
+            return delegate.send(request, sendModeOverride);
         }
 
         // 5–9. Run with guard active so any auth-refresh HTTP calls don't loop back here.
@@ -95,10 +102,10 @@ public final class SessionAwareHttpClient implements HttpClient {
                     selection.profile().orElseThrow(), context);
             List<InjectRule> rules = plan.rules();
             if (rules.isEmpty()) {
-                return delegate.send(request);
+                return delegate.send(request, sendModeOverride);
             }
             HttpRequest modified = applyRules(request, rules);
-            return delegate.send(modified);
+            return delegate.send(modified, sendModeOverride);
         } finally {
             SessionGuard.exit();
         }

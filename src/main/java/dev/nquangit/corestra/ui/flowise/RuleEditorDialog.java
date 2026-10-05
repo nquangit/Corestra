@@ -234,7 +234,7 @@ public final class RuleEditorDialog extends JDialog {
                 {"Test result:", testResultLabel},
                 {"Target variable:", variableField},
                 {"Transforms (one per line):", new JScrollPane(transformsArea)},
-                {"", new JLabel("Examples: trim, substring:0:16, stripPrefix:Bearer, base64Decode")},
+                {"", ValueTransformHelp.controls(transformsArea)},
                 {"", errorLabel}
         });
         updateRegexFields.run();
@@ -333,7 +333,7 @@ public final class RuleEditorDialog extends JDialog {
         return wrapper;
     }
 
-    private static JPanel buildInjectForm(
+    static JPanel buildInjectForm(
             FlowDefinition flow,
             FlowStep step,
             InjectRule existing,
@@ -345,10 +345,12 @@ public final class RuleEditorDialog extends JDialog {
         JTextField selectorField = new JTextField(existing != null ? existing.targetSelector() : "", 24);
         JComboBox<InjectRule.ValueSourceType> sourceTypeCombo =
                 new JComboBox<>(InjectRule.ValueSourceType.values());
+        sourceTypeCombo.setName("injectSourceType");
         InjectionVariableCatalog variableCatalog = new InjectionVariableCatalog(accessController);
         List<InjectionVariableCatalog.VariableOption> variableOptions = variableCatalog.options(flow, step);
         JComboBox<InjectionVariableCatalog.VariableOption> sourceKeyCombo = new JComboBox<>(
                 variableOptions.toArray(InjectionVariableCatalog.VariableOption[]::new));
+        sourceKeyCombo.setName("injectVariableKey");
         sourceKeyCombo.setEditable(true);
         sourceKeyCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
@@ -370,6 +372,16 @@ public final class RuleEditorDialog extends JDialog {
                 "credentials.username", "Credentials", "Auth profile name", "", true));
         selectExistingVariable(sourceKeyCombo, existing == null ? "" : existing.valueSourceKey());
         JTextField staticValueField = new JTextField(existing != null ? existing.staticValue() : "", 24);
+        staticValueField.setName("injectInlineValue");
+        JButton insertVariableButton = new JButton("Insert selected variable");
+        JLabel templateHelpLabel = new JLabel("Example: Bearer {{auth.refreshToken}} — placeholders use runtime values.");
+        insertVariableButton.addActionListener(event -> {
+            String key = selectedVariableKey(sourceKeyCombo);
+            if (!key.isBlank() && key.chars().noneMatch(ch -> Character.isWhitespace(ch) || ch == '{' || ch == '}')) {
+                staticValueField.replaceSelection("{{" + key + "}}");
+                staticValueField.requestFocusInWindow();
+            }
+        });
         JTextArea transformsArea = new JTextArea(
                 existing != null ? String.join("\n", existing.transformChain()) : "", 5, 24);
         JComboBox<InjectRule.WriteStrategy> strategyCombo =
@@ -385,6 +397,7 @@ public final class RuleEditorDialog extends JDialog {
                 "Save a credentials.* value to Authentication or a data.* value to Access Testing after confirmation");
         saveToProfileButton.setEnabled(false);
         JLabel errorLabel = new JLabel(" ");
+        errorLabel.setName("injectValidationError");
 
         if (existing != null) {
             targetCombo.setSelectedItem(existing.target());
@@ -394,13 +407,17 @@ public final class RuleEditorDialog extends JDialog {
 
         Runnable updateSourceFields = () -> {
             boolean isStatic = sourceTypeCombo.getSelectedItem() == InjectRule.ValueSourceType.STATIC;
+            boolean isTemplate = sourceTypeCombo.getSelectedItem() == InjectRule.ValueSourceType.TEMPLATE;
             sourceKeyLabel.setVisible(!isStatic);
             sourceKeyCombo.setVisible(!isStatic);
             variableHelpLabel.setVisible(!isStatic);
             previewLabel.setVisible(!isStatic);
             saveToProfileButton.setVisible(!isStatic && accessController != null);
-            staticValueLabel.setVisible(isStatic);
-            staticValueField.setVisible(isStatic);
+            staticValueLabel.setText(isTemplate ? "Value template:" : "Static value:");
+            staticValueLabel.setVisible(isStatic || isTemplate);
+            staticValueField.setVisible(isStatic || isTemplate);
+            insertVariableButton.setVisible(isTemplate);
+            templateHelpLabel.setVisible(isTemplate);
         };
         sourceTypeCombo.addActionListener(e -> updateSourceFields.run());
         updateSourceFields.run();
@@ -416,9 +433,11 @@ public final class RuleEditorDialog extends JDialog {
                 {"Preview:", previewLabel},
                 {"", saveToProfileButton},
                 {staticValueLabel, staticValueField},
+                {"", insertVariableButton},
+                {"", templateHelpLabel},
                 {"Write strategy:", strategyCombo},
                 {"Transforms (one per line):", new JScrollPane(transformsArea)},
-                {"", new JLabel("Applied to the resolved value before injection")},
+                {"", ValueTransformHelp.controls(transformsArea)},
                 {"", errorLabel}
         });
 
@@ -477,31 +496,37 @@ public final class RuleEditorDialog extends JDialog {
                 return;
             }
 
-            boolean isStatic = srcType == InjectRule.ValueSourceType.STATIC;
-            String sourceKey = isStatic ? "" : selectedVariableKey(sourceKeyCombo);
-            String staticVal = isStatic ? staticValueField.getText() : "";
+            boolean isVariable = srcType == InjectRule.ValueSourceType.VARIABLE;
+            String sourceKey = isVariable ? selectedVariableKey(sourceKeyCombo) : "";
+            String staticVal = isVariable ? "" : staticValueField.getText();
 
-            if (!isStatic && sourceKey.isEmpty()) {
+            if (isVariable && sourceKey.isEmpty()) {
                 errorLabel.setText("Variable key must not be empty.");
                 return;
             }
-            if (!isStatic && sourceKey.chars().anyMatch(Character::isWhitespace)) {
+            if (isVariable && sourceKey.chars().anyMatch(Character::isWhitespace)) {
                 errorLabel.setText("Variable key must not contain whitespace.");
                 return;
             }
 
             String id = existing != null ? existing.id() : UUID.randomUUID().toString();
-            InjectRule saved = new InjectRule(
-                    id,
-                    name,
-                    enabledBox.isSelected(),
-                    target,
-                    selector,
-                    srcType,
-                    sourceKey,
-                    staticVal,
-                    (InjectRule.WriteStrategy) strategyCombo.getSelectedItem(),
-                    transformLines(transformsArea.getText()));
+            InjectRule saved;
+            try {
+                saved = new InjectRule(
+                        id,
+                        name,
+                        enabledBox.isSelected(),
+                        target,
+                        selector,
+                        srcType,
+                        sourceKey,
+                        staticVal,
+                        (InjectRule.WriteStrategy) strategyCombo.getSelectedItem(),
+                        transformLines(transformsArea.getText()));
+            } catch (IllegalArgumentException exception) {
+                errorLabel.setText(exception.getMessage());
+                return;
+            }
             onSave.accept(saved);
             closeDialog(okButton);
         });
@@ -843,7 +868,7 @@ public final class RuleEditorDialog extends JDialog {
         return new HttpMessageSnapshot(lines.length == 0 ? "" : lines[0], headers, body);
     }
 
-    private static List<String> transformLines(String text) {
+    static List<String> transformLines(String text) {
         return text == null ? List.of() : text.lines().map(String::stripLeading)
                 .filter(line -> !line.isEmpty()).toList();
     }

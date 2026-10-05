@@ -2,6 +2,7 @@ package dev.nquangit.corestra.integration;
 
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import dev.nquangit.corestra.persistence.HttpSendMode;
 
 import java.util.Objects;
 
@@ -29,6 +30,12 @@ public final class ActorIsolatedHttpClient implements HttpClient {
      */
     @Override
     public HttpResponse send(HttpRequest request) {
-        return delegate.send(request);
+        return send(request, null);
+    }
+
+    /** Preserves a request-specific transport override through this decoration. */
+    @Override
+    public HttpResponse send(HttpRequest request, HttpSendMode sendModeOverride) {
+        return delegate.send(request, sendModeOverride);
     }
 }

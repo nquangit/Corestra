@@ -4,6 +4,7 @@ import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.flow.rule.InjectValueTemplate;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -54,6 +55,15 @@ public final class AuthFlowVariableMigrator {
         for (FlowStep step : flow.steps()) {
             List<InjectRule> injectRules = new ArrayList<>();
             for (InjectRule rule : step.injectRules()) {
+                if (rule.valueSourceType() == InjectRule.ValueSourceType.TEMPLATE
+                        && rule.referencedVariableKeys().stream().anyMatch(availableRenames::containsKey)) {
+                    injectRules.add(new InjectRule(
+                            rule.id(), rule.name(), rule.enabled(), rule.target(), rule.targetSelector(),
+                            rule.valueSourceType(), "", InjectValueTemplate.rename(rule.staticValue(), availableRenames),
+                            rule.writeStrategy(), rule.transformChain()));
+                    renamedReferences++;
+                    continue;
+                }
                 String replacement = rule.valueSourceType() == InjectRule.ValueSourceType.VARIABLE
                         ? availableRenames.get(rule.valueSourceKey())
                         : null;
@@ -81,7 +91,7 @@ public final class AuthFlowVariableMigrator {
             migratedSteps.add(new FlowStep(
                     step.id(), step.name(), step.enabled(), step.notes(), step.requestTemplate(),
                     extractRules, injectRules, step.preconditions(), step.errorStrategy(), step.lastResponseRaw(),
-                    step.triggerRule(), step.includeInAggregation(), step.conditionActionRules()));
+                    step.triggerRule(), step.includeInAggregation(), step.conditionActionRules(), step.sendModeOverride()));
         }
 
         FlowDefinition migrated = new FlowDefinition(
