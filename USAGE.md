@@ -4,7 +4,7 @@ Corestra is a Burp Suite extension for building reusable request flows and acces
 
 This guide explains how to install the extension, configure flows, build Access Testing artifacts, run tests safely, and export evidence.
 
-For a complete actor-authentication walkthrough, see [Access Testing setup](guides/ACCESS_TESTING.md). Ready-to-copy cookie, bearer, CSRF, API-key, refresh, and anonymous-user configurations are in [Auth recipes](guides/AUTH_RECIPES.md).
+For step-by-step instructions covering every Access Testing tab, Data Profiles, request selection and Matrix runs, start with [Access Testing: basic to advanced](guides/ACCESS_TESTING.md). Detailed companion guides cover [authentication and actors](guides/ACCESS_AUTH_SETUP.md), [Flow Targets and selecting the request to evaluate](guides/ACCESS_FLOW_TARGETS.md), and [setup, post-checks, teardown, masking, race and imports](guides/ACCESS_ADVANCED.md). Ready-to-copy cookie, bearer, CSRF, API-key, refresh, and anonymous-user configurations are in [Auth recipes](guides/AUTH_RECIPES.md).
 
 ## 1. Prerequisites
 
@@ -412,6 +412,7 @@ Use setup config:
 
 - `NONE`: no setup.
 - `RUN_PREFIX`: run steps before the target step.
+- `RUN_SETUP_FLOW`: run a separate setup flow.
 - `REUSE_SCENARIO`: reuse an existing Scenario Instance.
 
 Use **Suggest Setup from Flow** when a target uses `scenario.*` variables. Corestra can inspect flow dependencies and suggest a prefix setup when earlier steps produce the required variables.
