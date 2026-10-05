@@ -25,6 +25,29 @@ class AuthProviderRequestApplierTest {
             new TemplateRenderer(new VariableResolver(key -> Optional.empty())));
 
     @Test
+    void queryOverridePreservesEveryUntouchedRawParameter() {
+        String raw = "path=/login.php&escaped=%2f%20&dup=1&dup=2&flag&broken=%XX&&";
+        StoredRequestTemplate request = request(List.of("X-Test: unchanged"), "/accounts?access_token=old&" + raw, "body");
+        AuthProvider provider = provider(rule(AuthInjectionLocation.QUERY, "access_token",
+                "{{auth.accessToken}}", AuthInjectionMode.OVERRIDE));
+        var result = applier.apply(request, provider, store(), RenderMode.STRICT);
+        assertEquals("/accounts?access_token=token-abc&" + raw, result.request().pathAndQuery());
+        assertEquals(request.headerLines(), result.request().headerLines());
+        assertEquals(request.body(), result.request().body());
+    }
+
+    @Test
+    void queryAppendAndSkipPreserveExistingEncodedOccurrences() {
+        StoredRequestTemplate request = request(List.of(), "/accounts?access%5ftoken=old&path=/login.php", "");
+        for (AuthInjectionMode mode : List.of(AuthInjectionMode.APPEND, AuthInjectionMode.SKIP_IF_PRESENT)) {
+            var result = applier.apply(request, provider(rule(AuthInjectionLocation.QUERY, "access_token",
+                    "{{auth.accessToken}}", mode)), store(), RenderMode.STRICT);
+            assertEquals(request.pathAndQuery() + (mode == AuthInjectionMode.APPEND ? "&access_token=token-abc" : ""),
+                    result.request().pathAndQuery());
+        }
+    }
+
+    @Test
     void appliesHeaderOverrideWithRenderedValue() {
         StoredRequestTemplate request = request(List.of("Authorization: Bearer old"), "/accounts", "");
         AuthProvider provider = provider(rule(

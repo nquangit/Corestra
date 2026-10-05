@@ -9,10 +9,9 @@ import dev.nquangit.corestra.access.variable.RenderResult;
 import dev.nquangit.corestra.access.variable.ScopedVariableStore;
 import dev.nquangit.corestra.access.variable.TemplateRenderer;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
+import dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy;
+import dev.nquangit.corestra.http.inject.QueryParameterInjector;
 
-import java.net.URLDecoder;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +20,7 @@ import java.util.Objects;
 
 final class AuthProviderRequestApplier {
     private final TemplateRenderer templateRenderer;
+    private final QueryParameterInjector queryParameterInjector = new QueryParameterInjector();
 
     AuthProviderRequestApplier(TemplateRenderer templateRenderer) {
         this.templateRenderer = Objects.requireNonNull(templateRenderer, "templateRenderer");
@@ -131,25 +131,23 @@ final class AuthProviderRequestApplier {
             String name,
             String value,
             AuthInjectionMode mode) {
-        String target = request.pathAndQuery();
-        int queryStart = target.indexOf('?');
-        String path = queryStart >= 0 ? target.substring(0, queryStart) : target;
-        String query = queryStart >= 0 ? target.substring(queryStart + 1) : "";
-        LinkedHashMap<String, String> parameters = parseQuery(query);
-        boolean present = parameters.containsKey(name);
         AuthInjectionMode writeMode = Objects.requireNonNullElse(mode, AuthInjectionMode.OVERRIDE);
-        if (writeMode == AuthInjectionMode.SKIP_IF_PRESENT && present) {
+        WriteStrategy strategy = switch (writeMode) {
+            case OVERRIDE -> WriteStrategy.OVERWRITE;
+            case APPEND -> WriteStrategy.APPEND;
+            case SKIP_IF_PRESENT -> WriteStrategy.SKIP_IF_PRESENT;
+        };
+        QueryParameterInjector.InjectionOutcome outcome = queryParameterInjector.inject(
+                request.pathAndQuery(), name, value, strategy);
+        if (outcome.skipped()) {
             return request;
         }
-        parameters.put(name, value);
-        String renderedQuery = buildQuery(parameters);
-        String pathAndQuery = renderedQuery.isEmpty() ? path : path + "?" + renderedQuery;
         return new StoredRequestTemplate(
                 request.method(),
                 request.scheme(),
                 request.host(),
                 request.port(),
-                pathAndQuery,
+                outcome.target(),
                 request.headerLines(),
                 request.body());
     }
@@ -202,43 +200,6 @@ final class AuthProviderRequestApplier {
         List<String> parts = new ArrayList<>();
         cookies.forEach((key, value) -> parts.add(key + "=" + value));
         return String.join("; ", parts);
-    }
-
-    private LinkedHashMap<String, String> parseQuery(String query) {
-        LinkedHashMap<String, String> parameters = new LinkedHashMap<>();
-        if (query == null || query.isBlank()) {
-            return parameters;
-        }
-        for (String pair : query.split("&")) {
-            if (pair.isEmpty()) {
-                continue;
-            }
-            int equalsIndex = pair.indexOf('=');
-            if (equalsIndex < 0) {
-                parameters.put(decode(pair), "");
-            } else {
-                parameters.put(decode(pair.substring(0, equalsIndex)), decode(pair.substring(equalsIndex + 1)));
-            }
-        }
-        return parameters;
-    }
-
-    private String buildQuery(LinkedHashMap<String, String> parameters) {
-        List<String> parts = new ArrayList<>();
-        parameters.forEach((key, value) -> parts.add(encode(key) + "=" + encode(value)));
-        return String.join("&", parts);
-    }
-
-    private String decode(String value) {
-        try {
-            return URLDecoder.decode(value, StandardCharsets.UTF_8);
-        } catch (IllegalArgumentException ignored) {
-            return value;
-        }
-    }
-
-    private String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     private StoredRequestTemplate copyWithHeaders(StoredRequestTemplate request, List<String> headers) {

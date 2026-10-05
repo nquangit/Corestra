@@ -38,6 +38,7 @@ public final class InjectionService {
     private final CookieInjector cookieInjector;
     private final JsonBodyInjector jsonBodyInjector;
     private final RegexBodyInjector regexBodyInjector;
+    private final QueryParameterInjector queryParameterInjector = new QueryParameterInjector();
     private final ValueTransformService transformService;
 
     /**
@@ -193,55 +194,17 @@ public final class InjectionService {
         String target = parts[1];
         String version = parts.length > 2 ? parts[2] : "";
 
-        int queryStart = target.indexOf('?');
-        String path = queryStart >= 0 ? target.substring(0, queryStart) : target;
-        String queryString = queryStart >= 0 ? target.substring(queryStart + 1) : "";
-
-        Map<String, String> params = parseQueryString(queryString);
-        boolean present = params.containsKey(paramName);
-
-        if (strategy == WriteStrategy.SKIP_IF_PRESENT && present) {
+        QueryParameterInjector.InjectionOutcome outcome = queryParameterInjector.inject(target, paramName, value, strategy);
+        if (outcome.skipped()) {
             diagnostics.add("Rule '" + ruleName + "': skipped query parameter '" + paramName + "' — already present (SKIP_IF_PRESENT strategy)");
             return requestLine;
         }
 
-        if (strategy == WriteStrategy.APPEND || strategy == WriteStrategy.OVERWRITE || !present) {
-            params.put(paramName, value);
-        }
-
-        String newQuery = buildQueryString(params);
-        String newTarget = newQuery.isEmpty() ? path : path + "?" + newQuery;
+        String newTarget = outcome.target();
         String newRequestLine = version.isEmpty() ? method + " " + newTarget : method + " " + newTarget + " " + version;
 
         diagnostics.add("Rule '" + ruleName + "': injected query parameter '" + paramName + "'");
         return newRequestLine;
-    }
-
-    private Map<String, String> parseQueryString(String queryString) {
-        Map<String, String> params = new LinkedHashMap<>();
-        if (queryString == null || queryString.isBlank()) {
-            return params;
-        }
-        for (String pair : queryString.split("&")) {
-            int eq = pair.indexOf('=');
-            if (eq < 0) {
-                params.put(decode(pair), "");
-            } else {
-                params.put(decode(pair.substring(0, eq)), decode(pair.substring(eq + 1)));
-            }
-        }
-        return params;
-    }
-
-    private String buildQueryString(Map<String, String> params) {
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, String> entry : params.entrySet()) {
-            if (!sb.isEmpty()) {
-                sb.append('&');
-            }
-            sb.append(encode(entry.getKey())).append('=').append(encode(entry.getValue()));
-        }
-        return sb.toString();
     }
 
     private String decode(String s) {

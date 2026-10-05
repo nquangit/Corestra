@@ -110,7 +110,7 @@ HEADER / Authorization / Basic {{auth.basicCredential}} / OVERRIDE
 QUERY / access_token / {{auth.accessToken}} / OVERRIDE
 ```
 
-Query injection URL-encode tên và giá trị. Không đặt dấu `?` hoặc `=` trong Target.
+Query injection chỉ URL-encode giá trị mới ghi và tên khi thêm param mới, giữ nguyên các param khác (ví dụ `path=/login.php`). `OVERRIDE` thay giá trị của mọi param trùng tên tại vị trí cũ; `APPEND` thêm một param cùng tên; `SKIP_IF_PRESENT` giữ nguyên request nếu đã có tên đó. Không đặt dấu `?` hoặc `=` trong Target.
 
 ## 8. Device ID, nonce hoặc hash trong login
 

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.time.Clock;
 import java.util.concurrent.atomic.AtomicReference;
 import dev.nquangit.corestra.persistence.HttpSendMode;
@@ -37,6 +38,23 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 @ResourceLock("MontoyaObjectFactory")
 class HttpRequestMutationAdapterTest {
     private MontoyaObjectFactory previousFactory;
+
+    @Test
+    void queryInjectionReachesNativeMutationWithoutReencodingOtherParameters() {
+        String path = "/api?param1=replace_me&path=/login.php&dup=1&dup=2&escaped=%2f%20";
+        HttpRequest original = request(new RequestState("POST", path, "HTTP/2", "binary\u0000body",
+                List.of(header("Host", "example.test"))));
+        InjectRule rule = new InjectRule("query", "Query", true, InjectRule.Target.REQUEST_QUERY_PARAMETER,
+                "param1", InjectRule.ValueSourceType.VARIABLE, "X", "", InjectRule.WriteStrategy.OVERWRITE);
+        var mutation = new InjectionService().apply(List.of(rule), Map.of("X", "new/value"),
+                new InjectionService.MutableHttpRequest("POST " + path + " HTTP/2", List.of("Host: example.test"),
+                        original.bodyToString()));
+        HttpRequest updated = HttpRequestMutationAdapter.apply(original, mutation);
+        assertEquals("/api?param1=new%2Fvalue&path=/login.php&dup=1&dup=2&escaped=%2f%20", updated.path());
+        assertEquals("binary\u0000body", updated.bodyToString());
+        assertEquals("HTTP/2", updated.httpVersion());
+        assertEquals("example.test", updated.headerValue("Host"));
+    }
 
     @Test
     void sessionInjectionForwardsOverrideWithTheMutatedRequestAndReleasesGuard() {

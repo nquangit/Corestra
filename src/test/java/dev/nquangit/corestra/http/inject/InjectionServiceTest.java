@@ -280,6 +280,73 @@ class InjectionServiceTest {
     class QueryParamInjection {
 
         @Test
+        void literalPlusInSelectedNameDoesNotMatchSpaceEncodedAsPlus() {
+            InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "a+b", "X", WriteStrategy.OVERWRITE);
+            var result = service.apply(List.of(r), Map.of(), request(
+                    "GET /api?a+b=space&a%2Bb=literal&path=/login.php HTTP/1.1", List.of(), ""));
+            assertEquals("GET /api?a+b=space&a%2Bb=X&path=/login.php HTTP/1.1", result.requestLine());
+        }
+
+        @Test
+        void consecutiveQueryRulesPreserveUnrelatedValuesAndEncodeUnicodeOnlyInInjectedValues() {
+            InjectRule first = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "one", "a/b", WriteStrategy.OVERWRITE);
+            InjectRule second = staticRule("r2", Target.REQUEST_QUERY_PARAMETER, "two", "Việt", WriteStrategy.OVERWRITE);
+            var result = service.apply(List.of(first, second), Map.of(), request(
+                    "GET /api?one=old&path=/login.php&two=old&escape=%2f%20 HTTP/1.1", List.of(), ""));
+            assertEquals("GET /api?one=a%2Fb&path=/login.php&two=Vi%E1%BB%87t&escape=%2f%20 HTTP/1.1",
+                    result.requestLine());
+        }
+
+        @Test
+        void overwritingOneParameterPreservesOtherRawValues() {
+            InjectRule r = variableRule("r1", Target.REQUEST_QUERY_PARAMETER, "param1", "X", WriteStrategy.OVERWRITE);
+            var result = service.apply(List.of(r), Map.of("X", "new/value &+"),
+                    request("GET /api?param1=replace_me&path=/login.php HTTP/1.1", List.of(), ""));
+            assertEquals("GET /api?param1=new%2Fvalue+%26%2B&path=/login.php HTTP/1.1", result.requestLine());
+        }
+
+        @Test
+        void preservesUntouchedEscapesDuplicatesFlagsAndEmptyPairs() {
+            InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "param1", "X", WriteStrategy.OVERWRITE);
+            String raw = "path=/login.php&esc=%2f%2F%20&plus=a+b&literal=a/b:c?d=e&dup=1&dup=2&flag&empty=&bad=%ZZ&&";
+            var result = service.apply(List.of(r), Map.of(),
+                    request("POST /api?param1=replace_me&" + raw + " HTTP/2", List.of(), ""));
+            assertEquals("POST /api?param1=X&" + raw + " HTTP/2", result.requestLine());
+        }
+
+        @Test
+        void matchesEncodedNamesAndOverwritesEveryOccurrenceWithoutCollapsingOtherDuplicates() {
+            InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "param1", "X", WriteStrategy.OVERWRITE);
+            var result = service.apply(List.of(r), Map.of(), request(
+                    "GET /api?param%31=old&dup=1&param1=older&dup=2&path=/login.php HTTP/1.1", List.of(), ""));
+            assertEquals("GET /api?param%31=X&dup=1&param1=X&dup=2&path=/login.php HTTP/1.1", result.requestLine());
+        }
+
+        @Test
+        void appendKeepsExistingOccurrencesAndOnlyEncodesNewPair() {
+            InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "tag", "new/value", WriteStrategy.APPEND);
+            var result = service.apply(List.of(r), Map.of(),
+                    request("GET /api?tag=old&path=/login.php HTTP/1.1", List.of(), ""));
+            assertEquals("GET /api?tag=old&path=/login.php&tag=new%2Fvalue HTTP/1.1", result.requestLine());
+        }
+
+        @Test
+        void skipMatchesEncodedNameWithoutNormalizingAnything() {
+            InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "param1", "X", WriteStrategy.SKIP_IF_PRESENT);
+            String original = "GET /api?param%31&path=/login.php&invalid%ZZ=bad% HTTP/1.1";
+            assertEquals(original, service.apply(List.of(r), Map.of(), request(original, List.of(), "")).requestLine());
+        }
+
+        @Test
+        void addingMissingParameterPreservesMalformedAndEmptyQuerySegments() {
+            InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "token name", "a&b=+", WriteStrategy.OVERWRITE);
+            var result = service.apply(List.of(r), Map.of(), request(
+                    "GET https://example.test/api?path=/login.php&broken%ZZ=raw%&flag&& HTTP/1.1", List.of(), ""));
+            assertEquals("GET https://example.test/api?path=/login.php&broken%ZZ=raw%&flag&&&token+name=a%26b%3D%2B HTTP/1.1",
+                    result.requestLine());
+        }
+
+        @Test
         void injectsQueryParamIntoRequestLine() {
             InjectRule r = staticRule("r1", Target.REQUEST_QUERY_PARAMETER, "token", "abc", WriteStrategy.OVERWRITE);
             InjectionService.MutableHttpRequest req = request("GET /search HTTP/1.1", List.of(), "");
