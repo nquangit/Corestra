@@ -57,6 +57,14 @@ public final class ExtractionService {
                     "No " + rule.sourceSide().name().toLowerCase() + " message available");
         }
 
+        if (rule.extractorType() == ExtractRule.ExtractorType.BODY_RAW) {
+            byte[] bytes = snapshot.bodyBytes();
+            if (bytes == null) {
+                return ExtractionResult.failure(rule.targetVariableName(), "Raw body bytes are unavailable");
+            }
+            return transformedResult(rule, transformService.applyBytes(bytes, rule.transformChain()));
+        }
+
         ExtractionResult extracted;
         if (rule.extractorType() == ExtractRule.ExtractorType.REGEX) {
             RegexConfiguration regex = resolveRegexConfiguration(rule);
@@ -177,6 +185,10 @@ public final class ExtractionService {
             return extracted;
         }
         ValueTransformResult transformed = transformService.apply(extracted.value(), rule.transformChain());
+        return transformedResult(rule, transformed);
+    }
+
+    private ExtractionResult transformedResult(ExtractRule rule, ValueTransformResult transformed) {
         if (!transformed.success()) {
             return ExtractionResult.failure(rule.targetVariableName(), transformed.error());
         }

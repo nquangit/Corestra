@@ -15,7 +15,6 @@ import dev.nquangit.corestra.session.SessionProfileChangeType;
 import dev.nquangit.corestra.session.SessionProfile;
 import dev.nquangit.corestra.session.SessionSchedulerConfig;
 import dev.nquangit.corestra.session.SessionScope;
-import dev.nquangit.corestra.session.SessionScopeCriterion;
 import dev.nquangit.corestra.session.SessionScopeMode;
 import dev.nquangit.corestra.session.SessionState;
 import dev.nquangit.corestra.ui.component.StyledButton;
@@ -95,7 +94,8 @@ public final class SessionHandlerPanel extends JPanel {
     private final JTextField schedulerIntervalField = new JTextField();
     private final JCheckBox schedulerStartupCheck = new JCheckBox("Run at startup");
     private final JCheckBox revealStateCheck = new JCheckBox("Reveal values");
-    private final DefaultTableModel criteriaModel = editableModel("Type", "Selector", "Pattern");
+    private final SessionScopeTableModel criteriaModel = new SessionScopeTableModel();
+    private final JLabel scopeLogicHint = new JLabel();
     private final DefaultTableModel injectionModel = editableModel(
             "Enabled", "Target", "Selector", "Value Template", "Write Strategy", "Transforms (→)", "Tools");
     private final DefaultTableModel extractionModel = editableModel(
@@ -103,6 +103,8 @@ public final class SessionHandlerPanel extends JPanel {
             "Target Key", "Transforms (→)", "Tools");
     private final DefaultTableModel stateModel = nonEditableModel("Key", "Value", "Updated");
     private final JTable criteriaTable = new JTable(criteriaModel);
+    private final SessionScopeEditorPanel scopeEditor = new SessionScopeEditorPanel(
+            criteriaModel, criteriaTable, this::changeScopeRows);
     private final JTable injectionTable = new JTable(injectionModel);
     private final JTable extractionTable = new JTable(extractionModel);
     private final JTable stateTable = new JTable(stateModel);
@@ -113,6 +115,7 @@ public final class SessionHandlerPanel extends JPanel {
     private final AtomicBoolean stateRefreshQueued = new AtomicBoolean();
     private JButton addCriterionButton;
     private JButton removeCriterionButton;
+    private JButton addScopeRuleButton;
     private boolean refreshing;
     private boolean saving;
     private String loadedProfileId = "";
@@ -160,7 +163,7 @@ public final class SessionHandlerPanel extends JPanel {
         extractionTable.getColumnModel().getColumn(1)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.SourceSide.values())));
         extractionTable.getColumnModel().getColumn(2)
-                .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.ExtractorType.values())));
+                .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.ExtractorType.selectableValues())));
         extractionTable.getColumnModel().getColumn(4)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(ExtractRule.RegexSource.values())));
         installToolEditor(injectionTable.getColumnModel().getColumn(INJECTION_TOOLS_COLUMN));
@@ -265,22 +268,51 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     private JPanel buildScopeTab() {
-        criteriaTable.setFillsViewportHeight(true);
-        addCriterionButton = StyledButton.primary("Add Criterion");
-        removeCriterionButton = StyledButton.neutral("Remove");
-        addCriterionButton.addActionListener(event -> criteriaModel.addRow(new Object[]{SessionCriterionType.HOST, "", ""}));
-        removeCriterionButton.addActionListener(event -> removeSelectedRow(criteriaTable, criteriaModel));
+        addCriterionButton = StyledButton.primary("Add condition");
+        addScopeRuleButton = StyledButton.primary("Add scope rule");
+        removeCriterionButton = StyledButton.neutral("Remove condition");
+        addScopeRuleButton.setToolTipText("Add another destination or request group; configure its HOST regex before enabling the profile");
+        addScopeRuleButton.addActionListener(event -> changeScopeRows(scopeEditor::addRule));
+        addCriterionButton.setToolTipText("Add a required condition to the group selected on the left");
+        addCriterionButton.addActionListener(event -> changeScopeRows(scopeEditor::addCondition));
+        removeCriterionButton.addActionListener(event -> changeScopeRows(scopeEditor::removeCondition));
 
         JPanel buttons = rowButtons(addCriterionButton, removeCriterionButton);
+        buttons.add(addScopeRuleButton, 0);
+        buttons.add(Box.createHorizontalStrut(6), 1);
         JPanel panel = new JPanel(new BorderLayout(0, 8));
         JPanel top = new JPanel(new BorderLayout(8, 0));
         top.add(new JLabel("Scope mode:"), BorderLayout.WEST);
         top.add(scopeModeCombo, BorderLayout.CENTER);
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        panel.add(top, BorderLayout.NORTH);
-        panel.add(new JScrollPane(criteriaTable), BorderLayout.CENTER);
+        JPanel guidance = new JPanel(new BorderLayout(0, 6));
+        guidance.add(top, BorderLayout.NORTH);
+        guidance.add(scopeLogicHint, BorderLayout.SOUTH);
+        updateScopeRuleChoices();
+        panel.add(guidance, BorderLayout.NORTH);
+        panel.add(scopeEditor, BorderLayout.CENTER);
         panel.add(buttons, BorderLayout.SOUTH);
         return panel;
+    }
+
+    private void changeScopeRows(Runnable mutation) {
+        stopEditing(criteriaTable);
+        boolean wasRefreshing = refreshing;
+        refreshing = true;
+        try {
+            mutation.run();
+            updateScopeRuleChoices();
+        } finally {
+            refreshing = wasRefreshing;
+        }
+        saveCurrentProfileFromUi();
+    }
+
+    private void updateScopeRuleChoices() {
+        scopeEditor.refresh();
+        scopeLogicHint.setText(scopeModeCombo.getSelectedItem() == SessionScopeMode.CUSTOM
+                ? "Choose a rule below to edit it. Shared conditions apply to every rule."
+                : "Uses Burp Target scope. Custom rules below are saved but do not apply in this mode.");
     }
 
     private JPanel buildRuleTab(JTable table, Runnable addAction, Runnable removeAction) {
@@ -373,7 +405,11 @@ public final class SessionHandlerPanel extends JPanel {
         schedulerIntervalField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
         schedulerStartupCheck.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
 
-        criteriaModel.addTableModelListener(event -> saveCurrentProfileFromUi());
+        criteriaModel.addTableModelListener(event -> {
+            if (refreshing) return;
+            updateScopeRuleChoices();
+            saveCurrentProfileFromUi();
+        });
         injectionModel.addTableModelListener(event -> saveCurrentProfileFromUi());
         extractionModel.addTableModelListener(event -> saveCurrentProfileFromUi());
     }
@@ -505,6 +541,9 @@ public final class SessionHandlerPanel extends JPanel {
         if (removeCriterionButton != null) {
             removeCriterionButton.setEnabled(customScope);
         }
+        if (addScopeRuleButton != null) addScopeRuleButton.setEnabled(customScope);
+        scopeEditor.setCustomEnabled(customScope);
+        updateScopeRuleChoices();
         criteriaTable.setToolTipText(customScope ? null : "Criteria are ignored while using Burp Target scope.");
     }
 
@@ -610,9 +649,9 @@ public final class SessionHandlerPanel extends JPanel {
     }
 
     private void fillCriteria(SessionProfile profile) {
-        criteriaModel.setRowCount(0);
-        profile.scope().criteria().forEach(criterion ->
-                criteriaModel.addRow(new Object[]{criterion.type(), criterion.selector(), criterion.pattern()}));
+        criteriaModel.load(profile.scope());
+        updateScopeRuleChoices();
+        scopeEditor.selectFirstRule();
     }
 
     private void fillInjectionRules(SessionProfile profile) {
@@ -754,18 +793,7 @@ public final class SessionHandlerPanel extends JPanel {
 
     private SessionScope readScope() {
         SessionScopeMode mode = (SessionScopeMode) scopeModeCombo.getSelectedItem();
-        return new SessionScope(mode == null ? SessionScopeMode.BURP_TARGET_SCOPE : mode, readCriteria());
-    }
-
-    private List<SessionScopeCriterion> readCriteria() {
-        ArrayList<SessionScopeCriterion> criteria = new ArrayList<>();
-        for (int row = 0; row < criteriaModel.getRowCount(); row++) {
-            criteria.add(new SessionScopeCriterion(
-                    enumValue(SessionCriterionType.class, valueAt(criteriaModel, row, 0), SessionCriterionType.HOST),
-                    valueAt(criteriaModel, row, 1),
-                    valueAt(criteriaModel, row, 2)));
-        }
-        return List.copyOf(criteria);
+        return criteriaModel.scope(mode == null ? SessionScopeMode.BURP_TARGET_SCOPE : mode);
     }
 
     private SessionAuthConfig readAuthConfig() {

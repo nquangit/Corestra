@@ -55,11 +55,12 @@ public final class ExtractRule {
         this.name = normalizeRequiredText(name, "name");
         this.enabled = enabled;
         this.sourceSide = Objects.requireNonNull(sourceSide, "sourceSide");
-        this.extractorType = Objects.requireNonNull(extractorType, "extractorType");
+        ExtractorType storedType = Objects.requireNonNull(extractorType, "extractorType");
+        this.extractorType = storedType.canonicalType();
         this.sourceSelector = normalizeOptionalText(sourceSelector);
         validateSourceSelector(this.extractorType, this.sourceSelector);
         this.targetVariableName = normalizeRequiredText(targetVariableName, "targetVariableName");
-        this.transformChain = normalizeStringList(transformChain);
+        this.transformChain = storedType.migrateTransforms(normalizeStringList(transformChain));
         this.regexSource = extractorType == ExtractorType.REGEX
                 ? Objects.requireNonNullElse(regexSource, RegexSource.BODY)
                 : RegexSource.BODY;
@@ -326,10 +327,40 @@ public final class ExtractRule {
          */
         BODY_TEXT,
 
+        /** Extracts the exact body bytes without encoding or charset conversion. */
+        BODY_RAW,
+
+        /**
+         * Compatibility token for previously saved rules; normalized to BODY_RAW plus base64Encode.
+         * @deprecated Use BODY_RAW and explicit transforms. Hidden from all rule editors.
+         */
+        @Deprecated
+        BODY_BASE64,
+
         /**
          * Extracts the response status code.
          */
-        STATUS_CODE
+        STATUS_CODE;
+
+        /** Returns types offered by rule editors, excluding legacy persistence tokens. */
+        public static ExtractorType[] selectableValues() {
+            return java.util.Arrays.stream(values()).filter(type -> type != BODY_BASE64)
+                    .toArray(ExtractorType[]::new);
+        }
+
+        /** Returns the runtime type for a persisted extractor token. */
+        public ExtractorType canonicalType() {
+            return this == BODY_BASE64 ? BODY_RAW : this;
+        }
+
+        /** Migrates an old implicit encoder to the equivalent explicit transform chain. */
+        public List<String> migrateTransforms(List<String> transforms) {
+            if (this != BODY_BASE64) return transforms;
+            List<String> migrated = new ArrayList<>();
+            migrated.add("base64Encode");
+            migrated.addAll(transforms);
+            return List.copyOf(migrated);
+        }
     }
 
     /**
@@ -377,7 +408,7 @@ public final class ExtractRule {
     private static boolean requiresSourceSelector(ExtractorType extractorType) {
         return switch (extractorType) {
             case HEADER, COOKIE, JSON_PATH, REGEX -> true;
-            case BODY_TEXT, STATUS_CODE -> false;
+            case BODY_TEXT, BODY_RAW, BODY_BASE64, STATUS_CODE -> false;
         };
     }
 

@@ -10,6 +10,7 @@ import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
+import dev.nquangit.corestra.integration.HttpBodyBytes;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
@@ -110,11 +111,12 @@ public class StepExecutor {
 
         // 3. Convert to Montoya HttpRequest and send
         HttpResponse response;
+        HttpRequest montoyaRequest;
         String receivedResponse;
         int statusCode;
 
         try {
-            HttpRequest montoyaRequest = buildMontoyaRequest(template, renderedRequestLine, renderedHeaders, renderedBody);
+            montoyaRequest = buildMontoyaRequest(template, renderedRequestLine, renderedHeaders, renderedBody);
             response = httpClient.send(montoyaRequest, step.sendModeOverride());
             receivedResponse = response.toString();
             statusCode = response.statusCode();
@@ -136,7 +138,7 @@ public class StepExecutor {
         HttpMessageSnapshot requestSnapshot = new HttpMessageSnapshot(
                 renderedRequestLine,
                 renderedHeaders,
-                renderedBody);
+                renderedBody, HttpBodyBytes.readForExtraction(montoyaRequest, step.extractRules(), ExtractRule.SourceSide.REQUEST));
 
         // 5. Build response snapshot
         String responseStatusLine = response.httpVersion() + " " + response.statusCode() + " " + response.reasonPhrase();
@@ -147,7 +149,7 @@ public class StepExecutor {
         HttpMessageSnapshot responseSnapshot = new HttpMessageSnapshot(
                 responseStatusLine,
                 responseHeaders,
-                responseBody);
+                responseBody, HttpBodyBytes.readForExtraction(response, step.extractRules(), ExtractRule.SourceSide.RESPONSE));
 
         // 6. Apply extract rules and collect extracted variables
         Map<String, String> extractedVariables = new LinkedHashMap<>();

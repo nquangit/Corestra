@@ -54,11 +54,12 @@ public final class SessionExtractionRule {
         this.id = normalizeRequiredText(id, "id");
         this.enabled = enabled;
         this.sourceSide = Objects.requireNonNullElse(sourceSide, ExtractRule.SourceSide.RESPONSE);
-        this.extractorType = Objects.requireNonNullElse(extractorType, ExtractRule.ExtractorType.HEADER);
+        ExtractRule.ExtractorType storedType = Objects.requireNonNullElse(extractorType, ExtractRule.ExtractorType.HEADER);
+        this.extractorType = storedType.canonicalType();
         this.sourceSelector = normalizeOptionalText(sourceSelector);
         this.targetKey = SessionState.normalizeSessionKey(targetKey);
         this.allowedToolTypes = normalizeToolTypes(allowedToolTypes);
-        this.transformChain = normalizeTransforms(transformChain);
+        this.transformChain = storedType.migrateTransforms(normalizeTransforms(transformChain));
         this.regexSource = this.extractorType == ExtractRule.ExtractorType.REGEX
                 ? Objects.requireNonNullElse(regexSource, ExtractRule.RegexSource.BODY)
                 : ExtractRule.RegexSource.BODY;

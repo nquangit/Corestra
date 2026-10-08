@@ -15,6 +15,7 @@ import java.util.Objects;
 public final class SessionScope {
     private final SessionScopeMode mode;
     private final List<SessionScopeCriterion> criteria;
+    private final List<SessionScopeRule> rules;
 
     /**
      * Creates a session scope.
@@ -22,12 +23,22 @@ public final class SessionScope {
      * @param mode scope mode
      * @param criteria custom scope criteria
      */
-    @JsonCreator
     public SessionScope(
-            @JsonProperty("mode") SessionScopeMode mode,
-            @JsonProperty("criteria") List<SessionScopeCriterion> criteria) {
+            SessionScopeMode mode, List<SessionScopeCriterion> criteria) {
+        this(mode, criteria, List.of());
+    }
+
+    /** Creates common AND criteria plus alternative OR rules; missing rules preserve legacy semantics. */
+    @JsonCreator
+    public SessionScope(@JsonProperty("mode") SessionScopeMode mode,
+                        @JsonProperty("criteria") List<SessionScopeCriterion> criteria,
+                        @JsonProperty("rules") List<SessionScopeRule> rules) {
         this.mode = Objects.requireNonNullElse(mode, SessionScopeMode.BURP_TARGET_SCOPE);
         this.criteria = copyCriteria(criteria);
+        this.rules = List.copyOf(Objects.requireNonNullElse(rules, List.of()));
+        if (this.rules.stream().map(SessionScopeRule::name).distinct().count() != this.rules.size()) {
+            throw new IllegalArgumentException("Scope rule names must be unique");
+        }
     }
 
     /**
@@ -59,12 +70,25 @@ public final class SessionScope {
     }
 
     /**
-     * Returns immutable custom criteria.
+     * Returns immutable common custom criteria, ANDed before alternative scope rules.
      *
      * @return criteria
      */
     public List<SessionScopeCriterion> criteria() {
         return criteria;
+    }
+
+    /** Returns immutable alternative scope rules, ORed after the common criteria. */
+    public List<SessionScopeRule> rules() {
+        return rules;
+    }
+
+    /** Matches common criteria AND at least one rule; legacy scopes without rules remain an AND list. */
+    public boolean matches(SessionTrafficContext context) {
+        Objects.requireNonNull(context, "context");
+        if (mode == SessionScopeMode.BURP_TARGET_SCOPE) return context.burpInScope();
+        if (!criteria.stream().allMatch(criterion -> criterion.matches(context))) return false;
+        return rules.isEmpty() || rules.stream().anyMatch(rule -> rule.matches(context));
     }
 
     /**
@@ -79,15 +103,7 @@ public final class SessionScope {
      * @return true when in scope
      */
     public boolean matches(boolean burpInScope, String method, String host, String path, List<String> headers, String body) {
-        if (mode == SessionScopeMode.BURP_TARGET_SCOPE) {
-            return burpInScope;
-        }
-        for (SessionScopeCriterion criterion : criteria) {
-            if (!criterion.matches(method, host, path, headers, body)) {
-                return false;
-            }
-        }
-        return true;
+        return matches(new SessionTrafficContext("", burpInScope, method, host, path, headers, body));
     }
 
     /**
@@ -104,7 +120,7 @@ public final class SessionScope {
         if (!(other instanceof SessionScope that)) {
             return false;
         }
-        return mode == that.mode && Objects.equals(criteria, that.criteria);
+        return mode == that.mode && Objects.equals(criteria, that.criteria) && Objects.equals(rules, that.rules);
     }
 
     /**
@@ -114,7 +130,7 @@ public final class SessionScope {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(mode, criteria);
+        return Objects.hash(mode, criteria, rules);
     }
 
     private static List<SessionScopeCriterion> copyCriteria(List<SessionScopeCriterion> criteria) {

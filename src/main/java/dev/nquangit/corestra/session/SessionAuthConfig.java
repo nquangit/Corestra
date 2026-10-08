@@ -81,12 +81,12 @@ public final class SessionAuthConfig {
      * @return true when allowed
      */
     public boolean matchesTrigger(String method, String host, String path, List<String> headers, String body) {
-        for (SessionScopeCriterion criterion : triggerCriteria) {
-            if (!criterion.matches(method, host, path, headers, body)) {
-                return false;
-            }
-        }
-        return true;
+        return matchesTrigger(new SessionTrafficContext("", false, method, host, path, headers, body));
+    }
+
+    /** Checks trigger criteria against complete request metadata, including port/protocol. */
+    public boolean matchesTrigger(SessionTrafficContext context) {
+        return triggerCriteria.stream().allMatch(criterion -> criterion.matches(context));
     }
 
     /**

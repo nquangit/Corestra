@@ -3,9 +3,11 @@ package dev.nquangit.corestra.session;
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -17,6 +19,8 @@ public final class SessionScopeCriterion {
     private final SessionCriterionType type;
     private final String selector;
     private final String pattern;
+    @JsonIgnore private final Pattern compiledPattern;
+    @JsonIgnore private final String validationError;
 
     /**
      * Creates a session scope criterion.
@@ -33,6 +37,18 @@ public final class SessionScopeCriterion {
         this.type = Objects.requireNonNullElse(type, SessionCriterionType.HOST);
         this.selector = normalizeOptionalText(selector);
         this.pattern = normalizeOptionalText(pattern);
+        Pattern compiled = null;
+        String error = "";
+        try {
+            compiled = Pattern.compile(this.pattern);
+        } catch (PatternSyntaxException exception) {
+            error = "Invalid regex: " + exception.getDescription();
+        }
+        if (this.type == SessionCriterionType.HEADER && this.selector.isBlank()) {
+            error = "HEADER requires a header name in Selector";
+        }
+        this.compiledPattern = compiled;
+        this.validationError = error;
     }
 
     /**
@@ -73,21 +89,28 @@ public final class SessionScopeCriterion {
      * @return true when matched
      */
     public boolean matches(String method, String host, String path, List<String> headers, String body) {
+        return matches(new SessionTrafficContext("", false, method, host, path, headers, body));
+    }
+
+    /** Returns a static configuration error without making old malformed criteria broaden scope. */
+    @JsonIgnore
+    public Optional<String> validationError() {
+        return validationError.isEmpty() ? Optional.empty() : Optional.of(validationError);
+    }
+
+    /** Matches full request attributes, requiring header presence and known port/protocol metadata. */
+    public boolean matches(SessionTrafficContext context) {
+        if (!validationError.isEmpty()) return false;
         String value = switch (type) {
-            case METHOD -> Objects.requireNonNullElse(method, "");
-            case HOST -> Objects.requireNonNullElse(host, "");
-            case PATH -> Objects.requireNonNullElse(path, "");
-            case HEADER -> headerValue(headers, selector);
-            case BODY -> Objects.requireNonNullElse(body, "");
+            case METHOD -> context.method();
+            case HOST -> context.host();
+            case PORT -> context.port() == 0 ? null : Integer.toString(context.port());
+            case PROTOCOL -> context.scheme().isBlank() ? null : context.scheme();
+            case PATH -> context.path();
+            case HEADER -> headerValue(context.headers(), selector);
+            case BODY -> context.body();
         };
-        if (pattern.isBlank()) {
-            return true;
-        }
-        try {
-            return Pattern.compile(pattern).matcher(value).find();
-        } catch (PatternSyntaxException ignored) {
-            return false;
-        }
+        return value != null && (pattern.isBlank() || compiledPattern.matcher(value).find());
     }
 
     /**
@@ -121,7 +144,7 @@ public final class SessionScopeCriterion {
 
     private static String headerValue(List<String> headers, String name) {
         if (headers == null || name == null || name.isBlank()) {
-            return "";
+            return null;
         }
         String expected = name.strip();
         for (String header : headers) {
@@ -136,7 +159,7 @@ public final class SessionScopeCriterion {
                 return header.substring(colon + 1).strip();
             }
         }
-        return "";
+        return null;
     }
 
     private static String normalizeOptionalText(String value) {

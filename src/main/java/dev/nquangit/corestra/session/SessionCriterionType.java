@@ -14,6 +14,12 @@ public enum SessionCriterionType {
      */
     HOST,
 
+    /** Matches the actual destination service port. */
+    PORT,
+
+    /** Matches the request transport scheme, http or https. */
+    PROTOCOL,
+
     /**
      * Matches the request path without query string.
      */

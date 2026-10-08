@@ -44,6 +44,8 @@ Placeholder trống, thiếu dấu đóng, dấu đóng dư hoặc lồng nhau b
 - **Extract Rule**: đọc dữ liệu → chạy từng transform → lưu vào biến.
 - **Inject Rule**: lấy giá trị từ VARIABLE/STATIC/TEMPLATE → chạy từng transform → ghi vào request.
 
+Đối với ảnh/file binary, chọn **BODY_RAW** để lấy nguyên byte, sau đó thêm các transform theo từng bước. Ví dụ PNG: `base64Encode` → `prefix:data:image/png;base64,`. Extractor không encode sẵn. `base64Encode` dùng byte gốc nếu đầu vào là raw, hoặc byte UTF-8 nếu đầu vào là text. `BODY_TEXT` rồi `base64Encode` chỉ phù hợp với text, không bảo đảm giữ nguyên binary. Xem [hướng dẫn raw body và chuỗi transform](BINARY_BODY.md).
+
 Mỗi dòng là một operation, chạy từ trên xuống. Transforms của inject áp dụng lên **toàn bộ giá trị sau render**, không áp dụng riêng từng placeholder.
 
 Ví dụ giữ token thuần trong Auth State và chỉ thêm Bearer tại inject:
@@ -56,6 +58,10 @@ Transforms: prefix:Bearer <một dấu cách cuối dòng>
 
 Phần `<một dấu cách cuối dòng>` ở trên là chú thích; không nhập nguyên văn. Nhấn **Add Bearer prefix** để chèn đúng `prefix:Bearer `, gồm dấu cách cuối dòng. Cách TEMPLATE ở phần 1 dễ nhìn hơn cho trường hợp này.
 
+Raw bytes được giữ trong chuỗi transform đến khi chuyển sang text bằng `base64Encode`, `hexEncode` hoặc `decodeText[:CHARSET]`. Trước bước đó, `substring` cắt theo **vị trí byte**; sau bước đó, nó cắt theo vị trí trong chuỗi Java. Các phép text như `trim`, `prefix`, `replaceRegex` phải đặt sau conversion. `decodeText` mặc định dùng UTF-8, hoặc charset được chỉ định như `decodeText:ISO-8859-1`; dữ liệu không hợp lệ báo lỗi, không tự thay byte bằng ký tự `�`.
+
+Biến execution hiện lưu chuỗi. Vì vậy `BODY_RAW` không có conversion cuối cùng sẽ báo lỗi; Corestra không giả lập binary bằng một chuỗi text. Extract Rule editor kiểm tra thứ tự kiểu dữ liệu trước khi lưu; độ dài và nội dung thực tế được kiểm tra lúc chạy/test.
+
 ## 4. Danh sách cú pháp đầy đủ
 
 Tên operation không phân biệt hoa/thường. Các đối số là văn bản nguyên dạng, không đặt trong dấu nháy.
@@ -67,8 +73,10 @@ Tên operation không phân biệt hoa/thường. Các đối số là văn bả
 | `uppercase` hoặc `upper` | Chuyển chữ hoa | `AbC` → `ABC` |
 | `urlEncode` | UTF-8, kiểu form URL encoding | `a b+c` → `a+b%2Bc` |
 | `urlDecode` | Giải mã kiểu form; `+` thành dấu cách | `a+b%2Bc` → `a b+c` |
-| `base64Encode` | Encode text UTF-8 bằng Base64 chuẩn | `abc` → `YWJj` |
+| `base64Encode` | Raw bytes → Base64 chuẩn; text được encode bằng UTF-8 | `abc` → `YWJj` |
 | `base64Decode` | Decode Base64 chuẩn thành text UTF-8 | `YWJj` → `abc` |
+| `hexEncode` | Raw bytes → hex; text dùng UTF-8 | bytes `00 ff` → `00ff` |
+| `decodeText[:CHARSET]` | Raw bytes → text theo charset, mặc định UTF-8, strict | bytes `61 62 63` → `abc` |
 | `substring:START` | Lấy từ vị trí START đến hết | `substring:2` trên `abcdef` → `cdef` |
 | `substring:START:END` | START bắt đầu từ 0, END không lấy vào | `substring:1:4` trên `abcdef` → `bcd` |
 | `prefix:TEXT` | Thêm TEXT vào đầu | `prefix:id-` trên `123` → `id-123` |
@@ -77,7 +85,7 @@ Tên operation không phân biệt hoa/thường. Các đối số là văn bả
 | `stripSuffix:TEXT` | Bỏ một suffix nếu khớp đúng | `stripSuffix:-ok` trên `123-ok` → `123` |
 | `replaceRegex:PATTERN=>REPLACEMENT` | Java regex, thay mọi match | `replaceRegex:user-(\d+)=>id:$1` trên `user-123` → `id:123` |
 
-`stripPrefix`/`stripSuffix` phân biệt hoa/thường; không khớp thì giữ nguyên. Substring dùng vị trí ký tự UTF-16 của Java, không phải vị trí byte. END có thể bỏ trống (`substring:2:`); index âm, START > END hoặc END vượt độ dài là lỗi.
+`stripPrefix`/`stripSuffix` phân biệt hoa/thường; không khớp thì giữ nguyên. Substring trên text dùng vị trí ký tự UTF-16 của Java; trên raw body dùng vị trí byte. END có thể bỏ trống (`substring:2:`); index âm, START > END hoặc END vượt độ dài là lỗi.
 
 URL encoding ở đây là kiểu form, không phải encode toàn bộ URL. Query/form injectors đã tự URL-encode giá trị; chỉ thêm `urlEncode` khi endpoint thực sự cần thêm một lớp encoding. Base64 ở đây không phải Base64URL của JWT, cũng không phải bộ giải mã dữ liệu nhị phân tùy ý.
 
@@ -107,3 +115,5 @@ prefix:Bearer
 ```
 
 Hai dòng cuối trong ví dụ có một dấu cách sau `Bearer`.
+
+Trong **Syntax & test…**, chọn **Sample type: Raw bytes (hex)** để nhập mẫu byte như `89 50 4e 47 00 ff` và kiểm tra chuỗi transform. Chọn **Text** khi muốn kiểm tra các transform text như trước. **Test extraction** trong Extract Rule dùng response đã lưu, nên phù hợp để kiểm tra trực tiếp dữ liệu ảnh.

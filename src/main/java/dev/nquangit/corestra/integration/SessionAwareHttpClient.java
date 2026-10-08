@@ -116,27 +116,7 @@ public final class SessionAwareHttpClient implements HttpClient {
     // -----------------------------------------------------------------------
 
     private static SessionTrafficContext buildContext(HttpRequest request) {
-        boolean burpInScope;
-        try {
-            burpInScope = request.isInScope();
-        } catch (RuntimeException ignored) {
-            burpInScope = false;
-        }
-
-        String method = request.method() != null ? request.method() : "";
-        String host = request.httpService() != null ? request.httpService().host() : "";
-
-        String rawPath = request.path() != null ? request.path() : "/";
-        int queryStart = rawPath.indexOf('?');
-        String pathWithoutQuery = queryStart >= 0 ? rawPath.substring(0, queryStart) : rawPath;
-
-        List<String> headers = request.headers().stream()
-                .map(h -> h.name() + ": " + h.value())
-                .toList();
-
-        String body = request.bodyToString() != null ? request.bodyToString() : "";
-
-        return new SessionTrafficContext("PROXY", burpInScope, method, host, pathWithoutQuery, headers, body);
+        return SessionTrafficContexts.fromRequest(request, "PROXY");
     }
 
     private HttpRequest applyRules(HttpRequest request, List<InjectRule> rules) {

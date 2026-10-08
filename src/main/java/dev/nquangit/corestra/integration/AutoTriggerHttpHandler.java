@@ -28,6 +28,7 @@ import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.StepTriggerRule;
+import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.execution.ExecutionContext;
 import dev.nquangit.corestra.flow.execution.ExecutionResult;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
@@ -204,7 +205,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     responseVersion(responseReceived) + " " + responseReceived.statusCode(),
                     responseReceived.headers().stream()
                             .map(h -> h.name() + ": " + h.value()).toList(),
-                    responseReceived.bodyToString());
+                    responseReceived.bodyToString(), HttpBodyBytes.readForExtraction(
+                            responseReceived, triggeredStep.extractRules(), ExtractRule.SourceSide.RESPONSE));
             ExecutionContext updatedCtx = applyExtractRulesToContext(
                     triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx);
 
@@ -276,7 +278,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         // by handleHttpResponseReceived to apply the trigger step's response-side extract rules.
         String requestLine = req.method() + " " + (req.path() != null ? req.path() : "/")
                 + " " + requestVersion(req);
-        HttpMessageSnapshot requestSnapshot = new HttpMessageSnapshot(requestLine, allHeaders, body);
+        HttpMessageSnapshot requestSnapshot = new HttpMessageSnapshot(requestLine, allHeaders, body,
+                HttpBodyBytes.readForExtraction(req, matchedStep.extractRules(), ExtractRule.SourceSide.REQUEST));
 
         // Phase 2: apply the trigger step's extract rules to the live request.
         // Response-side rules will silently fail here (no live response yet); they are

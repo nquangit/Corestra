@@ -8,6 +8,7 @@ import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import dev.nquangit.corestra.flow.rule.InjectRule;
+import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
@@ -130,12 +131,17 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
                 return ResponseReceivedAction.continueWith(responseReceived);
             }
 
+            List<ExtractRule> binaryRules = sessionManager.profiles().stream()
+                    .filter(profile -> profile.id().equals(marker.profileId()))
+                    .flatMap(profile -> profile.extractionRules().stream())
+                    .filter(rule -> rule.enabled() && rule.extractorType() == ExtractRule.ExtractorType.BODY_RAW)
+                    .map(rule -> rule.toExtractRule()).toList();
             sessionManager.applyExtractionRulesIfCurrent(
                     marker.profileId(),
                     marker.authenticationGeneration(),
                     requestContext(initiating, marker.toolTypeName()),
-                    requestSnapshot(initiating),
-                    responseSnapshot(responseReceived));
+                    requestSnapshot(initiating, binaryRules),
+                    responseSnapshot(responseReceived, binaryRules));
         } catch (RuntimeException ignored) {
             // Session handling must never break the live response.
         }
@@ -147,30 +153,23 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     }
 
     private static SessionTrafficContext requestContext(HttpRequest request, String toolTypeName) {
-        return new SessionTrafficContext(
-                toolTypeName,
-                inScope(request),
-                request.method(),
-                host(request),
-                pathWithoutQuery(request.path()),
-                headerLines(request),
-                request.bodyToString());
+        return SessionTrafficContexts.fromRequest(request, toolTypeName);
     }
 
-    private static HttpMessageSnapshot requestSnapshot(HttpRequest request) {
+    private static HttpMessageSnapshot requestSnapshot(HttpRequest request, List<ExtractRule> rules) {
         return new HttpMessageSnapshot(
                 request.method() + " " + requestPath(request) + " " + requestVersion(request),
                 headerLines(request),
-                request.bodyToString());
+                request.bodyToString(), HttpBodyBytes.readForExtraction(request, rules, ExtractRule.SourceSide.REQUEST));
     }
 
-    private static HttpMessageSnapshot responseSnapshot(HttpResponseReceived response) {
+    private static HttpMessageSnapshot responseSnapshot(HttpResponseReceived response, List<ExtractRule> rules) {
         return new HttpMessageSnapshot(
                 requestVersion(response) + " " + response.statusCode(),
                 response.headers().stream()
                         .map(header -> header.name() + ": " + header.value())
                         .collect(Collectors.toList()),
-                response.bodyToString());
+                response.bodyToString(), HttpBodyBytes.readForExtraction(response, rules, ExtractRule.SourceSide.RESPONSE));
     }
 
     private static List<String> headerLines(HttpRequest request) {
@@ -179,27 +178,12 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
                 .collect(Collectors.toList());
     }
 
-    private static boolean inScope(HttpRequest request) {
-        try {
-            return request != null && request.isInScope();
-        } catch (RuntimeException ignored) {
-            return false;
-        }
-    }
 
-    private static String host(HttpRequest request) {
-        return request != null && request.httpService() != null ? request.httpService().host() : "";
-    }
 
     private static String requestPath(HttpRequest request) {
         return request != null && request.path() != null && !request.path().isBlank() ? request.path() : "/";
     }
 
-    private static String pathWithoutQuery(String pathAndQuery) {
-        String path = pathAndQuery == null || pathAndQuery.isBlank() ? "/" : pathAndQuery;
-        int queryStart = path.indexOf('?');
-        return queryStart >= 0 ? path.substring(0, queryStart) : path;
-    }
 
     private static String requestVersion(HttpRequest request) {
         String version = request.httpVersion();

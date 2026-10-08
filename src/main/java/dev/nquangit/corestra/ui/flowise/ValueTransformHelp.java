@@ -5,6 +5,7 @@ import dev.nquangit.corestra.http.transform.ValueTransformService;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -12,6 +13,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
+import java.util.HexFormat;
 
 /** Shared syntax reference and sample-value tester for extract/inject transform chains. */
 final class ValueTransformHelp {
@@ -23,8 +25,11 @@ final class ValueTransformHelp {
             lowercase (or lower)              Convert to lowercase
             uppercase (or upper)              Convert to uppercase
             urlEncode / urlDecode             UTF-8 form encoding (+ means space)
-            base64Encode / base64Decode       Standard Base64, UTF-8 text
-            substring:START[:END]             0-based; END exclusive, omitted = end
+            base64Encode                      Raw bytes → Base64; text uses UTF-8
+            base64Decode                      Base64 → UTF-8 text
+            hexEncode                         Raw bytes or UTF-8 text → hex
+            decodeText[:CHARSET]               Raw bytes → text; default UTF-8, strict
+            substring:START[:END]             Slice bytes/text; 0-based, END exclusive
             prefix:TEXT / suffix:TEXT          Add literal text before / after value
             stripPrefix:TEXT / stripSuffix:TEXT Remove only if present (case-sensitive)
             replaceRegex:PATTERN=>REPLACEMENT  Java regex, all matches; $1 = group 1
@@ -32,6 +37,10 @@ final class ValueTransformHelp {
             Bearer example: prefix:Bearer followed by ONE space.
             Use “Add Bearer prefix” to insert it with the space preserved.
             Do not type quotes or \\s to represent that space.
+
+            Binary image: BODY_RAW → base64Encode → prefix:data:image/png;base64,
+            BODY_RAW extracts only; conversion is always an explicit transform.
+            Text operations require conversion first. A raw result cannot enter a text variable.
 
             A failed transform skips the entire extract/inject rule and reports an error.
             Injection templates resolve first; transforms then apply to the whole value.
@@ -62,10 +71,21 @@ final class ValueTransformHelp {
         JTextArea output = new JTextArea(4, 72);
         output.setEditable(false);
         JLabel status = new JLabel("Tests the current chain on this sample only.");
+        JComboBox<String> inputType = new JComboBox<>(new String[]{"Text", "Raw bytes (hex)"});
+        inputType.setToolTipText("For raw bytes enter hexadecimal, for example 89 50 4e 47 00 ff");
         JButton test = new JButton("Test current transforms");
         test.addActionListener(event -> {
-            ValueTransformResult result = new ValueTransformService().apply(
-                    sample.getText(), RuleEditorDialog.transformLines(transforms.getText()));
+            ValueTransformResult result;
+            try {
+                result = inputType.getSelectedIndex() == 0
+                        ? new ValueTransformService().apply(sample.getText(), RuleEditorDialog.transformLines(transforms.getText()))
+                        : new ValueTransformService().applyBytes(HexFormat.of().parseHex(sample.getText().replaceAll("\\s+", "")),
+                                RuleEditorDialog.transformLines(transforms.getText()));
+            } catch (IllegalArgumentException exception) {
+                status.setText("Invalid raw hex input: " + exception.getMessage());
+                output.setText("");
+                return;
+            }
             status.setText(result.success() ? "Success — length: " + result.value().length() : result.error());
             output.setText(result.success() ? result.value() : "");
         });
@@ -77,7 +97,11 @@ final class ValueTransformHelp {
         values.add(samplePane);
         values.add(outputPane);
         JPanel actions = new JPanel(new BorderLayout(4, 4));
-        actions.add(test, BorderLayout.NORTH);
+        JPanel testControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        testControls.add(new JLabel("Sample type:"));
+        testControls.add(inputType);
+        testControls.add(test);
+        actions.add(testControls, BorderLayout.NORTH);
         actions.add(status, BorderLayout.CENTER);
         JPanel panel = new JPanel(new BorderLayout(0, 8));
         panel.add(new JScrollPane(syntax), BorderLayout.NORTH);

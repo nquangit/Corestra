@@ -11,12 +11,60 @@ import org.junit.jupiter.api.Test;
 
 import javax.swing.JComboBox;
 import java.util.List;
+import java.util.Arrays;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class RuleEditorDialogTest {
     private static final StoredRequestTemplate TEMPLATE = new StoredRequestTemplate(
             "GET", "https", "example.test", 443, "/", List.of(), "");
+
+    @Test
+    void editorsOfferRawBodyWithoutTheLegacyPurposeSpecificExtractor() {
+        var options = Arrays.stream(ExtractRule.ExtractorType.selectableValues()).map(Enum::name).toList();
+        assertTrue(options.contains("BODY_RAW"));
+        assertTrue(options.contains("BODY_TEXT"));
+        assertFalse(options.contains("BODY_BASE64"));
+    }
+
+    @Test
+    void binaryPreviewKeepsSavedResponseBytesAndMatchesRuntimeExtraction() {
+        byte[] body = new byte[256];
+        for (int i = 0; i < body.length; i++) body[i] = (byte) i;
+        for (String separator : List.of("\r\n", "\n")) {
+            byte[] head = ("HTTP/1.1 200 OK" + separator + "Content-Type: image/png"
+                    + separator + separator).getBytes(StandardCharsets.US_ASCII);
+            byte[] raw = Arrays.copyOf(head, head.length + body.length);
+            System.arraycopy(body, 0, raw, head.length, body.length);
+            FlowStep step = step("image", "Image", true, List.of())
+                    .withLastResponseRaw(Base64.getEncoder().encodeToString(raw));
+            ExtractRule rule = new ExtractRule("image", "Image", true, ExtractRule.SourceSide.RESPONSE,
+                    ExtractRule.ExtractorType.BODY_RAW, "", "imageUrl", List.of("base64Encode", "prefix:data:image/png;base64,"));
+
+            var result = RuleEditorDialog.testExtraction(step, rule);
+
+            assertTrue(result.isSuccess(), result.failureReason());
+            assertEquals("data:image/png;base64," + Base64.getEncoder().encodeToString(body), result.value());
+            assertArrayEquals(body, Base64.getDecoder().decode(result.value().split(",", 2)[1]));
+        }
+    }
+
+    @Test
+    void previewReportsUnavailableResponseInsteadOfEncodingMalformedSavedData() {
+        ExtractRule rule = new ExtractRule("image", "Image", true, ExtractRule.SourceSide.RESPONSE,
+                ExtractRule.ExtractorType.BODY_RAW, "", "imageUrl", List.of());
+        for (String raw : List.of("", "!invalid-base64", Base64.getEncoder().encodeToString(
+                "HTTP/1.1 200 OK".getBytes(StandardCharsets.US_ASCII)))) {
+            var result = RuleEditorDialog.testExtraction(step("image", "Image", true, List.of()).withLastResponseRaw(raw), rule);
+            assertFalse(result.isSuccess());
+            assertEquals("No response message available", result.failureReason());
+        }
+    }
 
     @Test
     void injectionChoicesContainOnlyEnabledExtractorsFromEarlierEnabledSteps() {

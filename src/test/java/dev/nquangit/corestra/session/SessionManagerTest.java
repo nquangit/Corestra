@@ -32,6 +32,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SessionManagerTest {
 
     @Test
+    void selectsMultiHostProfileOnlyWithTheRequiredPortProtocolAndUserHeader() {
+        var rules = List.of(
+                new SessionScopeRule("API", List.of(new SessionScopeCriterion(SessionCriterionType.HOST, "", "^api\\.example$"))),
+                new SessionScopeRule("Admin", List.of(new SessionScopeCriterion(SessionCriterionType.HOST, "", "^admin\\.example$"))));
+        var scope = new SessionScope(SessionScopeMode.CUSTOM, List.of(
+                new SessionScopeCriterion(SessionCriterionType.PORT, "", "^8443$"),
+                new SessionScopeCriterion(SessionCriterionType.PROTOCOL, "", "^https$"),
+                new SessionScopeCriterion(SessionCriterionType.HEADER, "X-User", "^Alice$")), rules);
+        var manager = managerWithProfiles(List.of(profile("alice", "Alice", scope)));
+        for (String host : List.of("api.example", "admin.example")) {
+            var context = new SessionTrafficContext("PROXY", false, "GET", host, "/", List.of("X-User: Alice"), "", "https", 8443);
+            assertEquals("alice", manager.selectProfile(context).profile().orElseThrow().id());
+            assertTrue(manager.selectProfile(new SessionTrafficContext("PROXY", false, "GET", host, "/",
+                    List.of("X-User: Bob"), "", "https", 8443)).profile().isEmpty());
+            assertTrue(manager.selectProfile(new SessionTrafficContext("PROXY", false, "GET", host, "/",
+                    List.of("X-User: Alice"), "", "https", 443)).profile().isEmpty());
+        }
+    }
+
+    @Test
     void noMatchingProfileFallsBackToGeneralWhenEnabledAndInScope() {
         SessionManager manager = managerWithProfiles(List.of(
                 profile("owner", "Owner", SessionScope.custom(List.of(

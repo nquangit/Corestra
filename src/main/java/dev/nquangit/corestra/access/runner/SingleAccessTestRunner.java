@@ -62,6 +62,7 @@ import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
+import dev.nquangit.corestra.integration.HttpBodyBytes;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
 import dev.nquangit.corestra.integration.HttpClient;
@@ -1017,7 +1018,7 @@ public final class SingleAccessTestRunner {
         HttpMessageSnapshot responseSnapshot = new HttpMessageSnapshot(
                 response.httpVersion() + " " + response.statusCode() + " " + response.reasonPhrase(),
                 response.headers().stream().map(HttpHeader::toString).toList(),
-                response.bodyToString());
+                response.bodyToString(), HttpBodyBytes.readForExtraction(response, step.extractRules(), ExtractRule.SourceSide.RESPONSE));
         for (ExtractRule rule : step.extractRules()) {
             if (!rule.enabled()) {
                 continue;

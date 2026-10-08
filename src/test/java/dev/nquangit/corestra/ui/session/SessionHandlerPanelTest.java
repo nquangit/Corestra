@@ -10,6 +10,7 @@ import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.integration.HttpClient;
 import dev.nquangit.corestra.session.SessionAuthConfig;
+import dev.nquangit.corestra.session.SessionCriterionType;
 import dev.nquangit.corestra.session.SessionExtractionRule;
 import dev.nquangit.corestra.session.SessionInjectionRule;
 import dev.nquangit.corestra.session.SessionProfile;
@@ -103,6 +104,82 @@ class SessionHandlerPanelTest {
         assertTrue(criteria.isEnabled());
         assertTrue(addCriterion.isEnabled());
         assertTrue(removeCriterion.isEnabled());
+    }
+
+    @Test
+    void addScopeRuleAndCriterionPersistTheSelectedAlternativeWithoutBroadeningTheScope() throws Exception {
+        var repository = new SessionProfileRepository();
+        var panel = panel(repository);
+        var mode = field(panel, "scopeModeCombo", JComboBox.class);
+        var table = field(panel, "criteriaTable", JTable.class);
+        var model = field(panel, "criteriaModel", SessionScopeTableModel.class);
+        var editor = field(panel, "scopeEditor", SessionScopeEditorPanel.class);
+        var addRule = field(panel, "addScopeRuleButton", JButton.class);
+        var addCriterion = field(panel, "addCriterionButton", JButton.class);
+
+        runOnEdt(() -> {
+            mode.setSelectedItem(SessionScopeMode.CUSTOM);
+            addRule.doClick();
+        });
+        var scope = repository.loadProfiles().getFirst().scope();
+        assertFalse(scope.matches(false, "GET", "api.example", "/", List.of(), ""));
+        assertEquals("Rule 1", editor.selectedGroup());
+        assertEquals(3, table.getColumnCount());
+        assertEquals("Rule 1", model.ruleAt(table.convertRowIndexToModel(0)));
+        runOnEdt(() -> {
+            table.setValueAt("^api\\.example$", 0, 2);
+            addCriterion.doClick();
+            table.setValueAt(SessionCriterionType.HEADER, 1, 0);
+            table.setValueAt("X-User", 1, 1);
+            table.setValueAt("^Alice$", 1, 2);
+            addRule.doClick();
+            assertEquals("Rule 2", editor.selectedGroup());
+            assertEquals(1, table.getRowCount());
+            table.setValueAt("^admin\\.example$", 0, 2);
+        });
+        scope = repository.loadProfiles().getFirst().scope();
+        assertEquals(2, scope.rules().size());
+        assertTrue(scope.matches(false, "GET", "api.example", "/", List.of("X-User: Alice"), ""));
+        assertFalse(scope.matches(false, "GET", "api.example", "/", List.of("X-User: Bob"), ""));
+        assertTrue(scope.matches(false, "GET", "admin.example", "/", List.of(), ""));
+    }
+
+    @Test
+    void switchingGroupsCommitsTheCellAndRemovingUsesTheFilteredRow() throws Exception {
+        var repository = new SessionProfileRepository();
+        var panel = panel(repository);
+        var mode = field(panel, "scopeModeCombo", JComboBox.class);
+        var table = field(panel, "criteriaTable", JTable.class);
+        var editor = field(panel, "scopeEditor", SessionScopeEditorPanel.class);
+        var addRule = field(panel, "addScopeRuleButton", JButton.class);
+        var addCondition = field(panel, "addCriterionButton", JButton.class);
+        var remove = field(panel, "removeCriterionButton", JButton.class);
+        runOnEdt(() -> {
+            mode.setSelectedItem(SessionScopeMode.CUSTOM);
+            addRule.doClick();
+            table.setValueAt("^api$", 0, 2);
+            addRule.doClick();
+            assertTrue(table.editCellAt(0, 2));
+            ((JTextField) table.getEditorComponent()).setText("^admin$");
+            editor.selectGroup("Rule 1");
+            assertFalse(table.isEditing());
+            assertEquals("^api$", table.getValueAt(0, 2));
+            editor.selectGroup("Rule 2");
+            assertEquals("^admin$", table.getValueAt(0, 2));
+            addCondition.doClick();
+            table.setValueAt(SessionCriterionType.HEADER, 1, 0);
+            table.setValueAt("X-User", 1, 1);
+            table.setValueAt("^Alice$", 1, 2);
+            table.setRowSelectionInterval(1, 1);
+            remove.doClick();
+            editor.selectGroup("Rule 1");
+            assertEquals(1, table.getRowCount());
+            assertEquals("^api$", table.getValueAt(0, 2));
+        });
+        var scope = repository.loadProfiles().getFirst().scope();
+        assertTrue(scope.matches(false, "GET", "api", "/", List.of(), ""));
+        assertTrue(scope.matches(false, "GET", "admin", "/", List.of(), ""));
+        assertEquals(1, scope.rules().get(1).criteria().size());
     }
 
     @Test

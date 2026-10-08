@@ -26,6 +26,7 @@ import dev.nquangit.corestra.flow.execution.StepExecutionRecord;
 import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
+import dev.nquangit.corestra.integration.HttpBodyBytes;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
@@ -544,7 +545,7 @@ public final class TeardownFlowRunner {
         HttpMessageSnapshot responseSnapshot = new HttpMessageSnapshot(
                 statusLine(response),
                 responseHeaders(response),
-                response.bodyToString());
+                response.bodyToString(), HttpBodyBytes.readForExtraction(response, step.extractRules(), ExtractRule.SourceSide.RESPONSE));
         LinkedHashMap<String, String> extracted = new LinkedHashMap<>();
         for (ExtractRule rule : step.extractRules()) {
             ExtractionResult result = extractionService.extract(rule, requestSnapshot, responseSnapshot);

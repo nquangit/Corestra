@@ -244,6 +244,11 @@ public final class SessionProfile {
         return enabled && scope.matches(burpInScope, method, host, path, headers, body);
     }
 
+    /** Returns whether this enabled profile matches full request and transport metadata. */
+    public boolean matches(SessionTrafficContext context) {
+        return enabled && scope.matches(context);
+    }
+
     /**
      * Returns a copy with updated state.
      *

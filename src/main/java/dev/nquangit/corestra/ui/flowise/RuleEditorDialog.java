@@ -11,6 +11,7 @@ import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.http.extract.RegexSuggestionService;
+import dev.nquangit.corestra.http.transform.ValueTransformService;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 
 import javax.swing.BorderFactory;
@@ -174,7 +175,7 @@ public final class RuleEditorDialog extends JDialog {
         JComboBox<ExtractRule.SourceSide> sourceSideCombo =
                 new JComboBox<>(ExtractRule.SourceSide.values());
         JComboBox<ExtractRule.ExtractorType> extractorTypeCombo =
-                new JComboBox<>(ExtractRule.ExtractorType.values());
+                new JComboBox<>(ExtractRule.ExtractorType.selectableValues());
         JTextField selectorField = new JTextField(existing != null ? existing.sourceSelector() : "", 24);
         JTextField variableField = new JTextField(existing != null ? existing.targetVariableName() : "", 24);
         JComboBox<ExtractRule.RegexSource> regexSourceCombo =
@@ -208,15 +209,23 @@ public final class RuleEditorDialog extends JDialog {
         }
 
         Runnable updateRegexFields = () -> {
-            boolean regex = extractorTypeCombo.getSelectedItem() == ExtractRule.ExtractorType.REGEX;
+            ExtractRule.ExtractorType type = (ExtractRule.ExtractorType) extractorTypeCombo.getSelectedItem();
+            boolean regex = type == ExtractRule.ExtractorType.REGEX;
+            boolean binary = type == ExtractRule.ExtractorType.BODY_RAW;
+            selectorField.setEnabled(type != ExtractRule.ExtractorType.BODY_TEXT
+                    && type != ExtractRule.ExtractorType.BODY_RAW && type != ExtractRule.ExtractorType.STATUS_CODE);
             regexSourceLabel.setVisible(regex);
             regexSourceCombo.setVisible(regex);
             regexGroupLabel.setVisible(regex);
             regexGroupSpinner.setVisible(regex);
-            regexHelpLabel.setVisible(regex);
-            testRegexButton.setVisible(regex);
+            regexHelpLabel.setText(binary
+                    ? "Raw body bytes. Convert explicitly: base64Encode, hexEncode, or decodeText[:CHARSET]."
+                    : "Java regex; first match. Group 0 = full match.");
+            regexHelpLabel.setVisible(regex || binary);
+            testRegexButton.setText(regex ? "Test regex" : "Test extraction");
+            testRegexButton.setToolTipText("Test against the saved request/response; sends no network request");
             suggestRegexButton.setVisible(regex);
-            testResultLabel.setVisible(regex);
+            testResultLabel.setText(" ");
         };
         extractorTypeCombo.addActionListener(event -> updateRegexFields.run());
 
@@ -253,7 +262,7 @@ public final class RuleEditorDialog extends JDialog {
                         nameField.getText(),
                         enabledBox.isSelected(),
                         (ExtractRule.SourceSide) sourceSideCombo.getSelectedItem(),
-                        ExtractRule.ExtractorType.REGEX,
+                        (ExtractRule.ExtractorType) extractorTypeCombo.getSelectedItem(),
                         selectorField.getText(),
                         variableField.getText().isBlank() ? "preview" : variableField.getText(),
                         transformLines(transformsArea.getText()),
@@ -261,8 +270,8 @@ public final class RuleEditorDialog extends JDialog {
                         (Integer) regexGroupSpinner.getValue());
                 ExtractionResult result = testExtraction(step, candidate);
                 testResultLabel.setText(result.isSuccess()
-                        ? "Matched: " + abbreviate(result.value())
-                        : "No match: " + result.failureReason());
+                        ? "Extracted (" + result.value().length() + " chars): " + abbreviate(result.value())
+                        : "Extraction failed: " + result.failureReason());
             } catch (IllegalArgumentException exception) {
                 testResultLabel.setText("Invalid rule: " + exception.getMessage());
             }
@@ -309,6 +318,15 @@ public final class RuleEditorDialog extends JDialog {
                 return;
             }
 
+            List<String> transforms = transformLines(transformsArea.getText());
+            if (type == ExtractRule.ExtractorType.BODY_RAW) {
+                Optional<String> typeError = new ValueTransformService().validateBytesChain(transforms);
+                if (typeError.isPresent()) {
+                    errorLabel.setText(typeError.orElseThrow());
+                    return;
+                }
+            }
+
             ExtractRule saved = createExtractRule(
                     existing,
                     name,
@@ -317,7 +335,7 @@ public final class RuleEditorDialog extends JDialog {
                     type,
                     selector,
                     variable,
-                    transformLines(transformsArea.getText()),
+                    transforms,
                     (ExtractRule.RegexSource) regexSourceCombo.getSelectedItem(),
                     (Integer) regexGroupSpinner.getValue());
             onSave.accept(saved);
@@ -829,7 +847,7 @@ public final class RuleEditorDialog extends JDialog {
                 type == ExtractRule.ExtractorType.REGEX ? regexGroup : null);
     }
 
-    private static ExtractionResult testExtraction(FlowStep step, ExtractRule rule) {
+    static ExtractionResult testExtraction(FlowStep step, ExtractRule rule) {
         HttpMessageSnapshot request = new HttpMessageSnapshot(
                 step.requestTemplate().method() + " " + step.requestTemplate().pathAndQuery() + " HTTP/1.1",
                 step.requestTemplate().headerLines(),
@@ -843,21 +861,32 @@ public final class RuleEditorDialog extends JDialog {
             return null;
         }
         try {
-            return parseRawMessage(new String(Base64.getDecoder().decode(encoded), java.nio.charset.StandardCharsets.UTF_8));
+            return parseRawMessage(Base64.getDecoder().decode(encoded));
         } catch (IllegalArgumentException exception) {
             return null;
         }
     }
 
-    private static HttpMessageSnapshot parseRawMessage(String raw) {
-        int separator = raw.indexOf("\r\n\r\n");
-        int separatorLength = 4;
-        if (separator < 0) {
-            separator = raw.indexOf("\n\n");
-            separatorLength = 2;
+    private static HttpMessageSnapshot parseRawMessage(byte[] raw) {
+        int separator = -1;
+        int separatorLength = 0;
+        for (int index = 0; index < raw.length - 1; index++) {
+            if (index + 3 < raw.length && raw[index] == '\r' && raw[index + 1] == '\n'
+                    && raw[index + 2] == '\r' && raw[index + 3] == '\n') {
+                separator = index;
+                separatorLength = 4;
+                break;
+            }
+            if (raw[index] == '\n' && raw[index + 1] == '\n') {
+                separator = index;
+                separatorLength = 2;
+                break;
+            }
         }
-        String head = separator < 0 ? raw : raw.substring(0, separator);
-        String body = separator < 0 ? "" : raw.substring(separator + separatorLength);
+        if (separator < 0) return null;
+        String head = new String(raw, 0, separator, java.nio.charset.StandardCharsets.UTF_8);
+        byte[] bodyBytes = java.util.Arrays.copyOfRange(raw, separator + separatorLength, raw.length);
+        String body = new String(bodyBytes, java.nio.charset.StandardCharsets.UTF_8);
         String[] lines = head.split("\\r?\\n", -1);
         List<String> headers = new ArrayList<>();
         for (int index = 1; index < lines.length; index++) {
@@ -865,7 +894,7 @@ public final class RuleEditorDialog extends JDialog {
                 headers.add(lines[index]);
             }
         }
-        return new HttpMessageSnapshot(lines.length == 0 ? "" : lines[0], headers, body);
+        return new HttpMessageSnapshot(lines.length == 0 ? "" : lines[0], headers, body, bodyBytes);
     }
 
     static List<String> transformLines(String text) {

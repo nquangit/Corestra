@@ -263,8 +263,7 @@ public final class SessionManager {
                 general = profile;
                 continue;
             }
-            if (profile.matches(context.burpInScope(), context.method(), context.host(), context.path(),
-                    context.headers(), context.body())) {
+            if (profile.matches(context)) {
                 matches.add(profile);
             }
         }
@@ -275,8 +274,7 @@ public final class SessionManager {
             }
             return SessionProfileSelection.of(matches.getFirst(), warnings);
         }
-        if (general != null && general.matches(context.burpInScope(), context.method(), context.host(), context.path(),
-                context.headers(), context.body())) {
+        if (general != null && general.matches(context)) {
             return SessionProfileSelection.of(general, List.of());
         }
         return SessionProfileSelection.none();
@@ -295,8 +293,7 @@ public final class SessionManager {
         if (!hasAuthentication(profile)) {
             return profile;
         }
-        if (!profile.authConfig().matchesTrigger(context.method(), context.host(), context.path(),
-                context.headers(), context.body())) {
+        if (!profile.authConfig().matchesTrigger(context)) {
             return profile;
         }
         if (profile.usesLinkedAuthProfile()) {
