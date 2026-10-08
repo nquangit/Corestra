@@ -2,6 +2,7 @@ package dev.nquangit.corestra.session;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.ArrayList;
@@ -12,6 +13,7 @@ import java.util.Objects;
  * Defines the traffic scope for a session profile.
  */
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@JsonIgnoreProperties("requireMatchingRule")
 public final class SessionScope {
     private final SessionScopeMode mode;
     private final List<SessionScopeCriterion> criteria;
@@ -28,17 +30,21 @@ public final class SessionScope {
         this(mode, criteria, List.of());
     }
 
-    /** Creates common AND criteria plus alternative OR rules; missing rules preserve legacy semantics. */
+    /** Creates shared AND criteria and optional alternative OR rules; without alternatives only shared criteria apply. */
     @JsonCreator
     public SessionScope(@JsonProperty("mode") SessionScopeMode mode,
                         @JsonProperty("criteria") List<SessionScopeCriterion> criteria,
                         @JsonProperty("rules") List<SessionScopeRule> rules) {
         this.mode = Objects.requireNonNullElse(mode, SessionScopeMode.BURP_TARGET_SCOPE);
         this.criteria = copyCriteria(criteria);
-        this.rules = List.copyOf(Objects.requireNonNullElse(rules, List.of()));
-        if (this.rules.stream().map(SessionScopeRule::name).distinct().count() != this.rules.size()) {
+        List<SessionScopeRule> configuredRules = List.copyOf(Objects.requireNonNullElse(rules, List.of()));
+        if (configuredRules.stream().map(SessionScopeRule::name).distinct().count() != configuredRules.size()) {
             throw new IllegalArgumentException("Scope rule names must be unique");
         }
+        // Earlier versions generated this placeholder when the last alternative was deleted.
+        // Normalize it at the domain boundary so runtime matching and the editor agree.
+        this.rules = configuredRules.stream()
+                .filter(rule -> !isLegacyEmptyScopePlaceholder(rule)).toList();
     }
 
     /**
@@ -83,7 +89,7 @@ public final class SessionScope {
         return rules;
     }
 
-    /** Matches common criteria AND at least one rule; legacy scopes without rules remain an AND list. */
+    /** Matches shared criteria AND any alternative, or just shared criteria when no alternatives exist. */
     public boolean matches(SessionTrafficContext context) {
         Objects.requireNonNull(context, "context");
         if (mode == SessionScopeMode.BURP_TARGET_SCOPE) return context.burpInScope();
@@ -131,6 +137,15 @@ public final class SessionScope {
     @Override
     public int hashCode() {
         return Objects.hash(mode, criteria, rules);
+    }
+
+    private static boolean isLegacyEmptyScopePlaceholder(SessionScopeRule rule) {
+        if (!"Empty custom scope".equals(rule.name())) return false;
+        if (rule.criteria().isEmpty()) return true;
+        if (rule.criteria().size() != 1) return false;
+        SessionScopeCriterion criterion = rule.criteria().getFirst();
+        return criterion.type() == SessionCriterionType.HOST && criterion.selector().isBlank()
+                && "(?!)".equals(criterion.pattern());
     }
 
     private static List<SessionScopeCriterion> copyCriteria(List<SessionScopeCriterion> criteria) {

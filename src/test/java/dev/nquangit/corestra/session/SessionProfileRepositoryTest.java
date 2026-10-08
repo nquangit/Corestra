@@ -19,6 +19,21 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 class SessionProfileRepositoryTest {
+    @Test
+    void sharedOnlyScopePersistsAndMatchesWithoutAlternatives() {
+        var persistence = new FakePersistence();
+        var scope = new SessionScope(SessionScopeMode.CUSTOM,
+                List.of(new SessionScopeCriterion(SessionCriterionType.HEADER, "X-User", "^Alice$")),
+                List.of());
+        var profile = new SessionProfile("alice", "Alice", true, false, scope,
+                SessionAuthConfig.defaults(), SessionSchedulerConfig.disabled(), SessionState.empty(), List.of(), List.of());
+        new SessionProfileRepository(persistence.persistence()).saveProfile(profile);
+        var loaded = new SessionProfileRepository(persistence.persistence()).profile("alice").orElseThrow();
+        assertEquals(scope, loaded.scope());
+        assertTrue(loaded.scope().rules().isEmpty());
+        assertTrue(loaded.scope().matches(false, "GET", "api", "/", List.of("X-User: Alice"), ""));
+        assertFalse(loaded.scope().matches(false, "GET", "api", "/", List.of("X-User: Bob"), ""));
+    }
 
     @Test
     void alternativeScopeRulesSurviveRealProjectPersistenceReload() {

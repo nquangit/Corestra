@@ -310,9 +310,17 @@ public final class SessionHandlerPanel extends JPanel {
 
     private void updateScopeRuleChoices() {
         scopeEditor.refresh();
-        scopeLogicHint.setText(scopeModeCombo.getSelectedItem() == SessionScopeMode.CUSTOM
-                ? "Choose a rule below to edit it. Shared conditions apply to every rule."
-                : "Uses Burp Target scope. Custom rules below are saved but do not apply in this mode.");
+        String hint;
+        if (scopeModeCombo.getSelectedItem() != SessionScopeMode.CUSTOM) {
+            hint = "Uses Burp Target scope. Custom rules below are saved but do not apply in this mode.";
+        } else if (criteriaModel.getRowCount() == 0) {
+            hint = "Custom scope has no conditions: applies to ALL requests.";
+        } else if (criteriaModel.ruleNames().size() > 1) {
+            hint = "All shared conditions must match, plus any one scope rule.";
+        } else {
+            hint = "No scope rules: all shared conditions alone select the profile.";
+        }
+        scopeLogicHint.setText(hint);
     }
 
     private JPanel buildRuleTab(JTable table, Runnable addAction, Runnable removeAction) {

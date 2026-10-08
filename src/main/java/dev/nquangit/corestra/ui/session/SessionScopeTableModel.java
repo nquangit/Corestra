@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 
-/** Maps scope-table rows to common conditions and named alternative rules without changing legacy logic. */
+/** Maps scope-table rows to shared conditions and optional named alternative rules. */
 final class SessionScopeTableModel extends DefaultTableModel {
     static final String COMMON = "Common";
     static final int RULE_COLUMN = 3;
@@ -27,11 +27,6 @@ final class SessionScopeTableModel extends DefaultTableModel {
             if (rule.criteria().isEmpty()) add(new SessionScopeCriterion(SessionCriterionType.HOST, "", "(?!)"), rule.name());
             else rule.criteria().forEach(criterion -> add(criterion, rule.name()));
         });
-        // Legacy empty custom scopes explicitly meant all traffic. Make that visible rather
-        // than confusing it with a newly cleared table, which must never match everything.
-        if (scope.mode() == SessionScopeMode.CUSTOM && scope.criteria().isEmpty() && scope.rules().isEmpty()) {
-            add(new SessionScopeCriterion(SessionCriterionType.HOST, "", ".*"), COMMON);
-        }
     }
 
     SessionScope scope(SessionScopeMode mode) {
@@ -51,9 +46,6 @@ final class SessionScopeTableModel extends DefaultTableModel {
         }
         List<SessionScopeRule> alternatives = new ArrayList<>();
         rules.forEach((name, criteria) -> alternatives.add(new SessionScopeRule(name, criteria)));
-        if (getRowCount() == 0 && mode == SessionScopeMode.CUSTOM) {
-            alternatives.add(new SessionScopeRule("Empty custom scope", List.of()));
-        }
         return new SessionScope(mode, common, alternatives);
     }
 
@@ -115,8 +107,6 @@ final class SessionScopeTableModel extends DefaultTableModel {
         for (int row = getRowCount() - 1; row >= 0; row--) {
             if (name.equals(ruleAt(row))) removeRow(row);
         }
-        // Removing the final alternative must not silently leave a common-only scope.
-        if (ruleNames().size() == 1) addCriterion("Empty custom scope");
     }
 
     void removeCondition(int row) {
@@ -133,10 +123,13 @@ final class SessionScopeTableModel extends DefaultTableModel {
     }
 
     String description() {
-        StringBuilder text = new StringBuilder("Apply this profile when all shared conditions match");
+        if (getRowCount() == 0) {
+            return "No shared conditions or scope rules: Custom scope applies to ALL requests (all hosts, paths and methods).";
+        }
         boolean alternatives = ruleNames().size() > 1;
-        text.append(alternatives ? " AND at least one rule below matches.\n" : ". No alternative rules are configured.\n");
-        if (getRowCount() == 0) return "No conditions configured: Custom scope matches no traffic.";
+        StringBuilder text = new StringBuilder(alternatives
+                ? "Apply this profile when all shared conditions match AND at least one rule below matches.\n"
+                : "No scope rules: apply this profile whenever all shared conditions match.\n");
         if (hasMultipleCommonHosts()) {
             text.append("Warning: multiple shared HOST conditions must ALL match. Move alternative hosts into separate rules.\n");
         }

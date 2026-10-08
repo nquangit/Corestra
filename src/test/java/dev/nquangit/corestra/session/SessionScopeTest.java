@@ -9,6 +9,60 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class SessionScopeTest {
     @Test
+    void noAlternativesUsesSharedConditionsRegardlessOfOldRequirementFlag() throws Exception {
+        var mapper = new ObjectMapper();
+        for (List<SessionScopeCriterion> common : List.of(List.<SessionScopeCriterion>of(),
+                List.of(criterion(SessionCriterionType.METHOD, "", "^GET$")))) {
+            var scope = new SessionScope(SessionScopeMode.CUSTOM, common, List.of());
+            var oldJson = mapper.valueToTree(scope);
+            ((com.fasterxml.jackson.databind.node.ObjectNode) oldJson).put("requireMatchingRule", true);
+            SessionScope restored = mapper.treeToValue(oldJson, SessionScope.class);
+            assertEquals(scope, restored);
+            assertTrue(restored.rules().isEmpty());
+            assertTrue(restored.matches(traffic("a", 443, "https", "/", "")));
+            assertTrue(restored.matches(traffic("another-host", 8443, "http", "/another-path", "")));
+            assertEquals(common.isEmpty(), restored.matches(new SessionTrafficContext(
+                    "PROXY", false, "POST", "a", "/", List.of(), "")));
+            assertFalse(mapper.writeValueAsString(restored).contains("requireMatchingRule"));
+        }
+    }
+
+    @Test
+    void generatedEmptyScopePlaceholdersAreNormalizedBeforeRuntimeMatching() throws Exception {
+        var mapper = new ObjectMapper();
+        for (String criteria : List.of("[]", "[{\"type\":\"HOST\",\"selector\":\"\",\"pattern\":\"(?!)\"}]")) {
+            var scope = mapper.readValue("""
+                    {"mode":"CUSTOM","criteria":[{"type":"HEADER","selector":"X-User","pattern":"^Alice$"}],
+                    "rules":[{"name":"Empty custom scope","criteria":
+                    """ + criteria + "}]}", SessionScope.class);
+            assertTrue(scope.rules().isEmpty());
+            assertTrue(scope.matches(traffic("a", 443, "https", "/", "Alice")));
+            assertFalse(scope.matches(traffic("a", 443, "https", "/", "Bob")));
+            assertEquals(scope, mapper.readValue(mapper.writeValueAsString(scope), SessionScope.class));
+        }
+    }
+
+    @Test
+    void missingRequirementRetainsLegacyMatchingAndCannotBypassExistingRules() throws Exception {
+        var mapper = new ObjectMapper();
+        var empty = mapper.readValue("{\"mode\":\"CUSTOM\",\"criteria\":[],\"rules\":[]}", SessionScope.class);
+        assertTrue(empty.matches(traffic("a", 443, "https", "/", "")));
+        var commonOnly = mapper.readValue("""
+                {"mode":"CUSTOM","criteria":[{"type":"HOST","selector":"","pattern":"^a$"}]}
+                """, SessionScope.class);
+        assertTrue(commonOnly.matches(traffic("a", 443, "https", "/", "")));
+        assertFalse(commonOnly.matches(traffic("b", 443, "https", "/", "")));
+        for (String extra : List.of("", ",\"requireMatchingRule\":false")) {
+            var alternative = mapper.readValue("""
+                    {"mode":"CUSTOM","criteria":[],"rules":[
+                    {"name":"A","criteria":[{"type":"HOST","selector":"","pattern":"^a$"}]}]
+                    """ + extra + "}", SessionScope.class);
+            assertTrue(alternative.matches(traffic("a", 443, "https", "/", "")));
+            assertFalse(alternative.matches(traffic("b", 443, "https", "/", "")));
+        }
+    }
+
+    @Test
     void hostAlternativesKeepTheirOwnPortPathProtocolAndUserHeader() {
         var scope = new SessionScope(SessionScopeMode.CUSTOM, List.of(), List.of(
                 rule("Alice", "^api\\.example$", "^443$", "^/api(?:/|$)", "^Alice$"),

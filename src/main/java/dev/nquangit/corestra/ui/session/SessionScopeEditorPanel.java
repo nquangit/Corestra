@@ -176,7 +176,7 @@ final class SessionScopeEditorPanel extends JPanel {
         });
         boolean common = SessionScopeTableModel.COMMON.equals(group);
         heading.setText(common ? "Shared conditions" : "Conditions for rule: " + group);
-        logic.setText(common ? "Every request must meet these, whichever rule it matches."
+        logic.setText(common ? "All shared conditions must match, even without scope rules."
                 : "All conditions below must match the same request.");
         updateActions();
         updateExample();

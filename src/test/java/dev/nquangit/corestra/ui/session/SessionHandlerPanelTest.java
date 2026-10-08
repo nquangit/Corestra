@@ -145,6 +145,89 @@ class SessionHandlerPanelTest {
     }
 
     @Test
+    void removingScopeRulesUpdatesTheUiAndRuntimeWithoutInventingAReplacement() throws Exception {
+        var repository = new SessionProfileRepository();
+        var panel = panel(repository);
+        var mode = field(panel, "scopeModeCombo", JComboBox.class);
+        var table = field(panel, "criteriaTable", JTable.class);
+        var model = field(panel, "criteriaModel", SessionScopeTableModel.class);
+        var editor = field(panel, "scopeEditor", SessionScopeEditorPanel.class);
+        var addRule = field(panel, "addScopeRuleButton", JButton.class);
+        var deleteRule = field(editor, "delete", JButton.class);
+        runOnEdt(() -> {
+            mode.setSelectedItem(SessionScopeMode.CUSTOM);
+            addRule.doClick();
+            table.setValueAt("^api$", 0, 2);
+            addRule.doClick();
+            table.setValueAt("^admin$", 0, 2);
+            editor.selectGroup("Rule 1");
+            deleteRule.doClick();
+            assertEquals(List.of("Common", "Rule 2"), model.ruleNames());
+            var scope = repository.loadProfiles().getFirst().scope();
+            assertFalse(scope.matches(false, "GET", "api", "/", List.of(), ""));
+            assertTrue(scope.matches(false, "GET", "admin", "/", List.of(), ""));
+            editor.selectGroup("Rule 2");
+            deleteRule.doClick();
+            assertEquals(List.of("Common"), model.ruleNames());
+            assertEquals(0, table.getRowCount());
+            assertEquals(0, model.getRowCount());
+        });
+        var scope = repository.loadProfiles().getFirst().scope();
+        assertTrue(scope.rules().isEmpty());
+        assertTrue(scope.matches(false, "GET", "admin", "/", List.of(), ""));
+        runOnEdt(panel::refreshProfiles);
+        assertEquals(List.of("Common"), model.ruleNames());
+        assertEquals(0, table.getRowCount());
+        runOnEdt(() -> {
+            mode.setSelectedItem(SessionScopeMode.BURP_TARGET_SCOPE);
+            mode.setSelectedItem(SessionScopeMode.CUSTOM);
+        });
+        assertTrue(repository.loadProfiles().getFirst().scope().rules().isEmpty());
+        assertTrue(repository.loadProfiles().getFirst().scope().matches(false, "GET", "admin", "/", List.of(), ""));
+    }
+
+    @Test
+    void sharedOnlyScopeWorksBeforeAndAfterAddingDeletingAndReloadingAnAlternative() throws Exception {
+        var repository = new SessionProfileRepository();
+        var panel = panel(repository);
+        var mode = field(panel, "scopeModeCombo", JComboBox.class);
+        var table = field(panel, "criteriaTable", JTable.class);
+        var editor = field(panel, "scopeEditor", SessionScopeEditorPanel.class);
+        var addCondition = field(panel, "addCriterionButton", JButton.class);
+        var addRule = field(panel, "addScopeRuleButton", JButton.class);
+        var deleteRule = field(editor, "delete", JButton.class);
+        runOnEdt(() -> {
+            mode.setSelectedItem(SessionScopeMode.CUSTOM);
+            editor.selectGroup("Common");
+            addCondition.doClick();
+            table.setValueAt(SessionCriterionType.HEADER, 0, 0);
+            table.setValueAt("X-User", 0, 1);
+            table.setValueAt("^Alice$", 0, 2);
+        });
+        var sharedOnly = repository.loadProfiles().getFirst().scope();
+        assertTrue(sharedOnly.matches(false, "GET", "admin", "/", List.of("X-User: Alice"), ""));
+        assertFalse(sharedOnly.matches(false, "GET", "admin", "/", List.of("X-User: Bob"), ""));
+        assertFalse(sharedOnly.matches(false, "GET", "admin", "/", List.of(), ""));
+        runOnEdt(() -> {
+            addRule.doClick();
+            table.setValueAt("^api$", 0, 2);
+        });
+        var restricted = repository.loadProfiles().getFirst().scope();
+        assertTrue(restricted.matches(false, "GET", "api", "/", List.of("X-User: Alice"), ""));
+        assertFalse(restricted.matches(false, "GET", "admin", "/", List.of("X-User: Alice"), ""));
+        runOnEdt(deleteRule::doClick);
+        assertEquals(sharedOnly, repository.loadProfiles().getFirst().scope());
+        runOnEdt(panel::refreshProfiles);
+        runOnEdt(() -> {
+            mode.setSelectedItem(SessionScopeMode.BURP_TARGET_SCOPE);
+            mode.setSelectedItem(SessionScopeMode.CUSTOM);
+        });
+        assertEquals(sharedOnly, repository.loadProfiles().getFirst().scope());
+        assertEquals(1, table.getRowCount());
+        assertEquals("X-User", table.getValueAt(0, 1));
+    }
+
+    @Test
     void switchingGroupsCommitsTheCellAndRemovingUsesTheFilteredRow() throws Exception {
         var repository = new SessionProfileRepository();
         var panel = panel(repository);

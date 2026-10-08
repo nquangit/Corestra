@@ -11,9 +11,9 @@ Trường Pattern là **Java regex**, không phải danh sách host phân cách 
 Scope mới hỗ trợ:
 
 ```text
-Common conditions
-AND
-(Rule 1 OR Rule 2 OR Rule 3 ...)
+Có rule riêng:   Shared AND (Rule 1 OR Rule 2 OR Rule 3 ...)
+Không có rule:  Shared
+Cả hai rỗng:    áp dụng cho mọi request (Custom scope không giới hạn)
 ```
 
 Mỗi rule là một record logic: tất cả điều kiện trong record phải khớp **cùng một request**. Host của rule này không được ghép với header hay port của rule khác.
@@ -26,7 +26,11 @@ Scope có ba khu vực, không cần tự gán tên nhóm cho từng dòng:
 - **Bên phải:** chỉ hiện các điều kiện của nhóm đang chọn. **Add condition** thêm vào đúng nhóm đó; **Remove condition** xóa dòng đang chọn.
 - **Configuration preview:** tóm tắt tất cả nhóm đang nhập, hiển thị yêu cầu chung, các lựa chọn thay thế và lỗi cấu hình. Đây là bản xem trước cấu hình, không phải kết quả thử một request. Nếu trạng thái là **Not saved**, runtime vẫn dùng cấu hình hợp lệ đã lưu trước đó.
 
-**Trong một rule, mọi điều kiện đều phải khớp cùng request. Giữa các rule, chỉ cần khớp một rule. Shared conditions luôn phải khớp.** Khi chọn một dòng, hướng dẫn và ví dụ regex của loại điều kiện đó hiện dưới bảng.
+**Trong một rule, mọi điều kiện đều phải khớp cùng request. Giữa các rule, chỉ cần khớp một rule. Shared conditions luôn phải khớp. Nếu không có rule riêng, chỉ xét Shared conditions.** Khi chọn một dòng, hướng dẫn và ví dụ regex của loại điều kiện đó hiện dưới bảng.
+
+Với cấu hình đơn giản, bạn không cần tạo rule: chọn **CUSTOM**, chọn **Shared conditions (all rules)**, nhấn **Add condition** và nhập điều kiện. Ví dụ `HEADER / X-User / ^Alice$` là đủ để áp dụng profile cho request có `X-User: Alice`, trên mọi host. Thêm HOST/PATH/PORT vào Shared nếu muốn giới hạn thêm; các điều kiện này nối bằng AND.
+
+Nếu Shared và danh sách rule đều rỗng, **Custom scope áp dụng cho mọi request**. Giao diện ghi rõ **ALL requests** trong bản tóm tắt. Muốn chỉ áp dụng cho Target scope của Burp, chọn **BURP_TARGET_SCOPE**.
 
 Ví dụ profile liên kết với Auth Profile Alice, chỉ áp dụng khi request có `X-User: Alice`, cho hai host khác nhau:
 
@@ -97,7 +101,11 @@ Scope cũ được giữ nguyên ý nghĩa AND khi mở lại project. Các dòn
 
 Regex sai hoặc HEADER thiếu Selector sẽ báo **Not saved**, không ghi đè cấu hình hợp lệ trước đó. Hoàn tất các ô rồi kiểm tra trạng thái Saved. Regex được compile khi tạo criterion, không compile lại cho từng request.
 
-Rule mới bắt đầu bằng HOST regex `(?!)`, nghĩa là không khớp gì cho đến khi bạn sửa. Xóa điều kiện cuối của một rule sẽ để lại HOST `(?!)` để nhóm rỗng không vô tình khớp tất cả host. Xóa rule cuối cùng sẽ để lại nhóm `Empty custom scope` không khớp traffic, kể cả khi còn các điều kiện Shared; thêm rule mới để cấu hình lại. Các scope cũ vốn có danh sách Custom rỗng được giữ tương thích và hiển thị rõ bằng Shared HOST `.*`.
+Rule mới bắt đầu bằng HOST regex `(?!)`, nghĩa là không khớp gì cho đến khi bạn sửa. Xóa điều kiện cuối của một rule sẽ để lại HOST `(?!)` để nhóm rỗng không vô tình khớp tất cả host.
+
+Xóa rule sẽ xóa cả nhóm khỏi danh sách, không tạo `Empty custom scope` hay condition HOST thay thế. Sau khi xóa rule cuối cùng, profile vẫn áp dụng nếu request khớp mọi Shared condition. Nếu Shared cũng rỗng, Custom scope áp dụng cho mọi request. Bản tóm tắt ghi rõ chế độ đang áp dụng; không có rule match-all mặc định cần giữ hay xóa. Trạng thái được giữ khi lưu/mở project và chuyển qua lại giữa Burp Target scope và Custom.
+
+Các placeholder `Empty custom scope` do bản cũ tự tạo được loại bỏ khi đọc cấu hình; trường cũ `requireMatchingRule` không còn chặn Shared-only scope. Cấu hình còn Shared thì xét Shared, không còn gì thì match-all, thống nhất giữa runtime và giao diện. Các rule do người dùng tạo với điều kiện riêng được giữ nguyên.
 
 Chế độ **BURP_TARGET_SCOPE** tiếp tục dùng Target scope của Burp; bảng Custom không tham gia matching. Các điều kiện Custom vẫn được lưu để bạn chuyển lại.
 
