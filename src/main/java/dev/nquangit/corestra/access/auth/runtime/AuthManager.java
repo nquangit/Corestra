@@ -1,5 +1,10 @@
 package dev.nquangit.corestra.access.auth.runtime;
 
+import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
+import dev.nquangit.corestra.session.SessionBindingException;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.access.auth.AuthFallbackPolicy;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.auth.AuthProvider;
@@ -27,6 +32,7 @@ public final class AuthManager {
     private final AuthRuleEvaluator authRuleEvaluator;
     private final Clock clock;
     private final ConcurrentHashMap<String, ReentrantLock> locksByProfileId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> authenticationEpochs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, KeepAliveBackoff> keepAliveBackoffs = new ConcurrentHashMap<>();
     private final AuthKeepAliveEvaluator keepAliveEvaluator;
 
@@ -174,6 +180,32 @@ public final class AuthManager {
         }
     }
 
+    /** Returns an actor epoch that advances before every login/refresh attempt, including failed attempts. */
+    public long authenticationEpoch(String profileId) {
+        var epoch = authenticationEpochs.get(profileId);
+        return epoch == null ? 0 : epoch.get();
+    }
+
+    /** Reads an existing actor under its auth lock, without running login/refresh or waiting indefinitely. */
+    public <T> T inspectExistingProfile(String profileId, Function<AuthProfile, T> reader) {
+        ReentrantLock lock = locksByProfileId.computeIfAbsent(profileId, ignored -> new ReentrantLock());
+        boolean acquired = false;
+        try {
+            acquired = lock.tryLock(5, TimeUnit.SECONDS);
+            if (!acquired) throw new SessionBindingException("Actor maintenance did not finish within five seconds");
+            return reader.apply(accessRepository.authProfile(profileId).orElse(null));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new SessionBindingException("Session validation interrupted");
+        } finally { if (acquired) lock.unlock(); }
+    }
+
+    /** Reports whether another execution is updating this actor's authentication state. */
+    public boolean isAuthenticationInProgress(String profileId) {
+        ReentrantLock lock = locksByProfileId.get(profileId);
+        return lock != null && lock.isLocked();
+    }
+
     private AuthEnsureResult maintainKeepAlive(AuthProfile profile, AuthProvider provider,
                                                Map<String, String> env, RenderMode mode) {
         KeepAliveBackoff backoff = currentBackoff(profile, provider);
@@ -184,9 +216,14 @@ public final class AuthManager {
         try {
             run = authFlowRunner.runAuthFlow(provider.keepAlive().flowId(), profile, provider,
                     env, AuthFlowPurpose.KEEP_ALIVE, mode);
+        } catch (InteractionAbortedException exception) {
+            throw exception;
         } catch (RuntimeException exception) {
             return deferred(profile, recordBackoff(profile, provider),
                     "Keep-alive execution failed: " + exception.getMessage(), List.of());
+        }
+        if (InteractionAbortedException.isAborted(run.reason())) {
+            throw new InteractionAbortedException("Keep-alive interaction aborted");
         }
         AuthKeepAliveEvaluator.Result evaluation = keepAliveEvaluator.evaluate(provider.keepAlive(), run);
         if (evaluation.outcome() == AuthKeepAliveEvaluator.Outcome.ALIVE) {
@@ -207,6 +244,8 @@ public final class AuthManager {
         AuthEnsureResult result;
         try {
             result = ensureWithProvider(profile, provider, env, mode);
+        } catch (InteractionAbortedException exception) {
+            throw exception;
         } catch (RuntimeException exception) {
             result = AuthEnsureResult.failed(profile.id(), "Authentication failed: " + exception.getMessage(),
                     Optional.of(profile), List.of());
@@ -479,7 +518,13 @@ public final class AuthManager {
             Map<String, String> env,
             AuthFlowPurpose purpose,
             RenderMode renderMode) {
+        if (purpose == AuthFlowPurpose.LOGIN || purpose == AuthFlowPurpose.REFRESH) {
+            authenticationEpochs.computeIfAbsent(profile.id(), ignored -> new AtomicLong()).incrementAndGet();
+        }
         AuthFlowRunResult runResult = authFlowRunner.runAuthFlow(flowId, profile, provider, env, purpose, renderMode);
+        if (InteractionAbortedException.isAborted(runResult.reason())) {
+            throw new InteractionAbortedException("Authentication interaction was aborted");
+        }
         AuthRuleEvaluationResult evaluation = authRuleEvaluator.evaluate(provider, purpose, runResult);
         return new FlowAttempt(runResult, evaluation);
     }

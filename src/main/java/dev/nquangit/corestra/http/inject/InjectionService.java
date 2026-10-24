@@ -6,6 +6,8 @@ import dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy;
 import dev.nquangit.corestra.http.transform.ValueTransformResult;
 import dev.nquangit.corestra.http.transform.ValueTransformService;
 
+import dev.nquangit.corestra.interaction.InteractiveInputPrompt;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +26,8 @@ import java.util.regex.Pattern;
  *   <li>Resolves the value — either from the supplied context map (for
  *       {@link InjectRule.ValueSourceType#VARIABLE}) or directly (for
  *       {@link InjectRule.ValueSourceType#STATIC}), or by rendering
- *       {@link InjectRule.ValueSourceType#TEMPLATE} placeholders.</li>
+ *       {@link InjectRule.ValueSourceType#TEMPLATE} placeholders, or asking for
+ *       {@link InjectRule.ValueSourceType#INTERACTIVE} operator input.</li>
  *   <li>Dispatches to the appropriate injector based on {@link InjectRule#target()}.</li>
  *   <li>Accumulates per-rule diagnostic messages.</li>
  * </ol>
@@ -41,11 +44,18 @@ public final class InjectionService {
     private final RegexBodyInjector regexBodyInjector;
     private final QueryParameterInjector queryParameterInjector = new QueryParameterInjector();
     private final ValueTransformService transformService;
+    private final InteractiveInputPrompt inputPrompt;
 
     /**
      * Creates an {@code InjectionService} with default injector instances.
      */
     public InjectionService() {
+        this((name, config) -> { throw new InteractionAbortedException("Interactive input is unavailable in this execution context"); });
+    }
+
+    /** Creates injectors with an operator-input boundary; ordinary rules never invoke it. */
+    public InjectionService(InteractiveInputPrompt inputPrompt) {
+        this.inputPrompt = Objects.requireNonNull(inputPrompt, "inputPrompt");
         this.headerInjector = new HeaderInjector();
         this.cookieInjector = new CookieInjector();
         this.jsonBodyInjector = new JsonBodyInjector();
@@ -101,6 +111,7 @@ public final class InjectionService {
                 continue;
             }
 
+            boolean mandatory = required || rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE;
             if (required) {
                 for (String key : rule.referencedVariableKeys()) {
                     if (context.get(key) == null || context.get(key).isBlank()) {
@@ -110,67 +121,86 @@ public final class InjectionService {
                 }
             }
 
-            String value = resolveValue(rule, context, diagnostics);
-            if (value == null) {
-                if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': value could not be resolved");
-                continue;
-            }
-            ValueTransformResult transformed = transformService.apply(value, rule.transformChain());
-            if (!transformed.success()) {
-                if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': transform failed");
-                diagnostics.add("Rule '" + rule.name() + "': transform failed: " + transformed.error());
-                continue;
-            }
-            value = transformed.value();
+            try {
+                String value = resolveValue(rule, context, diagnostics);
+                if (value == null) {
+                    if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': value could not be resolved");
+                    continue;
+                }
+                ValueTransformResult transformed = transformService.apply(value, rule.transformChain());
+                if (!transformed.success()) {
+                    if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) {
+                        throw new InteractionAbortedException("Transform failed for interactive rule '" + rule.name() + "'");
+                    }
+                    if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': transform failed");
+                    diagnostics.add("Rule '" + rule.name() + "': transform failed: " + transformed.error());
+                    continue;
+                }
+                value = transformed.value();
 
-            switch (rule.target()) {
-                case REQUEST_HEADER -> {
-                    headers = headerInjector.inject(headers, rule.targetSelector(), value, rule.writeStrategy());
-                    diagnostics.add("Rule '" + rule.name() + "': injected header '" + rule.targetSelector() + "'");
+                if (mandatory && rule.target() == InjectRule.Target.REQUEST_QUERY_PARAMETER && requestLine.split(" ", 3).length < 2) {
+                    throw new IllegalArgumentException("Cannot parse request line for required query injection");
                 }
-                case REQUEST_COOKIE -> {
-                    headers = cookieInjector.inject(headers, rule.targetSelector(), value, rule.writeStrategy());
-                    diagnostics.add("Rule '" + rule.name() + "': injected cookie '" + rule.targetSelector() + "'");
-                }
-                case REQUEST_QUERY_PARAMETER -> {
-                    requestLine = injectQueryParam(requestLine, rule.targetSelector(), value, rule.writeStrategy(), rule.name(), diagnostics);
-                }
-                case REQUEST_FORM_FIELD -> {
-                    body = injectFormField(body, rule.targetSelector(), value, rule.writeStrategy(), rule.name(), diagnostics);
-                }
-                case REQUEST_JSON_PATH -> {
-                    JsonBodyInjector.InjectionOutcome outcome =
-                            jsonBodyInjector.inject(body, rule.targetSelector(), value, rule.writeStrategy());
-                    if (outcome.succeeded()) {
-                        body = outcome.body();
-                        diagnostics.add("Rule '" + rule.name() + "': injected JSON path '" + rule.targetSelector() + "'");
-                    } else {
-                        if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': JSON injection failed");
-                        diagnostics.add("Rule '" + rule.name() + "': " + outcome.message());
+                switch (rule.target()) {
+                    case REQUEST_HEADER -> {
+                        headers = headerInjector.inject(headers, rule.targetSelector(), value, rule.writeStrategy());
+                        diagnostics.add("Rule '" + rule.name() + "': injected header '" + rule.targetSelector() + "'");
+                    }
+                    case REQUEST_COOKIE -> {
+                        headers = cookieInjector.inject(headers, rule.targetSelector(), value, rule.writeStrategy());
+                        diagnostics.add("Rule '" + rule.name() + "': injected cookie '" + rule.targetSelector() + "'");
+                    }
+                    case REQUEST_QUERY_PARAMETER -> {
+                        requestLine = injectQueryParam(requestLine, rule.targetSelector(), value, rule.writeStrategy(), rule.name(), diagnostics);
+                    }
+                    case REQUEST_FORM_FIELD -> {
+                        body = injectFormField(body, rule.targetSelector(), value, rule.writeStrategy(), rule.name(), diagnostics);
+                    }
+                    case REQUEST_JSON_PATH -> {
+                        JsonBodyInjector.InjectionOutcome outcome =
+                                jsonBodyInjector.inject(body, rule.targetSelector(), value, rule.writeStrategy());
+                        if (outcome.succeeded()) {
+                            body = outcome.body();
+                            diagnostics.add("Rule '" + rule.name() + "': injected JSON path '" + rule.targetSelector() + "'");
+                        } else {
+                            if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) throw new InteractionAbortedException("JSON injection failed for rule '" + rule.name() + "'");
+                            if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': JSON injection failed");
+                            diagnostics.add("Rule '" + rule.name() + "': " + outcome.message());
+                        }
+                    }
+                    case REQUEST_REGEX_REPLACEMENT -> {
+                        if (mandatory && !Pattern.compile(rule.targetSelector()).matcher(body).find()) {
+                            if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) throw new InteractionAbortedException("Regex did not match for rule '" + rule.name() + "'");
+                            throw new IllegalArgumentException("Rule '" + rule.name() + "': regex did not match request body");
+                        }
+                        RegexBodyInjector.ReplaceOutcome outcome =
+                                regexBodyInjector.inject(body, rule.targetSelector(),
+                                        rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE
+                                                ? java.util.regex.Matcher.quoteReplacement(value) : value);
+                        if (outcome.succeeded()) {
+                            body = outcome.body();
+                            diagnostics.add("Rule '" + rule.name() + "': regex replacement applied for pattern '" + rule.targetSelector() + "'");
+                        } else {
+                            if (mandatory) throw new IllegalArgumentException("Rule '" + rule.name() + "': regex injection failed");
+                            diagnostics.add("Rule '" + rule.name() + "': " + outcome.failureReason());
+                        }
+                    }
+                    case REQUEST_RAW_BODY_APPEND -> {
+                        body = body + value;
+                        diagnostics.add("Rule '" + rule.name() + "': appended raw body content");
+                    }
+                    case REQUEST_RAW_BODY_REPLACE -> {
+                        body = value;
+                        diagnostics.add("Rule '" + rule.name() + "': replaced raw body content");
                     }
                 }
-                case REQUEST_REGEX_REPLACEMENT -> {
-                    if (required && !Pattern.compile(rule.targetSelector()).matcher(body).find()) {
-                        throw new IllegalArgumentException("Rule '" + rule.name() + "': regex did not match request body");
-                    }
-                    RegexBodyInjector.ReplaceOutcome outcome =
-                            regexBodyInjector.inject(body, rule.targetSelector(), value);
-                    if (outcome.succeeded()) {
-                        body = outcome.body();
-                        diagnostics.add("Rule '" + rule.name() + "': regex replacement applied for pattern '" + rule.targetSelector() + "'");
-                    } else {
-                        if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': regex injection failed");
-                        diagnostics.add("Rule '" + rule.name() + "': " + outcome.failureReason());
-                    }
+            } catch (InteractionAbortedException exception) {
+                throw exception;
+            } catch (RuntimeException exception) {
+                if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) {
+                    throw new InteractionAbortedException("Interactive injection failed for rule '" + rule.name() + "'");
                 }
-                case REQUEST_RAW_BODY_APPEND -> {
-                    body = body + value;
-                    diagnostics.add("Rule '" + rule.name() + "': appended raw body content");
-                }
-                case REQUEST_RAW_BODY_REPLACE -> {
-                    body = value;
-                    diagnostics.add("Rule '" + rule.name() + "': replaced raw body content");
-                }
+                throw exception;
             }
         }
 
@@ -186,6 +216,13 @@ public final class InjectionService {
      * diagnostic when a required context variable is absent.
      */
     private String resolveValue(InjectRule rule, Map<String, String> context, List<String> diagnostics) {
+        if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) {
+            if (Thread.currentThread().isInterrupted()) throw new InteractionAbortedException("Input wait interrupted");
+            String value = inputPrompt.ask(rule.name(), rule.interactiveInput())
+                    .orElseThrow(() -> new InteractionAbortedException("Input cancelled for rule '" + rule.name() + "'"));
+            if (value.isBlank()) throw new InteractionAbortedException("Input cannot be blank for rule '" + rule.name() + "'");
+            return value;
+        }
         if (rule.valueSourceType() == InjectRule.ValueSourceType.STATIC) {
             return rule.staticValue();
         }

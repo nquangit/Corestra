@@ -1,5 +1,8 @@
 package dev.nquangit.corestra.integration;
 
+import dev.nquangit.corestra.session.SessionExecutionBinding;
+import dev.nquangit.corestra.session.SessionBindingException;
+import dev.nquangit.corestra.flow.execution.ExecutionContext;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import dev.nquangit.corestra.persistence.HttpSendMode;
@@ -33,4 +36,20 @@ public interface HttpClient {
     default HttpResponse send(HttpRequest request, HttpSendMode sendModeOverride) {
         return send(request);
     }
+    /** Prepares the final request after step rules, including execution-specific authentication when supported. */
+    default HttpRequest prepareForExecution(HttpRequest request, ExecutionContext context) {
+        if (SessionExecutionBinding.isBound(context)) {
+            throw new SessionBindingException("Transport does not support bound session execution");
+        }
+        return request;
+    }
+
+    /** Sends a prepared request with immutable per-execution metadata; ordinary transports retain existing behavior. */
+    default HttpResponse send(HttpRequest request, HttpSendMode mode, ExecutionContext context) {
+        if (SessionExecutionBinding.isBound(context)) {
+            throw new SessionBindingException("Transport does not support bound session execution");
+        }
+        return send(request, mode);
+    }
+
 }

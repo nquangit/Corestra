@@ -133,7 +133,7 @@ public final class FlowExportSanitizer {
         return new InjectRule(
                 rule.id(), rule.name(), rule.enabled(), rule.target(), rule.targetSelector(),
                 rule.valueSourceType(), rule.valueSourceKey(), staticValue, rule.writeStrategy(),
-                rule.transformChain(), rule.ruleType());
+                rule.transformChain(), rule.ruleType(), rule.interactiveInput());
     }
 
     private String removeReplacement(String value) {

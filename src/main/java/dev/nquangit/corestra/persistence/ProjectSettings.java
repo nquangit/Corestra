@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
+import dev.nquangit.corestra.session.SessionSelectionConfig;
 
 /**
  * Immutable project-scoped settings for Corestra runtime behavior.
@@ -24,6 +25,7 @@ public final class ProjectSettings {
     private final HttpSendMode sendMode;
     private final String proxyHost;
     private final int proxyPort;
+    private final SessionSelectionConfig sessionSelection;
 
     /**
      * Creates project settings.
@@ -36,10 +38,25 @@ public final class ProjectSettings {
     public ProjectSettings(
             @JsonProperty("sendMode") HttpSendMode sendMode,
             @JsonProperty("proxyHost") String proxyHost,
-            @JsonProperty("proxyPort") int proxyPort) {
+            @JsonProperty("proxyPort") int proxyPort,
+            @JsonProperty("sessionSelection") SessionSelectionConfig sessionSelection) {
         this.sendMode = sendMode == null ? HttpSendMode.STANDARD : sendMode;
         this.proxyHost = normalizeHost(proxyHost);
         this.proxyPort = normalizePort(proxyPort);
+        this.sessionSelection = Objects.requireNonNullElseGet(sessionSelection, SessionSelectionConfig::disabled);
+    }
+
+    /** Creates settings compatible with projects without interactive session selection. */
+    public ProjectSettings(HttpSendMode sendMode, String proxyHost, int proxyPort) {
+        this(sendMode, proxyHost, proxyPort, null);
+    }
+
+    /** Returns live-request session choice settings. */
+    public SessionSelectionConfig sessionSelection() { return sessionSelection; }
+
+    /** Returns a copy with updated interactive selection conditions. */
+    public ProjectSettings withSessionSelection(SessionSelectionConfig config) {
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, config);
     }
 
     /**
@@ -85,7 +102,7 @@ public final class ProjectSettings {
      * @return updated settings
      */
     public ProjectSettings withSendMode(HttpSendMode sendMode) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection);
     }
 
     /**
@@ -95,7 +112,7 @@ public final class ProjectSettings {
      * @return updated settings
      */
     public ProjectSettings withProxyHost(String proxyHost) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection);
     }
 
     /**
@@ -105,7 +122,7 @@ public final class ProjectSettings {
      * @return updated settings
      */
     public ProjectSettings withProxyPort(int proxyPort) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection);
     }
 
     @Override
@@ -118,12 +135,13 @@ public final class ProjectSettings {
         }
         return proxyPort == that.proxyPort
                 && sendMode == that.sendMode
-                && Objects.equals(proxyHost, that.proxyHost);
+                && Objects.equals(proxyHost, that.proxyHost)
+                && Objects.equals(sessionSelection, that.sessionSelection);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(sendMode, proxyHost, proxyPort);
+        return Objects.hash(sendMode, proxyHost, proxyPort, sessionSelection);
     }
 
     @Override

@@ -5,6 +5,7 @@ import burp.api.montoya.http.sessions.SessionHandlingAction;
 import burp.api.montoya.http.sessions.SessionHandlingActionData;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.session.SessionGuard;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 
 import java.util.List;
 import java.util.Objects;
@@ -27,6 +28,9 @@ import java.util.function.Supplier;
  */
 public final class CorestraSessionHandlingAction implements SessionHandlingAction {
 
+    // Montoya's native session action has no drop operation. The project HTTP handler
+    // consumes this marker and drops the parent request before any transport send.
+    static final String INTERACTION_ABORT_HEADER = "X-Corestra-Interaction-Aborted";
     private static final String NAME = "Corestra: run prerequisite flows";
 
     private final Supplier<List<FlowDefinition>> flowsSupplier;
@@ -57,7 +61,12 @@ public final class CorestraSessionHandlingAction implements SessionHandlingActio
 
     @Override
     public ActionResult performAction(SessionHandlingActionData actionData) {
-        runApplicableFlows();
+        if (SessionGuard.isActive() || AutoTriggerHttpHandler.hasProxyPipelineMarker(actionData.request()))
+            return ActionResult.actionResult(actionData.request());
+        try { runApplicableFlows(); }
+        catch (InteractionAbortedException exception) {
+            return ActionResult.actionResult(actionData.request().withHeader(INTERACTION_ABORT_HEADER, "true"));
+        }
         // Return the base request unchanged — session state is refreshed via the flows' own sends.
         return ActionResult.actionResult(actionData.request());
     }
@@ -67,10 +76,13 @@ public final class CorestraSessionHandlingAction implements SessionHandlingActio
      * others (or the live request) from proceeding.
      */
     void runApplicableFlows() {
+        if (SessionGuard.isActive()) return;
         for (FlowDefinition flow : mapper.applicableFlows(flowsSupplier.get())) {
             SessionGuard.enter();
             try {
                 flowRunner.accept(flow);
+            } catch (InteractionAbortedException exception) {
+                throw exception;
             } catch (RuntimeException ignored) {
                 // A prerequisite flow failure must not break the user's live request.
             } finally {

@@ -111,6 +111,116 @@ class AccessWorkspaceProjectRepositoryTest {
         assertEquals(1, persistence.state().deleteStringCallCount());
     }
 
+    @Test
+    void authStateUpdatesWriteSmallCheckpointsAndRestoreWithEvidenceIntact() {
+        FakePersistence persistence = new FakePersistence();
+        AccessWorkspaceProjectRepository repository = new AccessWorkspaceProjectRepository(persistence.persistence());
+        AccessWorkspaceDocument initial = documentWithProjectState();
+        repository.save(initial);
+        String base = persistence.state().getString(CorestraSettingsKeys.ACCESS_WORKSPACE_DOCUMENT);
+        AuthProfile profile = initial.workspace().authProfiles().get("auth-1");
+        AccessWorkspaceDocument changed = initial;
+        for (int i = 1; i <= 20; i++) {
+            AuthProfile updated = new AuthProfile(profile.id(), profile.name(), profile.role(), profile.providerId(),
+                    profile.credentials(), new dev.nquangit.corestra.access.auth.AuthState(Map.of("token", "token-" + i),
+                    Map.of(), Map.of("sid", "cookie-" + i), 5000 + i, 1000 + i), profile.enabled());
+            changed = new AccessWorkspaceDocument(initial.workspace().withAuthProfile(updated), initial.evidence(),
+                    initial.latestSummary().orElse(null), initial.reportDrafts());
+            repository.save(changed);
+        }
+        assertEquals(base, persistence.state().getString(CorestraSettingsKeys.ACCESS_WORKSPACE_DOCUMENT));
+        String checkpoint = persistence.state().getString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT);
+        assertTrue(checkpoint.contains("token-20"));
+        assertFalse(checkpoint.contains("draft markdown"));
+        assertFalse(checkpoint.contains("HTTP/1.1 403"));
+        assertEquals(21, persistence.state().setStringCallCount());
+        repository.save(changed);
+        assertEquals(21, persistence.state().setStringCallCount());
+        var restored = new AccessWorkspaceProjectRepository(persistence.persistence()).load();
+        assertEquals(changed.workspace().authProfiles(), restored.workspace().authProfiles());
+        assertEquals(initial.evidence(), restored.evidence());
+        assertEquals(initial.latestSummary(), restored.latestSummary());
+        assertEquals(initial.reportDrafts(), restored.reportDrafts());
+        repository.clear();
+        assertNull(persistence.state().getString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT));
+        assertEquals(AccessWorkspace.empty(), new AccessWorkspaceProjectRepository(persistence.persistence()).load().workspace());
+    }
+
+    @Test
+    void configurationWritesFoldInAuthStateAndRejectOldCheckpoints() {
+        FakePersistence persistence = new FakePersistence();
+        var repository = new AccessWorkspaceProjectRepository(persistence.persistence());
+        var initial = documentWithProjectState();
+        repository.save(initial);
+        var profile = initial.workspace().authProfiles().get("auth-1");
+        var state = new dev.nquangit.corestra.access.auth.AuthState(Map.of("token", "latest"), Map.of(), Map.of(), 2000, 1000);
+        var updated = new AuthProfile(profile.id(), profile.name(), profile.role(), profile.providerId(), profile.credentials(), state, true);
+        var changed = new AccessWorkspaceDocument(initial.workspace().withAuthProfile(updated), initial.evidence(),
+                initial.latestSummary().orElse(null), initial.reportDrafts());
+        repository.save(changed);
+        String stale = persistence.state().getString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT);
+        var renamed = new AuthProfile(profile.id(), "Renamed", profile.role(), profile.providerId(), profile.credentials(),
+                dev.nquangit.corestra.access.auth.AuthState.empty(), true);
+        var next = new AccessWorkspaceDocument(initial.workspace().withAuthProfile(renamed), initial.evidence(),
+                initial.latestSummary().orElse(null), initial.reportDrafts());
+        repository.save(next);
+        assertNull(persistence.state().getString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT));
+        persistence.state().seedString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT, stale);
+        var restored = new AccessWorkspaceProjectRepository(persistence.persistence()).load();
+        assertEquals(renamed, restored.workspace().authProfiles().get(profile.id()));
+    }
+
+    @Test
+    void corruptCheckpointIsQuarantinedWithoutDiscardingValidWorkspace() {
+        FakePersistence persistence = new FakePersistence();
+        var repository = new AccessWorkspaceProjectRepository(persistence.persistence());
+        var initial = documentWithProjectState();
+        repository.save(initial);
+        persistence.state().seedString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT, "{invalid");
+        var restored = new AccessWorkspaceProjectRepository(persistence.persistence()).load();
+        assertEquals(AccessWorkspaceConfiguration.projectState(initial.workspace()), restored.workspace());
+        assertEquals(initial.evidence(), restored.evidence());
+        assertEquals("{invalid", persistence.state().getString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT_QUARANTINE));
+        assertNull(persistence.state().getString(CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT));
+    }
+
+    @Test
+    void legacyWorkspaceUpgradesOnSaveAndSurvivesReopening() {
+        FakePersistence persistence = new FakePersistence();
+        var initial = documentWithProjectState();
+        var serializer = new AccessWorkspaceSerializer();
+        persistence.state().seedString(CorestraSettingsKeys.ACCESS_WORKSPACE_DOCUMENT,
+                serializer.writeJson(serializer.serialize(initial, dev.nquangit.corestra.access.security.ExportMode.FULL_EXPORT)));
+        var repository = new AccessWorkspaceProjectRepository(persistence.persistence());
+        var restored = repository.load();
+        var old = restored.workspace().authProfiles().get("auth-1");
+        var updated = new AuthProfile(old.id(), old.name(), old.role(), old.providerId(), old.credentials(),
+                new dev.nquangit.corestra.access.auth.AuthState(Map.of("token", "upgraded"), Map.of(), Map.of(), 3000, 1000), true);
+        repository.save(new AccessWorkspaceDocument(restored.workspace().withAuthProfile(updated), restored.evidence(),
+                restored.latestSummary().orElse(null), restored.reportDrafts()));
+        assertTrue(persistence.state().getString(CorestraSettingsKeys.ACCESS_WORKSPACE_DOCUMENT).contains("persistenceRevision"));
+        assertEquals(updated, new AccessWorkspaceProjectRepository(persistence.persistence()).load().workspace().authProfiles().get(old.id()));
+    }
+
+    @Test
+    void failedCheckpointWriteDoesNotAdvanceCacheAndCanBeRetried() {
+        FakePersistence persistence = new FakePersistence();
+        var repository = new AccessWorkspaceProjectRepository(persistence.persistence());
+        var initial = documentWithProjectState();
+        repository.save(initial);
+        var old = initial.workspace().authProfiles().get("auth-1");
+        var updated = new AuthProfile(old.id(), old.name(), old.role(), old.providerId(), old.credentials(),
+                new dev.nquangit.corestra.access.auth.AuthState(Map.of("token", "retry"), Map.of(), Map.of(), 3000, 1000), true);
+        var changed = new AccessWorkspaceDocument(initial.workspace().withAuthProfile(updated), initial.evidence(),
+                initial.latestSummary().orElse(null), initial.reportDrafts());
+        persistence.state().failingWriteKey = CorestraSettingsKeys.ACCESS_AUTH_PROFILES_CHECKPOINT;
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> repository.save(changed));
+        assertEquals(old, new AccessWorkspaceProjectRepository(persistence.persistence()).load().workspace().authProfiles().get(old.id()));
+        persistence.state().failingWriteKey = null;
+        repository.save(changed);
+        assertEquals(updated, new AccessWorkspaceProjectRepository(persistence.persistence()).load().workspace().authProfiles().get(old.id()));
+    }
+
     private static AccessWorkspaceDocument documentWithProjectState() {
         AuthProvider provider = new AuthProvider(
                 "provider-1",
@@ -273,6 +383,7 @@ class AccessWorkspaceProjectRepositoryTest {
         private final Map<String, String> stringValues = new HashMap<>();
         private int setStringCallCount;
         private int deleteStringCallCount;
+        private String failingWriteKey;
         private final PersistedObject proxy = (PersistedObject) Proxy.newProxyInstance(
                 PersistedObject.class.getClassLoader(),
                 new Class<?>[]{PersistedObject.class},
@@ -283,6 +394,7 @@ class AccessWorkspaceProjectRepositoryTest {
                     return switch (method.getName()) {
                         case "getString" -> stringValues.get((String) args[0]);
                         case "setString" -> {
+                            if (args[0].equals(failingWriteKey)) throw new IllegalStateException("Storage write failed");
                             setStringCallCount++;
                             stringValues.put((String) args[0], (String) args[1]);
                             yield null;

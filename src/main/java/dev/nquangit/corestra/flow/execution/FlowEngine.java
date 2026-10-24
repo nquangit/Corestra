@@ -1,5 +1,7 @@
 package dev.nquangit.corestra.flow.execution;
 
+import dev.nquangit.corestra.session.SessionBindingException;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.FlowStep.StepErrorStrategy;
@@ -189,8 +191,10 @@ public final class FlowEngine {
             StepExecutionRecord record = stepExecutor.execute(step, currentContext, httpClient);
             allRecords.add(record);
 
-            if ("true".equals(currentContext.metadata().get(FlowInputValidator.REQUIRE_INPUTS))
-                    && !record.success() && record.errorMessage().startsWith(FlowInputValidator.FAILURE_PREFIX)) {
+            if (!record.success() && (InteractionAbortedException.isAborted(record.errorMessage())
+                    || SessionBindingException.isAborted(record.errorMessage())
+                    || ("true".equals(currentContext.metadata().get(FlowInputValidator.REQUIRE_INPUTS))
+                    && record.errorMessage().startsWith(FlowInputValidator.FAILURE_PREFIX)))) {
                 return ExecutionResult.failure(flow.id(), flow.name(), List.copyOf(allRecords),
                         List.copyOf(actionRecords), "Step '" + step.id() + "' failed: " + record.errorMessage(),
                         complete(currentContext.withStepRecord(record)));
@@ -440,13 +444,21 @@ public final class FlowEngine {
         ExecutionContext triggerContext = contextForTriggeredFlow(currentContext, resolved.get());
         long startedAt = System.currentTimeMillis();
         ExecutionResult triggered = executeInternal(resolved.get(), triggerContext, controlState);
+        if ("true".equals(currentContext.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))) {
+            for (Consumer<ExecutionResult> listener : executionListeners) {
+                try { listener.accept(triggered); } catch (RuntimeException ignored) { }
+            }
+        }
         List<StepActionExecutionRecord> records = new ArrayList<>(triggered.actionRecords());
         if (!triggered.success()) {
             records.add(record(flow, step, rule, action, StepActionStatus.FAILED,
                     "Triggered flow failed: " + Objects.requireNonNullElse(triggered.failureMessage(), "unknown failure"),
                     startedAt));
             return new ActionOutcome(ActionControl.FAIL_FLOW, currentContext, List.copyOf(records),
-                    "Triggered flow failed: " + targetFlowId);
+                    "Triggered flow failed: " + targetFlowId
+                            + (InteractionAbortedException.isAborted(triggered.failureMessage())
+                            || SessionBindingException.isAborted(triggered.failureMessage())
+                            ? ": " + triggered.failureMessage() : ""));
         }
 
         ExecutionContext mergedContext = triggered.finalContext()

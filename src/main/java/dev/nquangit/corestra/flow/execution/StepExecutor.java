@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.flow.execution;
 
+import dev.nquangit.corestra.session.SessionExecutionBinding;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -12,6 +13,7 @@ import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.integration.HttpBodyBytes;
 import dev.nquangit.corestra.http.inject.InjectionService;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
 import dev.nquangit.corestra.integration.HttpClient;
@@ -75,6 +77,8 @@ public class StepExecutor {
         Objects.requireNonNull(httpClient, "httpClient");
 
         long startedAt = System.currentTimeMillis();
+        if ("true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED)) && Thread.currentThread().isInterrupted())
+            return injectionFailure(step, startedAt, new dev.nquangit.corestra.interaction.InteractionAbortedException("Manual run cancelled").getMessage());
         boolean requireInputs = "true".equals(context.metadata().get(FlowInputValidator.REQUIRE_INPUTS));
         if (requireInputs) {
             List<String> missing = FlowInputValidator.missingStepVariables(step, context.variables());
@@ -85,6 +89,10 @@ public class StepExecutor {
 
         // 1. Build MutableHttpRequest from template
         StoredRequestTemplate template = step.requestTemplate();
+        if ("true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))) {
+            try { template = dev.nquangit.corestra.manual.ManualRequestTemplate.render(template, context.variables()); }
+            catch (IllegalArgumentException exception) { return injectionFailure(step, startedAt, exception.getMessage()); }
+        }
         String requestLine = template.method() + " " + template.pathAndQuery() + " HTTP/1.1";
         MutableHttpRequest mutableRequest = new MutableHttpRequest(
                 requestLine,
@@ -97,6 +105,8 @@ public class StepExecutor {
             mutationResult = requireInputs
                     ? injectionService.applyRequired(step.injectRules(), context.variables(), mutableRequest)
                     : injectionService.apply(step.injectRules(), context.variables(), mutableRequest);
+        } catch (InteractionAbortedException exception) {
+            return injectionFailure(step, startedAt, exception.getMessage());
         } catch (IllegalArgumentException exception) {
             if (!requireInputs) throw exception;
             return injectionFailure(step, startedAt, exception.getMessage());
@@ -117,7 +127,17 @@ public class StepExecutor {
 
         try {
             montoyaRequest = buildMontoyaRequest(template, renderedRequestLine, renderedHeaders, renderedBody);
-            response = httpClient.send(montoyaRequest, step.sendModeOverride());
+            if ("true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))) {
+                montoyaRequest = montoyaRequest.withBody(renderedBody);
+            }
+            montoyaRequest = httpClient.prepareForExecution(montoyaRequest, context);
+            if (SessionExecutionBinding.isBound(context) || "true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))) {
+                renderedRequest = montoyaRequest.toString();
+                renderedRequestLine = montoyaRequest.method() + " " + montoyaRequest.path() + " " + montoyaRequest.httpVersion();
+                renderedHeaders = montoyaRequest.headers().stream().map(h -> h.name() + ": " + h.value()).toList();
+                renderedBody = montoyaRequest.bodyToString();
+            }
+            response = httpClient.send(montoyaRequest, step.sendModeOverride(), context);
             receivedResponse = response.toString();
             statusCode = response.statusCode();
         } catch (Exception e) {
@@ -199,7 +219,8 @@ public class StepExecutor {
         boolean defaultPort = ("https".equalsIgnoreCase(template.scheme()) && template.port() == 443)
                 || ("http".equalsIgnoreCase(template.scheme()) && template.port() == 80);
         if (!defaultPort) hostValue += ":" + template.port();
-        rawBuilder.append("Host: ").append(hostValue).append("\r\n");
+        if (headers.stream().noneMatch(h -> h.regionMatches(true, 0, "Host:", 0, 5)))
+            rawBuilder.append("Host: ").append(hostValue).append("\r\n");
         for (String header : headers) {
             rawBuilder.append(header).append("\r\n");
         }

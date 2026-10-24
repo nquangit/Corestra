@@ -4,9 +4,10 @@ package dev.nquangit.corestra.config;
  * Defines project-scoped persistence keys stored in Burp extension data.
  */
 public final class CorestraSettingsKeys {
-    /**
-     * Stores the serialized flow repository document in Burp project data.
-     */
+    /** Stores isolated, explicitly-run Manual Testing drafts. */
+    public static final String MANUAL_FLOWS_DOCUMENT = "corestra.manual.flows.document";
+
+    /** Stores the serialized Flowise repository document in Burp project data. */
     public static final String FLOW_STORAGE_DOCUMENT = "corestra.flows.document";
 
     /**
@@ -28,6 +29,12 @@ public final class CorestraSettingsKeys {
      * Stores persisted Access Testing configuration in Burp project data.
      */
     public static final String ACCESS_WORKSPACE_DOCUMENT = "corestra.access.workspace.document";
+
+    /** Stores small auth-profile checkpoints independently of large access evidence. */
+    public static final String ACCESS_AUTH_PROFILES_CHECKPOINT = "corestra.access.auth.profiles.checkpoint";
+
+    /** Stores a malformed auth-profile checkpoint for recovery. */
+    public static final String ACCESS_AUTH_PROFILES_CHECKPOINT_QUARANTINE = "corestra.access.auth.profiles.checkpoint.quarantine";
 
     /**
      * Stores the last invalid raw Access Testing configuration payload quarantined during recovery.

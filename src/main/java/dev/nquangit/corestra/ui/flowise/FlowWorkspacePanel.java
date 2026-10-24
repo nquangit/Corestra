@@ -40,6 +40,9 @@ public final class FlowWorkspacePanel extends JPanel {
 
     private static final int MAX_DEFAULT_DETAIL_HEIGHT = 210;
     private static final int MIN_DEFAULT_DETAIL_HEIGHT = 130;
+    private final JTabbedPane detailTabs;
+    private final JSplitPane rightSplit;
+    private final JSplitPane mainSplit;
 
     /**
      * Creates a workspace panel for one flow, wired to the supplied controller.
@@ -79,10 +82,10 @@ public final class FlowWorkspacePanel extends JPanel {
 
         StepListPanel stepList = new StepListPanel(controller, accessController);
         RequestResponsePanel reqResp = new RequestResponsePanel(controller, api);
-        JTabbedPane detailTabs = buildDetailTabs(controller, api, reqResp, accessController,
+        detailTabs = buildDetailTabs(controller, api, reqResp, accessController,
                 Objects.requireNonNull(executionLog, "executionLog"));
 
-        JSplitPane rightSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, reqResp, detailTabs);
+        rightSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, reqResp, detailTabs);
         rightSplit.setName("flowRequestDetailSplit");
         rightSplit.setResizeWeight(1.0);
         rightSplit.setOneTouchExpandable(true);
@@ -100,7 +103,7 @@ public final class FlowWorkspacePanel extends JPanel {
             }
         });
 
-        JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, stepList, rightSplit);
+        mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, stepList, rightSplit);
         mainSplit.setDividerSize(4);
         mainSplit.setBorder(BorderFactory.createEmptyBorder());
         // Set initial divider to ~30 % of the actual panel width on first layout.
@@ -115,6 +118,24 @@ public final class FlowWorkspacePanel extends JPanel {
         });
 
         add(mainSplit, BorderLayout.CENTER);
+    }
+
+    // Preserve per-flow view preferences without retaining another native editor workspace.
+    record ViewState(int detailTab, int detailDivider, int stepsDivider) { }
+
+    ViewState viewState() {
+        return new ViewState(detailTabs.getSelectedIndex(), rightSplit.getDividerLocation(), mainSplit.getDividerLocation());
+    }
+
+    void restoreViewState(ViewState state) {
+        detailTabs.setSelectedIndex(state == null ? 0 : state.detailTab());
+        if (state != null) {
+            rightSplit.setDividerLocation(state.detailDivider());
+            mainSplit.setDividerLocation(state.stepsDivider());
+        } else {
+            if (rightSplit.getHeight() > 0) rightSplit.setDividerLocation(defaultDetailDividerLocation(rightSplit.getHeight()));
+            if (mainSplit.getWidth() > 0) mainSplit.setDividerLocation((int) (mainSplit.getWidth() * 0.30));
+        }
     }
 
     static int defaultDetailDividerLocation(int availableHeight) {

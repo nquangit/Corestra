@@ -14,7 +14,7 @@ import java.util.Objects;
 public final class ProjectSettingsRepository {
     private final PersistedObject extensionData;
     private final ObjectMapper objectMapper;
-    private ProjectSettings inMemorySettings;
+    private volatile ProjectSettings inMemorySettings;
 
     /**
      * Creates a test-friendly in-memory repository.

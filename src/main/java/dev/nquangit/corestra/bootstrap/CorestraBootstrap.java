@@ -1,10 +1,15 @@
 package dev.nquangit.corestra.bootstrap;
 
+import dev.nquangit.corestra.integration.SessionFlowBindingService;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
+import dev.nquangit.corestra.session.SessionSelectionService;
+import dev.nquangit.corestra.ui.interaction.SwingPromptService;
 import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.actions.CorestraContextMenuProvider;
 import dev.nquangit.corestra.actions.RunFlowAction;
 import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
+import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.FlowRuleSet;
 import dev.nquangit.corestra.flow.FlowTriggerConfig;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
@@ -91,7 +96,10 @@ public final class CorestraBootstrap {
 
         // Flow execution engine wired to the Montoya HTTP transport.
         ExtractionService extractionService = new ExtractionService();
-        InjectionService injectionService = new InjectionService();
+        AtomicReference<java.awt.Component> promptOwner = new AtomicReference<>();
+        SwingPromptService prompts =
+                new SwingPromptService(promptOwner::get);
+        InjectionService injectionService = new InjectionService(prompts);
         ProjectSettingsRepository settingsRepo = new ProjectSettingsRepository(api.persistence());
         HttpClient routingHttpClient = new RoutingHttpClient(
                 settingsRepo::load,
@@ -100,8 +108,9 @@ public final class CorestraBootstrap {
 
         // Break the circular dependency (FlowEngine ↔ SessionManager) via a late-bound ref.
         AtomicReference<SessionManager> sessionManagerRef = new AtomicReference<>();
+        AtomicReference<SessionFlowBindingService> bindingRef = new AtomicReference<>();
         SessionAwareHttpClient sessionAwareHttpClient = new SessionAwareHttpClient(
-                routingHttpClient, sessionManagerRef::get, injectionService);
+                routingHttpClient, sessionManagerRef::get, injectionService, bindingRef::get);
         HttpClient actorIsolatedHttpClient = new ActorIsolatedHttpClient(routingHttpClient);
 
         FlowEngine flowEngine = new FlowEngine(
@@ -228,18 +237,33 @@ public final class CorestraBootstrap {
         AccessTestingPanel accessTestingPanel = new AccessTestingPanel(accessUiController);
         AuthenticationPanel authenticationPanel = new AuthenticationPanel(accessUiController);
         FlowisePanel flowisePanel = new FlowisePanel(controller, api, accessUiController, executionLog);
-        SessionHandlerPanel sessionHandlerPanel = new SessionHandlerPanel(sessionManager, flowRepository::loadAll);
+        SessionHandlerPanel sessionHandlerPanel = new SessionHandlerPanel(sessionManager, flowRepository::loadAll, settingsRepo);
+        FlowRepository manualRepository = new FlowRepository(api.persistence(), serializer, migration,
+                dev.nquangit.corestra.config.CorestraSettingsKeys.MANUAL_FLOWS_DOCUMENT);
+        var manualTransport = new dev.nquangit.corestra.manual.ManualSessionHttpClient(routingHttpClient, sessionManager,
+                new SessionSelectionService(sessionManager, () -> settingsRepo.load().sessionSelection(), prompts), injectionService);
+        FlowEngine manualEngine = new FlowEngine(extractionService, injectionService, manualTransport,
+                id -> manualRepository.loadAll().stream().filter(f -> f.id().equals(id)).findFirst(), new ThreadSleeper());
+        FlowExecutionLog manualLog = new FlowExecutionLog(); manualEngine.addExecutionListener(manualLog::record);
+        FlowWorkspaceController manualController = new FlowWorkspaceController(manualRepository, manualEngine);
+        var manualPanel = new dev.nquangit.corestra.ui.manual.ManualTestingPanel(manualController, controller,
+                new dev.nquangit.corestra.manual.ManualTestRunner(manualEngine, manualTransport), sessionManager, accessUiController, manualLog, api);
+        registry.registerCloseable(manualPanel);
         ProjectPanel projectPanel = new ProjectPanel(controller, metadataRepo, projectSerializer,
                 settingsRepo, accessRepository, sessionProfileRepository, () -> {
                     accessTestingPanel.refreshUi();
                     authenticationPanel.refreshUi();
                     sessionHandlerPanel.refreshProfiles();
+                    manualPanel.resetAllRuntime();
                 }, new ProjectDataMaintenanceService(api.persistence()), () -> {
                     if (accessUiController.isPlanRunning()) {
                         throw new IllegalStateException("Stop the active Access Testing plan before cleaning project data");
                     }
+                    manualPanel.assertIdle();
                     sessionManager.clearAllProfiles();
+                    manualPanel.clearWorkspace();
                 }, sessionSchedulerService);
+        projectPanel.configureManualWorkspace(manualController, manualPanel::assertIdle);
         registry.registerCloseable(projectPanel);
         ParameterDictionary parameterDictionary = new ParameterDictionary();
         ParameterDiscoveryHandler parameterDiscoveryHandler =
@@ -250,6 +274,15 @@ public final class CorestraBootstrap {
                 flowisePanel, projectPanel, authenticationPanel, sessionHandlerPanel, accessTestingPanel,
                 parameterDictionaryPanel, api);
 
+        rootPanel.installManualTesting(manualPanel, api);
+        flowisePanel.setManualTestingAction(flow -> {
+            try { manualPanel.copyFrom(flow); rootPanel.showManualTesting(); }
+            catch (RuntimeException exception) {
+                javax.swing.JOptionPane.showMessageDialog(rootPanel, exception.getMessage(), "Manual Testing", javax.swing.JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        promptOwner.set(rootPanel);
         api.userInterface().registerSuiteTab("Corestra", rootPanel);
         api.userInterface().registerContextMenuItemsProvider(
                 new CorestraContextMenuProvider(controller, accessUiController));
@@ -257,10 +290,20 @@ public final class CorestraBootstrap {
         // Session-handling integration: run opted-in prerequisite flows before Burp's request.
         RunFlowAction runFlowAction = new RunFlowAction(flowEngine);
         api.http().registerSessionHandlingAction(new CorestraSessionHandlingAction(
-                controller::flows, runFlowAction::run, new SessionHandlingFlowMapper()));
+                controller::flows, flow -> {
+                    var result = runFlowAction.run(flow);
+                    if (InteractionAbortedException.isAborted(result.failureMessage())) {
+                        throw new InteractionAbortedException("Prerequisite interaction aborted");
+                    }
+                }, new SessionHandlingFlowMapper()));
 
         // Project-level Session Handler: scoped extraction/injection for live Burp/Corestra traffic.
-        CorestraSessionHttpHandler sessionHttpHandler = new CorestraSessionHttpHandler(sessionManager, injectionService);
+        CorestraSessionHttpHandler sessionHttpHandler = new CorestraSessionHttpHandler(sessionManager, injectionService,
+                new SessionSelectionService(sessionManager,
+                        () -> settingsRepo.load().sessionSelection(), prompts), api.logging()::logToError, traffic -> controller.flows().stream().filter(FlowDefinition::enabled)
+                        .flatMap(flow -> flow.steps().stream()).filter(FlowStep::enabled).map(FlowStep::triggerRule)
+                        .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matches(traffic.toolTypeName(),
+                                traffic.host(), traffic.path(), traffic.headers(), traffic.body())));
         registry.registerCloseable(sessionHttpHandler);
         api.http().registerHttpHandler(sessionHttpHandler);
 
@@ -268,12 +311,17 @@ public final class CorestraBootstrap {
         // This keeps extension-origin proxy traffic out of the passive parameter dictionary.
         api.http().registerHttpHandler(parameterDiscoveryHandler);
 
+        var sessionBindings = new SessionFlowBindingService(
+                sessionManager, injectionService, sessionHttpHandler::takeSessionForRequest);
+        bindingRef.set(sessionBindings);
+
         // Auto-trigger: per-step trigger rules inject flow context into matching live requests.
         AutoTriggerHttpHandler autoTriggerHttpHandler = new AutoTriggerHttpHandler(
-                controller::flows, flowEngine, extractionService, injectionService);
+                controller::flows, flowEngine, extractionService, injectionService, sessionBindings);
         registry.registerCloseable(autoTriggerHttpHandler);
         api.http().registerHttpHandler(autoTriggerHttpHandler);
 
+        registry.registerCloseable(prompts);
         return registry;
     }
 

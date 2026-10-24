@@ -25,6 +25,51 @@ class RuleEditorDialogTest {
             "GET", "https", "example.test", 443, "/", List.of(), "");
 
     @Test
+    void interactiveFormRestoresPromptAndSavesEditedConfigurationWithoutVariablePicker() throws Exception {
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            var rule = new dev.nquangit.corestra.flow.rule.InjectRule("otp", "SMS OTP", true,
+                    dev.nquangit.corestra.flow.rule.InjectRule.Target.REQUEST_FORM_FIELD, "otp",
+                    dev.nquangit.corestra.flow.rule.InjectRule.ValueSourceType.INTERACTIVE, "", "",
+                    dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy.OVERWRITE, List.of("trim"), null,
+                    new dev.nquangit.corestra.interaction.InteractiveInputConfig("Enter SMS code", true, 60));
+            var saved = new java.util.concurrent.atomic.AtomicReference<dev.nquangit.corestra.flow.rule.InjectRule>();
+            var form = RuleEditorDialog.buildInjectForm(null, step("s", "OTP", true, List.of()), rule, null, saved::set);
+            javax.swing.JTextField prompt = named(form, "interactivePrompt", javax.swing.JTextField.class);
+            assertEquals("Enter SMS code", prompt.getText());
+            assertTrue(prompt.isVisible());
+            assertFalse(named(form, "injectVariableKey", javax.swing.JComboBox.class).isVisible());
+            prompt.setText("Enter verification code");
+            named(form, "interactiveSecret", javax.swing.JCheckBox.class).setSelected(false);
+            named(form, "interactiveTimeout", javax.swing.JSpinner.class).setValue(120);
+            button(form, "OK").doClick();
+            assertEquals(new dev.nquangit.corestra.interaction.InteractiveInputConfig("Enter verification code", false, 120),
+                    saved.get().interactiveInput());
+            assertEquals(List.of("trim"), saved.get().transformChain());
+            assertEquals("", saved.get().staticValue());
+        });
+    }
+
+    private static <T extends java.awt.Component> T named(java.awt.Container parent, String name, Class<T> type) {
+        for (java.awt.Component component : parent.getComponents()) {
+            if (name.equals(component.getName()) && type.isInstance(component)) return type.cast(component);
+            if (component instanceof java.awt.Container container) {
+                T found = named(container, name, type); if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static javax.swing.JButton button(java.awt.Container parent, String text) {
+        for (java.awt.Component component : parent.getComponents()) {
+            if (component instanceof javax.swing.JButton value && value.getText().equals(text)) return value;
+            if (component instanceof java.awt.Container container) {
+                var found = button(container, text); if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    @Test
     void editorsOfferRawBodyWithoutTheLegacyPurposeSpecificExtractor() {
         var options = Arrays.stream(ExtractRule.ExtractorType.selectableValues()).map(Enum::name).toList();
         assertTrue(options.contains("BODY_RAW"));

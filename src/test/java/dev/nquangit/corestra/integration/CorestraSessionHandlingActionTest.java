@@ -84,6 +84,29 @@ class CorestraSessionHandlingActionTest {
         assertFalse(SessionGuard.isActive(), "SessionGuard must be inactive after runApplicableFlows() completes");
     }
 
+    @Test
+    void cancelledInteractionStopsRemainingPrerequisiteFlowsAndReleasesGuard() {
+        List<String> ran = new ArrayList<>();
+        var action = action(List.of(flow("first", true, true), flow("second", true, true)), id -> {
+            ran.add(id);
+            throw new dev.nquangit.corestra.interaction.InteractionAbortedException("Cancelled");
+        });
+        org.junit.jupiter.api.Assertions.assertThrows(dev.nquangit.corestra.interaction.InteractionAbortedException.class,
+                action::runApplicableFlows);
+        assertEquals(List.of("first"), ran);
+        assertFalse(SessionGuard.isActive());
+    }
+
+    @Test
+    void guardedManualOrAuthSendCannotRecursivelyRunNativePrerequisiteFlows() {
+        List<String> ran = new ArrayList<>();
+        var action = action(List.of(flow("session", true, true)), ran::add);
+        SessionGuard.enter();
+        try { action.runApplicableFlows(); assertTrue(SessionGuard.isActive()); }
+        finally { SessionGuard.exit(); }
+        assertTrue(ran.isEmpty());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static CorestraSessionHandlingAction action(

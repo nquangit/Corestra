@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.ui.session;
 
+import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
@@ -45,6 +46,7 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableCellEditor;
 import javax.swing.table.TableColumn;
 import java.awt.BorderLayout;
+import java.awt.FlowLayout;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.GridLayout;
@@ -128,11 +130,26 @@ public final class SessionHandlerPanel extends JPanel {
      * @param flowsSupplier current Flowise flows supplier
      */
     public SessionHandlerPanel(SessionManager sessionManager, Supplier<List<FlowDefinition>> flowsSupplier) {
+        this(sessionManager, flowsSupplier, null);
+    }
+
+    /** Creates Session Handler with project-wide Send with session settings. */
+    public SessionHandlerPanel(SessionManager sessionManager, Supplier<List<FlowDefinition>> flowsSupplier,
+                               ProjectSettingsRepository settingsRepository) {
         super(new BorderLayout(10, 10));
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
         this.flowsSupplier = Objects.requireNonNull(flowsSupplier, "flowsSupplier");
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         installTableEditors();
+        if (settingsRepository != null) {
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            JButton choose = StyledButton.neutral("Send with session…");
+            choose.setToolTipText("Configure when live Burp requests ask which existing session to use");
+            choose.addActionListener(event -> SessionSelectionSettingsDialog.open(this, settingsRepository));
+            toolbar.add(choose);
+            toolbar.add(new JLabel("Ask which session to use for matching requests."));
+            add(toolbar, BorderLayout.NORTH);
+        }
         add(buildProfileSide(), BorderLayout.WEST);
         add(buildEditor(), BorderLayout.CENTER);
         wireListeners();

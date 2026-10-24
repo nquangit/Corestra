@@ -48,6 +48,7 @@ public final class FlowTargetHasher {
                 update(digest, rule.target().name());
                 update(digest, rule.targetSelector());
                 update(digest, rule.valueSourceType().name());
+                if (rule.interactiveInput() != null) update(digest, rule.interactiveInput().toString());
                 update(digest, rule.valueSourceKey());
                 update(digest, rule.staticValue());
                 update(digest, rule.writeStrategy().name());

@@ -1,5 +1,8 @@
 package dev.nquangit.corestra.integration;
 
+import dev.nquangit.corestra.session.SessionExecutionBinding;
+import dev.nquangit.corestra.session.SessionBindingException;
+import dev.nquangit.corestra.flow.execution.ExecutionContext;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import dev.nquangit.corestra.persistence.HttpSendMode;
@@ -32,6 +35,7 @@ public final class SessionAwareHttpClient implements HttpClient {
     private final HttpClient delegate;
     private final Supplier<SessionManager> sessionManagerSupplier;
     private final InjectionService injectionService;
+    private final Supplier<SessionFlowBindingService> bindings;
 
     /**
      * Creates a {@code SessionAwareHttpClient}.
@@ -44,6 +48,13 @@ public final class SessionAwareHttpClient implements HttpClient {
             HttpClient delegate,
             Supplier<SessionManager> sessionManagerSupplier,
             InjectionService injectionService) {
+        this(delegate, sessionManagerSupplier, injectionService, () -> null);
+    }
+
+    /** Creates a transport with a late-bound per-execution session binding boundary. */
+    public SessionAwareHttpClient(HttpClient delegate, Supplier<SessionManager> sessionManagerSupplier,
+                                  InjectionService injectionService, Supplier<SessionFlowBindingService> bindings) {
+        this.bindings = Objects.requireNonNull(bindings, "bindings");
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.sessionManagerSupplier = Objects.requireNonNull(sessionManagerSupplier, "sessionManagerSupplier");
         this.injectionService = Objects.requireNonNull(injectionService, "injectionService");
@@ -109,6 +120,28 @@ public final class SessionAwareHttpClient implements HttpClient {
         } finally {
             SessionGuard.exit();
         }
+    }
+
+    /** Applies a bound session after ordinary injection; it never re-selects a profile from snapshot headers. */
+    @Override public HttpRequest prepareForExecution(HttpRequest request, ExecutionContext context) {
+        if (!SessionExecutionBinding.isBound(context)) return request;
+        return requireBindings().apply(context, request);
+    }
+
+    /** Revalidates immediately before sending, preserving the chosen session and request transport override. */
+    @Override public HttpResponse send(HttpRequest request, HttpSendMode mode,
+                                       ExecutionContext context) {
+        if (!SessionExecutionBinding.isBound(context)) return send(request, mode);
+        HttpRequest prepared = requireBindings().apply(context, request);
+        SessionGuard.enter();
+        try { return delegate.send(prepared, mode); }
+        finally { SessionGuard.exit(); }
+    }
+
+    private SessionFlowBindingService requireBindings() {
+        SessionFlowBindingService service = bindings.get();
+        if (service == null) throw new SessionBindingException("Session binding runtime is unavailable");
+        return service;
     }
 
     // -----------------------------------------------------------------------

@@ -119,3 +119,7 @@ Chế độ **BURP_TARGET_SCOPE** tiếp tục dùng Target scope của Burp; b�
 Nếu nhiều Session Profile cùng khớp, hệ thống vẫn chọn profile đầu tiên và đưa cảnh báo. Nếu không có custom profile khớp, **General** vẫn có thể được chọn nếu đang bật và scope của General khớp; hãy kiểm tra General khi thấy injection ngoài dự kiến. Các giới hạn tool của injection/extraction rule vẫn áp dụng như trước.
 
 Xem thêm [hướng dẫn chung](../USAGE.md), [Keep-alive](KEEP_ALIVE.md) và [session renewal](SESSION_RENEWAL.md).
+
+## Dùng session đã chọn cho cả auto-trigger flow
+
+Bật **Use session from triggering request for the entire execution** trong Trigger của request để các bước snapshot cùng dùng session đã chọn. Không cần thêm header chọn actor vào từng snapshot. Origin mặc định giới hạn theo request kích hoạt; session đổi giữa chừng thì flow dừng. Xem [hướng dẫn ràng buộc session cho flow](TRIGGER_SESSION.md).

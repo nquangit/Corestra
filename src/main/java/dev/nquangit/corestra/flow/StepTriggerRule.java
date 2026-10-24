@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.flow;
 
+import dev.nquangit.corestra.session.SessionExecutionBinding;
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -42,14 +43,22 @@ public final class StepTriggerRule {
     private final List<MatchCriterion> criteria;
     private final ExecutionScope scope;
     private final String stopAtStepId;
+    private final boolean inheritSession;
+    private final List<String> sessionOrigins;
 
+    /** Creates a trigger with optional execution-wide session inheritance and exact extra origins. */
     @JsonCreator
     public StepTriggerRule(
             @JsonProperty("enabled") boolean enabled,
             @JsonProperty("allowedToolTypes") List<String> allowedToolTypes,
             @JsonProperty("criteria") List<MatchCriterion> criteria,
             @JsonProperty("scope") ExecutionScope scope,
-            @JsonProperty("stopAtStepId") String stopAtStepId) {
+            @JsonProperty("stopAtStepId") String stopAtStepId,
+            @JsonProperty("inheritSession") boolean inheritSession,
+            @JsonProperty("sessionOrigins") List<String> sessionOrigins) {
+        this.inheritSession = inheritSession;
+        this.sessionOrigins = (sessionOrigins == null ? List.<String>of() : sessionOrigins).stream()
+                .map(SessionExecutionBinding::normalizeOrigin).distinct().toList();
         this.enabled = enabled;
         this.allowedToolTypes = normalizeList(allowedToolTypes);
         this.criteria = criteria == null ? List.of()
@@ -58,6 +67,18 @@ public final class StepTriggerRule {
         String rawStopId = stopAtStepId == null ? "" : stopAtStepId.strip();
         this.stopAtStepId = (this.scope == ExecutionScope.STOP_AT_STEP) ? rawStopId : "";
     }
+
+    /** Creates a legacy trigger without session inheritance. */
+    public StepTriggerRule(boolean enabled, List<String> tools, List<MatchCriterion> criteria,
+                           ExecutionScope scope, String stopAtStepId) {
+        this(enabled, tools, criteria, scope, stopAtStepId, false, List.of());
+    }
+
+    /** Whether all executed steps must use the initiating request's session. */
+    public boolean inheritSession() { return inheritSession; }
+
+    /** Additional exact origins explicitly allowed to receive the inherited authentication. */
+    public List<String> sessionOrigins() { return sessionOrigins; }
 
     /** Backward-compatible 3-arg constructor — scope defaults to MATCHED_STEP. */
     public StepTriggerRule(boolean enabled, List<String> allowedToolTypes, List<MatchCriterion> criteria) {
@@ -137,6 +158,8 @@ public final class StepTriggerRule {
         if (this == o) return true;
         if (!(o instanceof StepTriggerRule that)) return false;
         return enabled == that.enabled
+                && inheritSession == that.inheritSession
+                && sessionOrigins.equals(that.sessionOrigins)
                 && Objects.equals(allowedToolTypes, that.allowedToolTypes)
                 && Objects.equals(criteria, that.criteria)
                 && scope == that.scope
@@ -145,7 +168,7 @@ public final class StepTriggerRule {
 
     @Override
     public int hashCode() {
-        return Objects.hash(enabled, allowedToolTypes, criteria, scope, stopAtStepId);
+        return Objects.hash(enabled, allowedToolTypes, criteria, scope, stopAtStepId, inheritSession, sessionOrigins);
     }
 
     @Override

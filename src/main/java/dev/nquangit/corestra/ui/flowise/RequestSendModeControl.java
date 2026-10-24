@@ -12,12 +12,13 @@ import java.awt.Dimension;
 import java.util.Objects;
 
 /** Compact per-request routing selector; does not add a flow-wide setting. */
-final class RequestSendModeControl extends JPanel {
+public final class RequestSendModeControl extends JPanel {
     private final FlowWorkspaceController controller;
     private final JComboBox<Choice> choices = new JComboBox<>(Choice.values());
     private boolean refreshing;
 
-    RequestSendModeControl(FlowWorkspaceController controller) {
+    /** Creates a reusable per-request transport selector. */
+    public RequestSendModeControl(FlowWorkspaceController controller) {
         super(new BorderLayout(4, 0));
         this.controller = Objects.requireNonNull(controller, "controller");
         choices.setName("requestSendMode");

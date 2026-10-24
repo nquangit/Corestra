@@ -66,6 +66,23 @@ class FlowEngineTest {
         return new FlowEngine(testStepExecutor, client);
     }
 
+    @Test
+    void cancelledInteractiveInputStopsEvenContinueFlowAndNeverSendsCapturedRequest() {
+        java.util.concurrent.atomic.AtomicInteger sends = new java.util.concurrent.atomic.AtomicInteger();
+        injectionService = new InjectionService((name, config) -> java.util.Optional.empty());
+        var input = new dev.nquangit.corestra.flow.rule.InjectRule("input", "OTP", true,
+                dev.nquangit.corestra.flow.rule.InjectRule.Target.REQUEST_HEADER, "X-OTP",
+                dev.nquangit.corestra.flow.rule.InjectRule.ValueSourceType.INTERACTIVE,
+                "", "", dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy.OVERWRITE);
+        FlowStep first = enabledStep("first", StepErrorStrategy.CONTINUE_FLOW).withInjectRules(List.of(input));
+        FlowDefinition flow = twoStepFlow(first, enabledStep("second", StepErrorStrategy.FAIL_FLOW));
+        ExecutionResult result = engineWith(request -> { sends.incrementAndGet(); return null; }).execute(flow, freshContext());
+        assertFalse(result.success());
+        assertTrue(dev.nquangit.corestra.interaction.InteractionAbortedException.isAborted(result.failureMessage()));
+        assertEquals(1, result.stepRecords().size());
+        assertEquals(0, sends.get());
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------

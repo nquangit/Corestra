@@ -3,7 +3,6 @@ package dev.nquangit.corestra.persistence;
 import burp.api.montoya.persistence.Persistence;
 import burp.api.montoya.persistence.PersistedObject;
 
-import java.nio.charset.StandardCharsets;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,35 +36,47 @@ public final class ProjectDataMaintenanceService {
     public StorageUsage storageUsage() {
         long stringBytes = 0L;
         int entries = 0;
-        for (String key : keys(extensionData::stringKeys)) {
+        int failedReads = 0;
+        List<String> stringKeys;
+        try {
+            Set<String> storedKeys = extensionData.stringKeys();
+            stringKeys = storedKeys == null ? List.of() : new ArrayList<>(storedKeys);
+        } catch (RuntimeException exception) {
+            stringKeys = List.of();
+            failedReads++;
+        }
+        for (String key : stringKeys) {
             entries++;
             try {
                 String value = extensionData.getString(key);
-                if (value != null) stringBytes += value.getBytes(StandardCharsets.UTF_8).length;
+                if (value != null) stringBytes += utf8Size(value);
+                else failedReads++;
             } catch (RuntimeException ignored) {
-                // The usage label must not interfere with the rest of the Project UI.
+                failedReads++;
             }
         }
-        entries += count(extensionData::booleanKeys);
-        entries += count(extensionData::byteKeys);
-        entries += count(extensionData::shortKeys);
-        entries += count(extensionData::integerKeys);
-        entries += count(extensionData::longKeys);
-        entries += count(extensionData::byteArrayKeys);
-        entries += count(extensionData::httpRequestKeys);
-        entries += count(extensionData::httpRequestListKeys);
-        entries += count(extensionData::httpResponseKeys);
-        entries += count(extensionData::httpResponseListKeys);
-        entries += count(extensionData::httpRequestResponseKeys);
-        entries += count(extensionData::httpRequestResponseListKeys);
-        entries += count(extensionData::booleanListKeys);
-        entries += count(extensionData::shortListKeys);
-        entries += count(extensionData::integerListKeys);
-        entries += count(extensionData::longListKeys);
-        entries += count(extensionData::stringListKeys);
-        entries += count(extensionData::byteArrayListKeys);
-        entries += count(extensionData::childObjectKeys);
-        return new StorageUsage(stringBytes, entries);
+        int measuredEntries = entries;
+        int[] keyFailures = {0};
+        entries += count(extensionData::booleanKeys, keyFailures);
+        entries += count(extensionData::byteKeys, keyFailures);
+        entries += count(extensionData::shortKeys, keyFailures);
+        entries += count(extensionData::integerKeys, keyFailures);
+        entries += count(extensionData::longKeys, keyFailures);
+        entries += count(extensionData::byteArrayKeys, keyFailures);
+        entries += count(extensionData::httpRequestKeys, keyFailures);
+        entries += count(extensionData::httpRequestListKeys, keyFailures);
+        entries += count(extensionData::httpResponseKeys, keyFailures);
+        entries += count(extensionData::httpResponseListKeys, keyFailures);
+        entries += count(extensionData::httpRequestResponseKeys, keyFailures);
+        entries += count(extensionData::httpRequestResponseListKeys, keyFailures);
+        entries += count(extensionData::booleanListKeys, keyFailures);
+        entries += count(extensionData::shortListKeys, keyFailures);
+        entries += count(extensionData::integerListKeys, keyFailures);
+        entries += count(extensionData::longListKeys, keyFailures);
+        entries += count(extensionData::stringListKeys, keyFailures);
+        entries += count(extensionData::byteArrayListKeys, keyFailures);
+        entries += count(extensionData::childObjectKeys, keyFailures);
+        return new StorageUsage(stringBytes, entries, entries - measuredEntries, failedReads + keyFailures[0]);
     }
 
     /** Deletes every project-scoped entry owned by this extension, including quarantine data. */
@@ -100,8 +111,29 @@ public final class ProjectDataMaintenanceService {
         return String.format(java.util.Locale.ROOT, "%.2f MiB", safe / (1024.0 * 1024.0));
     }
 
-    private static int count(Supplier<Set<String>> supplier) {
-        return keys(supplier).size();
+    private static int count(Supplier<Set<String>> supplier, int[] failures) {
+        try {
+            Set<String> values = supplier.get();
+            return values == null ? 0 : values.size();
+        } catch (RuntimeException exception) {
+            failures[0]++;
+            return 0;
+        }
+    }
+
+    // Same replacement semantics as String.getBytes(UTF_8), without copying a large document.
+    static long utf8Size(String value) {
+        long bytes = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x80) bytes++;
+            else if (c < 0x800) bytes += 2;
+            else if (Character.isHighSurrogate(c) && i + 1 < value.length()
+                    && Character.isLowSurrogate(value.charAt(i + 1))) { bytes += 4; i++; }
+            else if (Character.isSurrogate(c)) bytes++;
+            else bytes += 3;
+        }
+        return bytes;
     }
 
     private static List<String> keys(Supplier<Set<String>> supplier) {
@@ -140,9 +172,20 @@ public final class ProjectDataMaintenanceService {
     }
 
     /** Storage usage visible to the Project UI. */
-    public record StorageUsage(long serializedStringBytes, int entryCount) {
+    public record StorageUsage(long serializedStringBytes, int entryCount,
+                               int unmeasuredEntryCount, int readFailureCount) {
+        /** Creates a complete measurement of string entries. */
+        public StorageUsage(long serializedStringBytes, int entryCount) {
+            this(serializedStringBytes, entryCount, 0, 0);
+        }
+
+        /** Whether every entry was measured successfully. */
+        public boolean complete() {
+            return unmeasuredEntryCount == 0 && readFailureCount == 0;
+        }
+
         public StorageUsage {
-            if (serializedStringBytes < 0L || entryCount < 0) {
+            if (serializedStringBytes < 0L || entryCount < 0 || unmeasuredEntryCount < 0 || readFailureCount < 0) {
                 throw new IllegalArgumentException("storage usage values must not be negative");
             }
         }

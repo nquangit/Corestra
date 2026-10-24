@@ -71,6 +71,8 @@ public final class TriggerPanel extends JPanel {
     private final JTable criteriaTable = new JTable(criteriaModel);
 
     private boolean refreshing = false;
+    private String displayedFlowId;
+    private String displayedStepId;
 
     // Scope controls
     private final JRadioButton scopeMatchedBtn  = new JRadioButton("Up to this step");
@@ -78,6 +80,8 @@ public final class TriggerPanel extends JPanel {
     private final JRadioButton scopeFullBtn     = new JRadioButton("Full flow");
     private final JComboBox<ScopeStepEntry> scopeStepCombo = new JComboBox<>();
     private final JLabel scopeWarningLabel = new JLabel(" ");
+    private final JCheckBox inheritSessionBox = new JCheckBox("Use session from triggering request for the entire execution");
+    private final JTextField sessionOriginsField = new JTextField(32);
 
     /**
      * Creates a trigger panel wired to the supplied controller.
@@ -149,6 +153,17 @@ public final class TriggerPanel extends JPanel {
         p.add(scopeWarningLabel);
         p.add(Box.createVerticalStrut(10));
 
+        inheritSessionBox.setOpaque(false);
+        inheritSessionBox.setAlignmentX(LEFT_ALIGNMENT);
+        inheritSessionBox.setToolTipText("Pins the initiating Session Profile and tool across all executed steps; session changes stop the run");
+        p.add(inheritSessionBox);
+        p.add(Box.createVerticalStrut(3));
+        p.add(dimLabel("Additional session origins (comma-separated; empty = initiating origin only):"));
+        sessionOriginsField.setMaximumSize(new Dimension(Integer.MAX_VALUE, sessionOriginsField.getPreferredSize().height));
+        sessionOriginsField.setAlignmentX(LEFT_ALIGNMENT);
+        sessionOriginsField.setToolTipText("Exact origins only, e.g. https://api.example.test:443, https://files.example.test:443. Press Enter to save.");
+        p.add(sessionOriginsField);
+        p.add(Box.createVerticalStrut(10));
         p.add(dimLabel("Match rules (ALL must match; empty list = all requests):"));
         p.add(Box.createVerticalStrut(3));
 
@@ -213,6 +228,11 @@ public final class TriggerPanel extends JPanel {
     private void wireListeners() {
         // enabledBox and tool checkboxes save the trigger rule (enabled flag + tool filter).
         // Criteria are saved directly by add/edit/remove actions.
+        inheritSessionBox.addActionListener(e -> { sessionOriginsField.setEnabled(inheritSessionBox.isSelected()); saveTrigger(); });
+        sessionOriginsField.addActionListener(e -> saveTrigger());
+        sessionOriginsField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusLost(java.awt.event.FocusEvent event) { saveTrigger(); }
+        });
         enabledBox.addActionListener(e -> saveTrigger());
         for (JCheckBox cb : toolBoxes.values()) cb.addActionListener(e -> saveTrigger());
         scopeMatchedBtn.addActionListener(e -> { scopeStepCombo.setEnabled(false); saveTrigger(); });
@@ -259,7 +279,7 @@ public final class TriggerPanel extends JPanel {
         StepTriggerRule rule = step.triggerRule();
         StepTriggerRule updated = new StepTriggerRule(
                 rule.enabled(), rule.allowedToolTypes(), List.copyOf(newCriteria),
-                rule.scope(), rule.stopAtStepId());
+                rule.scope(), rule.stopAtStepId(), rule.inheritSession(), rule.sessionOrigins());
         commitRule(step, updated);
     }
 
@@ -329,13 +349,18 @@ public final class TriggerPanel extends JPanel {
             boolean hasStep = step != null && active != null
                     && active.steps().stream().anyMatch(s -> s.id().equals(step.id()));
 
+            displayedFlowId = hasStep ? active.id() : null;
+            displayedStepId = hasStep ? step.id() : null;
             enabledBox.setEnabled(hasStep);
+            inheritSessionBox.setEnabled(hasStep);
+            sessionOriginsField.setEnabled(hasStep && inheritSessionBox.isSelected());
             toolBoxes.values().forEach(cb -> cb.setEnabled(hasStep));
 
             if (!hasStep) {
                 stepNameLabel.setText(active != null
                         ? "Select a step to configure its trigger" : "No flow selected");
                 enabledBox.setSelected(false);
+                inheritSessionBox.setSelected(false); sessionOriginsField.setText("");
                 toolBoxes.values().forEach(cb -> cb.setSelected(false));
                 criteriaModel.setRowCount(0);
                 scopeMatchedBtn.setSelected(true);
@@ -351,6 +376,9 @@ public final class TriggerPanel extends JPanel {
             stepNameLabel.setText("Step: " + step.name());
             StepTriggerRule rule = step.triggerRule();
             enabledBox.setSelected(rule.enabled());
+            inheritSessionBox.setSelected(rule.inheritSession());
+            sessionOriginsField.setText(String.join(", ", rule.sessionOrigins()));
+            sessionOriginsField.setEnabled(rule.inheritSession());
 
             List<String> allowed = rule.allowedToolTypes();
             toolBoxes.forEach((type, cb) ->
@@ -419,6 +447,7 @@ public final class TriggerPanel extends JPanel {
         FlowStep step = controller.selectedStep();
         FlowDefinition active = controller.activeFlow();
         if (step == null || active == null) return;
+        if (!Objects.equals(displayedFlowId, active.id()) || !Objects.equals(displayedStepId, step.id())) return;
         if (active.steps().stream().noneMatch(s -> s.id().equals(step.id()))) return;
 
         List<String> selectedTools = new ArrayList<>();
@@ -436,8 +465,16 @@ public final class TriggerPanel extends JPanel {
                 ? selectedStop.id : "";
 
         StepTriggerRule current = step.triggerRule();
-        StepTriggerRule updated = new StepTriggerRule(
-                enabledBox.isSelected(), allowedTools, current.criteria(), scope, stopAtStepId);
+        StepTriggerRule updated;
+        try {
+            List<String> origins = java.util.Arrays.stream(sessionOriginsField.getText().split(","))
+                    .map(String::strip).filter(value -> !value.isEmpty()).toList();
+            updated = new StepTriggerRule(enabledBox.isSelected(), allowedTools, current.criteria(), scope,
+                    stopAtStepId, inheritSessionBox.isSelected(), origins);
+        } catch (IllegalArgumentException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(), "Invalid session origin", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
         if (updated.equals(current)) return;
         commitRule(step, updated);
     }

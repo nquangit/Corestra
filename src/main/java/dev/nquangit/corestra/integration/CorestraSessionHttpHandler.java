@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.integration;
 
+import java.util.function.Predicate;
 import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.http.handler.HttpRequestToBeSent;
@@ -18,7 +19,14 @@ import dev.nquangit.corestra.session.SessionManager;
 import dev.nquangit.corestra.session.SessionProfileSelection;
 import dev.nquangit.corestra.session.SessionTrafficContext;
 
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
+import dev.nquangit.corestra.session.SessionSelectionService;
+import dev.nquangit.corestra.session.SessionSelectionConfig;
+import dev.nquangit.corestra.session.SessionGuard;
+import java.util.function.Consumer;
 import java.time.Clock;
+import java.util.Optional;
+import dev.nquangit.corestra.session.SessionRequestSession;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +44,9 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     private final int pendingLimit;
     private final long retentionMillis;
     private volatile boolean closed;
+    private final SessionSelectionService sessionSelector;
+    private final Consumer<String> diagnostics;
+    private final Predicate<SessionTrafficContext> captureSession;
 
     /**
      * Creates a Session Handler HTTP integration.
@@ -44,11 +55,35 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
      * @param injectionService request mutation service
      */
     public CorestraSessionHttpHandler(SessionManager sessionManager, InjectionService injectionService) {
-        this(sessionManager, injectionService, Clock.systemUTC(), 10_000, 600_000);
+        this(sessionManager, injectionService, null, message -> { }, traffic -> false, Clock.systemUTC(), 10_000, 600_000);
+    }
+
+    /** Creates live handling with optional explicit choice and safe failure diagnostics. */
+    public CorestraSessionHttpHandler(SessionManager manager, InjectionService injections,
+                                     SessionSelectionService selector, Consumer<String> diagnostics) {
+        this(manager, injections, selector, diagnostics, traffic -> false);
+    }
+
+    /** Captures handoff metadata only for requests matching a trigger that explicitly inherits a session. */
+    public CorestraSessionHttpHandler(SessionManager manager, InjectionService injections,
+                                     SessionSelectionService selector, Consumer<String> diagnostics,
+                                     Predicate<SessionTrafficContext> captureSession) {
+        this(manager, injections, Objects.requireNonNull(selector, "selector"), diagnostics, captureSession,
+                Clock.systemUTC(), 10_000, 600_000);
     }
 
     CorestraSessionHttpHandler(SessionManager sessionManager, InjectionService injectionService,
                               Clock clock, int pendingLimit, long retentionMillis) {
+        this(sessionManager, injectionService, null, message -> { }, traffic -> false, clock, pendingLimit, retentionMillis);
+    }
+
+    private CorestraSessionHttpHandler(SessionManager sessionManager, InjectionService injectionService,
+                                       SessionSelectionService selector, Consumer<String> diagnostics,
+                                       Predicate<SessionTrafficContext> captureSession,
+                                       Clock clock, int pendingLimit, long retentionMillis) {
+        this.captureSession = Objects.requireNonNull(captureSession, "captureSession");
+        this.sessionSelector = selector;
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
         this.injectionService = Objects.requireNonNull(injectionService, "injectionService");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -67,12 +102,17 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
      */
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent requestToBeSent) {
+        boolean choosingSession = false;
         try {
             takeGeneration(requestToBeSent.messageId());
+            if (requestToBeSent.hasHeader(CorestraSessionHandlingAction.INTERACTION_ABORT_HEADER)) {
+                reportStopped("Prerequisite interaction aborted");
+                return RequestToBeSentAction.drop();
+            }
             if (closed) {
                 return RequestToBeSentAction.continueWith(requestToBeSent);
             }
-            if (AutoTriggerHttpHandler.hasProxyPipelineMarker(requestToBeSent)) {
+            if (SessionGuard.isActive() || AutoTriggerHttpHandler.hasProxyPipelineMarker(requestToBeSent)) {
                 return RequestToBeSentAction.continueWith(requestToBeSent);
             }
             if (requestToBeSent.toolSource().toolType() == ToolType.EXTENSIONS) {
@@ -80,31 +120,56 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
             }
 
             SessionTrafficContext context = requestContext(requestToBeSent);
-            SessionProfileSelection selection = sessionManager.selectProfile(context);
-            if (selection.profile().isEmpty()) {
-                return RequestToBeSentAction.continueWith(requestToBeSent);
+            SessionSelectionConfig choiceConfig = sessionSelector == null ? null : sessionSelector.configuration();
+            choosingSession = choiceConfig != null && choiceConfig.matches(context);
+            SessionInjectionPlan plan;
+            if (choosingSession) {
+                plan = sessionSelector.choose(context, choiceConfig);
+                if (closed) throw new InteractionAbortedException("Extension unloaded while selecting a session");
+            } else {
+                SessionProfileSelection selection = sessionManager.selectProfile(context);
+                if (selection.profile().isEmpty()) return RequestToBeSentAction.continueWith(requestToBeSent);
+                plan = sessionManager.prepareInjectionRules(selection.profile().orElseThrow(), context);
             }
-
-            SessionInjectionPlan plan = sessionManager.prepareInjectionRules(
-                    selection.profile().orElseThrow(), context);
             List<InjectRule> rules = plan.rules();
             if (rules.isEmpty()) {
-                rememberGeneration(requestToBeSent.messageId(), plan, context);
+                rememberGeneration(requestToBeSent.messageId(), plan, context, requestToBeSent);
                 return RequestToBeSentAction.continueWith(requestToBeSent);
             }
 
             MutableHttpRequest mutable = new MutableHttpRequest(
                     requestToBeSent.method() + " " + requestPath(requestToBeSent) + " "
                             + requestVersion(requestToBeSent),
-                    headerLines(requestToBeSent),
+                    choosingSession ? selectionHeaders(requestToBeSent, choiceConfig.stripHeader()) : headerLines(requestToBeSent),
                     requestToBeSent.bodyToString());
-            RequestMutationResult mutated = injectionService.apply(rules, java.util.Map.of(), mutable);
+            RequestMutationResult mutated = choosingSession
+                    ? injectionService.applyRequired(rules, java.util.Map.of(), mutable)
+                    : injectionService.apply(rules, java.util.Map.of(), mutable);
             HttpRequest modified = HttpRequestMutationAdapter.apply(requestToBeSent, mutated);
-            rememberGeneration(requestToBeSent.messageId(), plan, context);
+            if (choosingSession && closed) throw new InteractionAbortedException("Extension unloaded while preparing the selected session");
+            rememberGeneration(requestToBeSent.messageId(), plan, context, modified);
             return RequestToBeSentAction.continueWith(modified);
+        } catch (InteractionAbortedException exception) {
+            reportStopped(exception.getMessage());
+            return RequestToBeSentAction.drop();
         } catch (RuntimeException ignored) {
+            if (choosingSession) {
+                reportStopped("Selected session could not be applied; request stopped");
+                return RequestToBeSentAction.drop();
+            }
             return RequestToBeSentAction.continueWith(requestToBeSent);
         }
+    }
+
+    private static List<String> selectionHeaders(HttpRequest request, String stripHeader) {
+        return request.headers().stream()
+                .filter(header -> stripHeader.isBlank() || !header.name().equalsIgnoreCase(stripHeader))
+                .map(header -> header.name() + ": " + header.value()).toList();
+    }
+
+    private void reportStopped(String message) {
+        try { diagnostics.accept("Corestra stopped request: " + message); }
+        catch (RuntimeException ignored) { /* Logging must not override the drop action. */ }
     }
 
     /**
@@ -196,15 +261,33 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     }
 
     private synchronized void rememberGeneration(int messageId, SessionInjectionPlan plan,
-                                                 SessionTrafficContext context) {
+                                                 SessionTrafficContext context, HttpRequest prepared) {
         if (!closed && !plan.profileId().isBlank()) {
+            boolean capture = captureSession.test(context);
+            if (!capture) {
+                var actual = SessionTrafficContexts.fromRequest(prepared, context.toolTypeName());
+                capture = captureSession.test(new SessionTrafficContext(actual.toolTypeName(), actual.burpInScope(),
+                        actual.method(), actual.host(), actual.path(), SessionRequestSession.matchHeaders(context.headers(), actual.headers()),
+                        actual.body(), actual.scheme(), actual.port()));
+            }
             pruneExpired();
             requestMarkers.put(messageId, new SessionRequestMarker(
-                    plan.profileId(), plan.authenticationGeneration(), context.toolTypeName(), clock.millis()));
+                    plan.profileId(), plan.authenticationGeneration(), context.toolTypeName(), clock.millis(),
+                    capture ? new SessionRequestSession(plan, context) : null));
             while (requestMarkers.size() > pendingLimit) {
                 requestMarkers.remove(requestMarkers.keySet().iterator().next());
             }
         }
+    }
+
+    /** Returns the prepared session for this exact live request and releases selector headers while preserving its response marker. */
+    public synchronized Optional<SessionRequestSession> takeSessionForRequest(int messageId) {
+        pruneExpired();
+        SessionRequestMarker marker = requestMarkers.get(messageId);
+        if (closed || marker == null || marker.session() == null) return Optional.empty();
+        requestMarkers.put(messageId, new SessionRequestMarker(marker.profileId(), marker.authenticationGeneration(),
+                marker.toolTypeName(), marker.createdAtMillis(), null));
+        return Optional.of(marker.session());
     }
 
     private synchronized SessionRequestMarker takeGeneration(int messageId) {
@@ -231,6 +314,6 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     }
 
     private record SessionRequestMarker(String profileId, long authenticationGeneration,
-                                        String toolTypeName, long createdAtMillis) {
+                                        String toolTypeName, long createdAtMillis, SessionRequestSession session) {
     }
 }

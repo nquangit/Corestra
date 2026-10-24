@@ -38,6 +38,29 @@ class ProjectDataMaintenanceServiceTest {
     }
 
     @Test
+    void computesUtf8WithoutAllocatingAndFlagsIncompleteMeasurements() {
+        for (String value : new String[]{"", "ascii", "xin chào", "漢字", "🙂", "\ud800", "\udc00", "a\ud800b🙂"}) {
+            assertEquals(value.getBytes(StandardCharsets.UTF_8).length, ProjectDataMaintenanceService.utf8Size(value));
+        }
+        PersistedObject data = fakePersistedObject();
+        data.setString("quarantine", "🙂 xin chào");
+        data.setBoolean("other", true);
+        var usage = new ProjectDataMaintenanceService(data).storageUsage();
+        assertEquals("🙂 xin chào".getBytes(StandardCharsets.UTF_8).length, usage.serializedStringBytes());
+        assertEquals(1, usage.unmeasuredEntryCount());
+        org.junit.jupiter.api.Assertions.assertFalse(usage.complete());
+        PersistedObject broken = (PersistedObject) Proxy.newProxyInstance(PersistedObject.class.getClassLoader(),
+                new Class<?>[]{PersistedObject.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("stringKeys")) return Set.of("unreadable");
+                    if (method.getName().equals("getString")) throw new IllegalStateException("read failed");
+                    return Set.of();
+                });
+        var failed = new ProjectDataMaintenanceService(broken).storageUsage();
+        assertEquals(1, failed.readFailureCount());
+        org.junit.jupiter.api.Assertions.assertFalse(failed.complete());
+    }
+
+    @Test
     void formatsStorageSizeForProjectUi() {
         assertEquals("512 B", ProjectDataMaintenanceService.formatBytes(512));
         assertEquals("1.5 KiB", ProjectDataMaintenanceService.formatBytes(1_536));

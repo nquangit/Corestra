@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
+import dev.nquangit.corestra.interaction.InteractiveInputConfig;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,6 +26,7 @@ public final class InjectRule {
     private final String staticValue;
     private final WriteStrategy writeStrategy;
     private final List<String> transformChain;
+    private final InteractiveInputConfig interactiveInput;
 
     /**
      * Creates an injection rule.
@@ -51,7 +53,8 @@ public final class InjectRule {
             @JsonProperty("staticValue") String staticValue,
             @JsonProperty("writeStrategy") WriteStrategy writeStrategy,
             @JsonProperty("transformChain") List<String> transformChain,
-            @JsonProperty("ruleType") RuleType ruleType) {
+            @JsonProperty("ruleType") RuleType ruleType,
+            @JsonProperty("interactiveInput") InteractiveInputConfig interactiveInput) {
         this.ruleType = validateRuleType(ruleType, RuleType.INJECT);
         this.id = normalizeRequiredText(id, "id");
         this.name = normalizeRequiredText(name, "name");
@@ -61,12 +64,28 @@ public final class InjectRule {
         validateTargetSelector(this.target, this.targetSelector);
         this.valueSourceType = Objects.requireNonNull(valueSourceType, "valueSourceType");
         this.valueSourceKey = normalizeValueSourceKey(valueSourceType, valueSourceKey);
-        this.staticValue = valueSourceType == ValueSourceType.VARIABLE ? "" : Objects.requireNonNullElse(staticValue, "");
+        this.staticValue = valueSourceType == ValueSourceType.VARIABLE || valueSourceType == ValueSourceType.INTERACTIVE
+                ? "" : Objects.requireNonNullElse(staticValue, "");
         if (valueSourceType == ValueSourceType.TEMPLATE) {
             InjectValueTemplate.variableKeys(this.staticValue);
         }
         this.writeStrategy = Objects.requireNonNullElse(writeStrategy, WriteStrategy.OVERWRITE);
         this.transformChain = normalizeStringList(transformChain);
+        this.interactiveInput = valueSourceType == ValueSourceType.INTERACTIVE
+                ? Objects.requireNonNullElseGet(interactiveInput, InteractiveInputConfig::defaults) : null;
+    }
+
+    /** Creates a rule compatible with documents and callers without interactive configuration. */
+    public InjectRule(String id, String name, boolean enabled, Target target, String targetSelector,
+                      ValueSourceType valueSourceType, String valueSourceKey, String staticValue,
+                      WriteStrategy writeStrategy, List<String> transformChain, RuleType ruleType) {
+        this(id, name, enabled, target, targetSelector, valueSourceType, valueSourceKey, staticValue,
+                writeStrategy, transformChain, ruleType, null);
+    }
+
+    /** Returns prompt configuration for INTERACTIVE rules, or null for other sources. */
+    public InteractiveInputConfig interactiveInput() {
+        return interactiveInput;
     }
 
     /**
@@ -211,7 +230,7 @@ public final class InjectRule {
     public List<String> referencedVariableKeys() {
         return switch (valueSourceType) {
             case VARIABLE -> List.of(valueSourceKey);
-            case STATIC -> List.of();
+            case STATIC, INTERACTIVE -> List.of();
             case TEMPLATE -> InjectValueTemplate.variableKeys(staticValue);
         };
     }
@@ -258,7 +277,8 @@ public final class InjectRule {
                 && Objects.equals(valueSourceKey, that.valueSourceKey)
                 && Objects.equals(staticValue, that.staticValue)
                 && writeStrategy == that.writeStrategy
-                && Objects.equals(transformChain, that.transformChain);
+                && Objects.equals(transformChain, that.transformChain)
+                && Objects.equals(interactiveInput, that.interactiveInput);
     }
 
     /**
@@ -269,7 +289,7 @@ public final class InjectRule {
     @Override
     public int hashCode() {
         return Objects.hash(ruleType, id, name, enabled, target, targetSelector, valueSourceType,
-                valueSourceKey, staticValue, writeStrategy, transformChain);
+                valueSourceKey, staticValue, writeStrategy, transformChain, interactiveInput);
     }
 
     /**
@@ -354,7 +374,10 @@ public final class InjectRule {
         STATIC,
 
         /** Combines literal text and {@code {{variableKey}}} placeholders from the execution context. */
-        TEMPLATE
+        TEMPLATE,
+
+        /** Asks the operator for a value immediately before applying this injection rule. */
+        INTERACTIVE
     }
 
     /**

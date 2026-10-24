@@ -269,6 +269,18 @@ class AuthManagerTest {
         }
     }
 
+    @Test
+    void cancelledRefreshDoesNotFallbackToLogin() {
+        InMemoryAccessRepository repository = repository(AuthFallbackPolicy.REFRESH_THEN_LOGIN);
+        RecordingRunner runner = new RecordingRunner().then(AuthFlowPurpose.REFRESH,
+                AuthFlowRunResult.executed(false, "[INTERACTION_ABORTED] Input cancelled", 0, Map.of(), "", List.of()));
+        org.junit.jupiter.api.Assertions.assertThrows(dev.nquangit.corestra.interaction.InteractionAbortedException.class,
+                () -> manager(repository, runner).ensureAuth("auth-1", "", Map.of(), RenderMode.STRICT));
+        assertEquals(1, runner.count(AuthFlowPurpose.REFRESH));
+        assertEquals(0, runner.count(AuthFlowPurpose.LOGIN));
+        assertEquals(AuthState.empty(), repository.authProfile("auth-1").orElseThrow().state());
+    }
+
     private static AuthManager manager(InMemoryAccessRepository repository, AuthFlowRunner runner) {
         return new AuthManager(repository, runner, new AuthRuleEvaluator(), CLOCK);
     }

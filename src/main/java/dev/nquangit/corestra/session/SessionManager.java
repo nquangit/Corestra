@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.session;
 
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.access.auth.AuthProvider;
 import dev.nquangit.corestra.access.auth.AuthState;
@@ -382,11 +383,137 @@ public final class SessionManager {
             SessionProfile ready = ensureAuthenticated(current, context);
             return new SessionInjectionPlan(
                     ready.id(), authenticationGeneration(ready.id()),
-                    renderedInjectionRules(ready, context.toolTypeName()));
+                    renderedInjectionRules(ready, context.toolTypeName()), authenticationRevision(ready));
         } finally {
             lock.unlock();
         }
     }
+
+    /** Lists currently usable existing sessions; ordinary profile scope is overridden by explicit choice. */
+    public List<SessionChoice> existingSessionChoices(SessionTrafficContext context) {
+        ArrayList<SessionChoice> choices = new ArrayList<>();
+        for (SessionProfile profile : repository.loadProfiles()) {
+            ReentrantLock lock = lockFor(profile.id());
+            if (!lock.tryLock()) continue;
+            try {
+                SessionProfile current = repository.profile(profile.id()).orElse(null);
+                ExistingSessionSnapshot snapshot = existingUsableState(current, context);
+                if (snapshot == null) continue;
+                String label = current.name() + " [" + current.id() + "]";
+                if (current.usesLinkedAuthProfile() && accessRepository != null) {
+                    AuthProfile actor = accessRepository.authProfile(current.linkedAuthProfileId()).orElse(null);
+                    if (actor != null) label += " — " + actor.name() + (actor.role().isBlank() ? "" : " / " + actor.role());
+                }
+                choices.add(new SessionChoice(current.id(), label, snapshot.state().expiresAtEpochMillis()));
+            } finally { lock.unlock(); }
+        }
+        return List.copyOf(choices);
+    }
+
+    /** Revalidates the chosen existing session and captures its rules atomically, without re-login. */
+    public SessionInjectionPlan prepareExistingSession(String id, SessionTrafficContext context) {
+        ReentrantLock lock = lockFor(id);
+        if (!lock.tryLock()) throw new InteractionAbortedException("Selected session is being maintained; try again after it finishes");
+        try {
+            SessionProfile current = repository.profile(id).orElse(null);
+            ExistingSessionSnapshot snapshot = existingUsableState(current, context);
+            if (snapshot == null) {
+                throw new InteractionAbortedException("Selected session is disabled, expired, or no longer usable");
+            }
+            return new SessionInjectionPlan(id, authenticationGeneration(id), snapshot.rules(), authenticationRevision(current));
+        } finally { lock.unlock(); }
+    }
+
+    /** Captures an existing session consistently while waiting briefly for harmless keep-alive maintenance. */
+    public SessionInjectionPlan prepareBoundSession(String id, SessionTrafficContext context) {
+        return prepareSessionSnapshot(id, context, true);
+    }
+
+    /** Prepares a complete scoped plan, preserving explicit write strategies without binding another request. */
+    public SessionInjectionPlan prepareScopedSession(String id, SessionTrafficContext context) {
+        return prepareSessionSnapshot(id, context, false);
+    }
+
+    private SessionInjectionPlan prepareSessionSnapshot(String id, SessionTrafficContext context, boolean binding) {
+        ReentrantLock lock = lockFor(id);
+        boolean acquired = false;
+        try {
+            acquired = lock.tryLock(5, TimeUnit.SECONDS);
+            if (!acquired) throw new SessionBindingException("Session maintenance did not finish within five seconds");
+            SessionProfile profile = repository.profile(id).orElse(null);
+            if (profile == null || !profile.enabled()) throw new SessionBindingException("Bound Session Profile is disabled or missing");
+            if (profile.usesLinkedAuthProfile()) {
+                if (authManager == null || accessRepository == null) throw new SessionBindingException("Shared authentication is unavailable");
+                return authManager.inspectExistingProfile(profile.linkedAuthProfileId(), actor -> boundPlan(profile, context, actor, binding));
+            }
+            return boundPlan(profile, context, null, binding);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new SessionBindingException("Session validation interrupted");
+        } finally { if (acquired) lock.unlock(); }
+    }
+
+    private SessionInjectionPlan boundPlan(SessionProfile profile, SessionTrafficContext context, AuthProfile actor, boolean binding) {
+        ExistingSessionSnapshot snapshot = existingUsableState(profile, context, actor, true, binding);
+        if (snapshot == null) throw new SessionBindingException("Bound session is expired or its injection rules are incomplete");
+        if (binding && snapshot.rules().stream().anyMatch(rule -> rule.target() == InjectRule.Target.REQUEST_RAW_BODY_APPEND
+                || rule.target() == InjectRule.Target.REQUEST_REGEX_REPLACEMENT)) {
+            throw new SessionBindingException("Session binding requires repeatable injection targets; use Header, Cookie, Query, Form, JSON or Raw Body Replace");
+        }
+        return new SessionInjectionPlan(profile.id(), authenticationGeneration(profile.id()), snapshot.rules(), authenticationRevision(profile));
+    }
+
+    private String authenticationRevision(SessionProfile profile) {
+        String actorId = profile.linkedAuthProfileId();
+        String providerId = actorId.isEmpty() || accessRepository == null ? ""
+                : accessRepository.authProfile(actorId).map(AuthProfile::providerId).orElse("");
+        return actorId.length() + ":" + actorId + "|" + providerId.length() + ":" + providerId + "|"
+                + (actorId.isEmpty() || authManager == null ? 0 : authManager.authenticationEpoch(actorId));
+    }
+
+    private ExistingSessionSnapshot existingUsableState(SessionProfile profile, SessionTrafficContext context) {
+        AuthProfile actor = profile != null && profile.usesLinkedAuthProfile() && accessRepository != null
+                ? accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null) : null;
+        return existingUsableState(profile, context, actor, false);
+    }
+
+    private ExistingSessionSnapshot existingUsableState(SessionProfile profile, SessionTrafficContext context,
+                                                       AuthProfile actor, boolean holdsActorLock) {
+        return existingUsableState(profile, context, actor, holdsActorLock, true);
+    }
+
+    private ExistingSessionSnapshot existingUsableState(SessionProfile profile, SessionTrafficContext context,
+                                                       AuthProfile actor, boolean holdsActorLock, boolean binding) {
+        if (profile == null || !profile.enabled()) return null;
+        SessionState state = profile.state();
+        AuthProvider provider = null;
+        if (profile.usesLinkedAuthProfile()) {
+            if (accessRepository == null) return null;
+            if (actor == null || !actor.enabled() || authManager == null || (!holdsActorLock && authManager.isAuthenticationInProgress(actor.id()))) return null;
+            if (!AuthProfile.MANUAL_PROVIDER_ID.equals(actor.providerId())) {
+                provider = accessRepository.authProvider(actor.providerId()).orElse(null);
+                if (provider == null || !provider.enabled()) return null;
+            }
+            state = linkedState(actor);
+        }
+        if (state.missingOrExpired(clock.millis()) && (binding || hasAuthentication(profile) || !state.values().isEmpty())) return null;
+        List<InjectRule> rules = renderedInjectionRules(profile, context.toolTypeName(), actor, provider);
+        if (rules.isEmpty() || rules.stream().anyMatch(rule -> rule.staticValue().isBlank()
+                || (binding && rule.writeStrategy() != InjectRule.WriteStrategy.OVERWRITE))) return null;
+        // Reject partial plans rather than retaining one of the original request's auth fields.
+        for (SessionInjectionRule local : profile.injectionRules()) {
+            if (local.enabled() && local.allowsTool(context.toolTypeName())
+                    && rules.stream().noneMatch(rule -> rule.id().equals(local.id()))) return null;
+        }
+        if (provider != null) {
+            for (var rule : provider.injectionRules()) {
+                if (rule.enabled() && rules.stream().noneMatch(rendered -> rendered.id().equals("linked-provider-" + rule.id()))) return null;
+            }
+        }
+        return new ExistingSessionSnapshot(state, rules);
+    }
+
+    private record ExistingSessionSnapshot(SessionState state, List<InjectRule> rules) { }
 
     /**
      * Applies response extraction only when the response belongs to the current authentication
@@ -473,16 +600,19 @@ public final class SessionManager {
      */
     public List<InjectRule> renderedInjectionRules(SessionProfile profile, String toolTypeName) {
         Objects.requireNonNull(profile, "profile");
+        AuthProfile actor = profile.usesLinkedAuthProfile() && accessRepository != null
+                ? accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null) : null;
+        AuthProvider provider = actor == null ? null : accessRepository.authProvider(actor.providerId()).orElse(null);
+        return renderedInjectionRules(profile, toolTypeName, actor, provider);
+    }
+
+    private List<InjectRule> renderedInjectionRules(SessionProfile profile, String toolTypeName,
+                                                   AuthProfile actor, AuthProvider provider) {
         ArrayList<InjectRule> rules = new ArrayList<>();
         SessionState selectedTemplateState = profile.state();
-        if (profile.usesLinkedAuthProfile() && accessRepository != null) {
-            AuthProfile authProfile = accessRepository.authProfile(profile.linkedAuthProfileId()).orElse(null);
-            if (authProfile != null) {
-                AuthProvider provider = accessRepository.authProvider(authProfile.providerId()).orElse(null);
-                rules.addAll(authInjectionRuleRenderer.render(authProfile, provider));
-                // Provider rules and local overrides must use the same immutable auth snapshot.
-                selectedTemplateState = linkedState(authProfile);
-            }
+        if (actor != null) {
+            rules.addAll(authInjectionRuleRenderer.render(actor, provider));
+            selectedTemplateState = linkedState(actor);
         }
         SessionState templateState = selectedTemplateState;
         for (SessionInjectionRule rule : profile.injectionRules()) {
@@ -834,6 +964,9 @@ public final class SessionManager {
         }
 
         ExecutionResult result = flowEngine.execute(flow, context);
+        if (InteractionAbortedException.isAborted(result.failureMessage())) {
+            throw new InteractionAbortedException("Session authentication interaction aborted");
+        }
         if (!result.success() || result.stepRecords().isEmpty()) {
             return Optional.empty();
         }

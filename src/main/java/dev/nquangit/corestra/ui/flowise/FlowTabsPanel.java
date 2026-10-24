@@ -30,6 +30,7 @@ import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.event.ChangeListener;
 import java.awt.BasicStroke;
+import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
@@ -86,7 +87,12 @@ public final class FlowTabsPanel extends JTabbedPane {
     private final MontoyaApi api;
     private final AccessUiController accessController;
     private final FlowExecutionLog executionLog;
-    private final Map<String, FlowWorkspacePanel> panelCache = new LinkedHashMap<>();
+    // One native editor workspace serves all tabs. Deleted flows cannot retain hidden panels.
+    private final Map<String, JPanel> panelCache = new LinkedHashMap<>();
+    private FlowWorkspacePanel workspace;
+    private final Map<String, FlowWorkspacePanel.ViewState> viewStates = new LinkedHashMap<>();
+    private String workspaceFlowId;
+    private List<FlowDefinition> renderedFlows = List.of();
     private boolean refreshing = false;
 
     public FlowTabsPanel(FlowWorkspaceController controller, MontoyaApi api) {
@@ -171,47 +177,61 @@ public final class FlowTabsPanel extends JTabbedPane {
         refreshing = true;
         try {
             List<FlowDefinition> flows = controller.flows();
-            for (FlowDefinition flow : flows) {
-                panelCache.computeIfAbsent(flow.id(), id ->
-                        new FlowWorkspacePanel(controller, api, accessController, executionLog));
+            boolean rebuild = getTabCount() == 0 || !renderedFlows.equals(flows);
+            if (workspace == null && !flows.isEmpty()) {
+                workspace = new FlowWorkspacePanel(controller, api, accessController, executionLog);
             }
-            panelCache.keySet().retainAll(flows.stream().map(FlowDefinition::id).toList());
+            if (rebuild) {
+                for (FlowDefinition flow : flows) {
+                    panelCache.computeIfAbsent(flow.id(), id -> new JPanel(new BorderLayout()));
+                }
+                panelCache.keySet().retainAll(flows.stream().map(FlowDefinition::id).toList());
+                removeAll();
+                for (int i = 0; i < flows.size(); i++) {
+                    FlowDefinition flow = flows.get(i);
+                    addTab(flow.name(), panelCache.get(flow.id()));
+                    setTabComponentAt(i, buildFlowTabComponent(flow));
+                }
 
-            removeAll();
-            for (int i = 0; i < flows.size(); i++) {
-                FlowDefinition flow = flows.get(i);
-                addTab(flow.name(), panelCache.get(flow.id()));
-                setTabComponentAt(i, buildFlowTabComponent(flow));
+                // Keep the "+" pseudo-tab after all flow tabs.
+                // Using a MouseListener on the label directly because JLabel-as-tab-component intercepts
+                // mouse events before they reach the JTabbedPane's own selection mechanism.
+                addTab("", new JPanel());
+                JLabel addLabel = new JLabel(" + ");
+                Font af = addLabel.getFont();
+                if (af != null) addLabel.setFont(af.deriveFont(Font.BOLD));
+                addLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+                addLabel.setToolTipText("Add new flow");
+                addLabel.addMouseListener(new MouseAdapter() {
+                    @Override public void mouseClicked(MouseEvent e) {
+                        if (SwingUtilities.isLeftMouseButton(e)) addFlow();
+                    }
+                });
+                setTabComponentAt(getTabCount() - 1, addLabel);
+                renderedFlows = flows;
             }
 
             FlowDefinition active = controller.activeFlow();
             if (active == null && !flows.isEmpty()) {
-                // Auto-select first flow on initial load (activeFlow is not persisted).
-                // refreshing=true blocks our own re-entrant refresh(); other listeners (StepListPanel) run normally.
-                active = flows.get(0);
+                active = flows.getFirst();
                 controller.setActiveFlow(active);
+            }
+            JPanel target = active == null ? null : panelCache.get(active.id());
+            if (workspace != null && workspace.getParent() != target) {
+                Container previous = workspace.getParent();
+                if (workspaceFlowId != null) viewStates.put(workspaceFlowId, workspace.viewState());
+                if (previous != null) previous.remove(workspace);
+                workspaceFlowId = active == null ? null : active.id();
+                if (target != null) {
+                    target.add(workspace, BorderLayout.CENTER);
+                    workspace.restoreViewState(viewStates.get(workspaceFlowId));
+                }
             }
             if (active != null) {
                 int idx = indexOfFlow(flows, active.id());
                 if (idx >= 0) setSelectedIndex(idx);
             }
-
-            // "+" pseudo-tab — must be added after the active-tab selection so indices stay correct.
-            // Using a MouseListener on the label directly because JLabel-as-tab-component intercepts
-            // mouse events before they reach the JTabbedPane's own selection mechanism.
-            addTab("", new JPanel());
-            JLabel addLabel = new JLabel(" + ");
-            Font af = addLabel.getFont();
-            if (af != null) addLabel.setFont(af.deriveFont(Font.BOLD));
-            addLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            addLabel.setToolTipText("Add new flow");
-            addLabel.addMouseListener(new MouseAdapter() {
-                @Override public void mouseClicked(MouseEvent e) {
-                    if (SwingUtilities.isLeftMouseButton(e)) addFlow();
-                }
-            });
-            setTabComponentAt(getTabCount() - 1, addLabel);
-
+            viewStates.keySet().retainAll(panelCache.keySet());
             revalidate();
             repaint();
         } finally {
@@ -348,7 +368,7 @@ public final class FlowTabsPanel extends JTabbedPane {
             item.setIcon(colorSwatch(ACCENT_LIGHT[i]));
             item.setSelected(i == current);
             final int colorIdx = i;
-            item.addActionListener(e -> { saveColorIndex(flow.id(), colorIdx); refresh(); });
+            item.addActionListener(e -> { saveColorIndex(flow.id(), colorIdx); renderedFlows = List.of(); refresh(); });
             group.add(item);
             colorMenu.add(item);
         }

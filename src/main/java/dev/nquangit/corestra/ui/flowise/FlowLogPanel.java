@@ -44,6 +44,11 @@ public final class FlowLogPanel extends JPanel {
     private final HttpRequestEditor requestEditor;
     private final HttpResponseEditor responseEditor;
     private List<FlowExecutionLog.Entry> visibleEntries = List.of();
+    private final java.util.concurrent.atomic.AtomicBoolean refreshQueued = new java.util.concurrent.atomic.AtomicBoolean();
+    private boolean dirty = true;
+    private boolean updatingRows;
+    private boolean viewersInitialized;
+    private FlowExecutionLog.Entry displayedEntry;
 
     /** Creates a log panel for the active flow. */
     public FlowLogPanel(FlowWorkspaceController controller, FlowExecutionLog log, MontoyaApi api) {
@@ -58,7 +63,7 @@ public final class FlowLogPanel extends JPanel {
         };
         table = new JTable(model);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        table.getSelectionModel().addListSelectionListener(event -> showSelected());
+        table.getSelectionModel().addListSelectionListener(event -> { if (!event.getValueIsAdjusting() && !updatingRows) showSelected(); });
 
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 3));
         controls.add(new JLabel("Filter:"));
@@ -66,6 +71,9 @@ public final class FlowLogPanel extends JPanel {
         StyledButton clear = StyledButton.danger("Clear log");
         clear.addActionListener(event -> log.clear());
         controls.add(clear);
+        JLabel limits = new JLabel("Log retains up to 1,000 steps / 32 MiB of raw HTTP text");
+        limits.setToolTipText("Older entries are evicted. Oversized HTTP payloads are omitted from the log only; flow execution and extraction remain intact.");
+        controls.add(limits);
 
         JSplitPane viewers = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 requestEditor.uiComponent(), responseEditor.uiComponent());
@@ -82,15 +90,26 @@ public final class FlowLogPanel extends JPanel {
             @Override public void removeUpdate(DocumentEvent event) { refresh(); }
             @Override public void changedUpdate(DocumentEvent event) { refresh(); }
         });
-        controller.addFlowChangeListener(this::refresh);
-        log.addListener(() -> {
-            if (SwingUtilities.isEventDispatchThread()) refresh();
-            else SwingUtilities.invokeLater(this::refresh);
+        controller.addFlowChangeListener(this::requestRefresh);
+        log.addListener(this::requestRefresh);
+        addHierarchyListener(event -> {
+            if (isShowing() && dirty) requestRefresh();
         });
-        refresh();
+    }
+
+    private void requestRefresh() {
+        if (refreshQueued.compareAndSet(false, true)) {
+            SwingUtilities.invokeLater(() -> {
+                refreshQueued.set(false);
+                dirty = true;
+                refresh();
+            });
+        }
     }
 
     private void refresh() {
+        if (!isShowing()) { dirty = true; return; }
+        dirty = false;
         FlowDefinition active = controller.activeFlow();
         String query = filter.getText().strip().toLowerCase(Locale.ROOT);
         List<FlowExecutionLog.Entry> filtered = new ArrayList<>();
@@ -101,15 +120,24 @@ public final class FlowLogPanel extends JPanel {
             if (!query.isEmpty() && !searchable.toLowerCase(Locale.ROOT).contains(query)) continue;
             filtered.add(entry);
         }
+        if (visibleEntries.equals(filtered) && viewersInitialized) return;
+        FlowExecutionLog.Entry selected = displayedEntry;
+        updatingRows = true;
         visibleEntries = List.copyOf(filtered);
         model.setRowCount(0);
         for (FlowExecutionLog.Entry entry : visibleEntries) {
             model.addRow(new Object[]{
                     entry.startedAtEpochMillis() == 0 ? "" : TIME.format(Instant.ofEpochMilli(entry.startedAtEpochMillis())),
-                    entry.flowName(), entry.stepId(), entry.success() ? "PASS" : "FAIL",
+                    entry.flowName(), entry.stepId(), (entry.success() ? "PASS" : "FAIL")
+                            + (entry.errorMessage().contains("Raw HTTP omitted from Flow Log:") ? " (payload omitted)" : ""),
                     entry.statusCode() == 0 ? "-" : entry.statusCode(), entry.durationMillis()});
         }
-        if (!visibleEntries.isEmpty()) table.setRowSelectionInterval(0, 0);
+        if (!visibleEntries.isEmpty()) {
+            int row = selected == null ? -1 : visibleEntries.indexOf(selected);
+            table.setRowSelectionInterval(Math.max(0, row), Math.max(0, row));
+        }
+        updatingRows = false;
+        if (!visibleEntries.isEmpty()) showSelected();
         else clearViewers();
     }
 
@@ -117,6 +145,9 @@ public final class FlowLogPanel extends JPanel {
         int row = table.getSelectedRow();
         if (row < 0 || row >= visibleEntries.size()) return;
         FlowExecutionLog.Entry entry = visibleEntries.get(row);
+        if (viewersInitialized && entry.equals(displayedEntry)) return;
+        displayedEntry = entry;
+        viewersInitialized = true;
         try {
             requestEditor.setRequest(HttpRequest.httpRequest(entry.request().isBlank()
                     ? "GET / HTTP/1.1\r\nHost: unavailable\r\n\r\n" : entry.request()));
@@ -132,6 +163,9 @@ public final class FlowLogPanel extends JPanel {
     }
 
     private void clearViewers() {
+        if (viewersInitialized && displayedEntry == null) return;
+        displayedEntry = null;
+        viewersInitialized = true;
         requestEditor.setRequest(HttpRequest.httpRequest("GET / HTTP/1.1\r\nHost: unavailable\r\n\r\n"));
         responseEditor.setResponse(HttpResponse.httpResponse(""));
     }

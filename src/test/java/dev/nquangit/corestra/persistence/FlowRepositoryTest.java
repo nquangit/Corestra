@@ -33,6 +33,24 @@ class FlowRepositoryTest {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Test
+    void cachedFlowsAvoidRepeatedParsingAndWritesAndClearInvalidatesCache() {
+        FakePersistence persistence = new FakePersistence();
+        FlowRepository repository = repository(persistence);
+        var flows = List.of(sampleFlowDefinition());
+        repository.saveAll(flows);
+        for (int i = 0; i < 20; i++) {
+            assertEquals(flows, repository.loadAll());
+            repository.saveAll(flows);
+        }
+        assertEquals(0, persistence.extensionDataState().getStringCallCount);
+        assertEquals(1, persistence.extensionDataState().setStringCallCount());
+        repository.clear();
+        assertEquals(List.of(), repository.loadAll());
+        repository.saveAll(flows);
+        assertEquals(flows, repository.loadAll());
+    }
+
+    @Test
     void loadAllReturnsEmptyWhenStorageMissingWithoutWritingDefaults() {
         FakePersistence persistence = new FakePersistence();
         FlowRepository repository = repository(persistence);
@@ -317,6 +335,7 @@ class FlowRepositoryTest {
     private static final class PersistedObjectState {
         private final Map<String, String> stringValues = new HashMap<>();
         private int setStringCallCount;
+        private int getStringCallCount;
         private int deleteStringCallCount;
         private final PersistedObject proxy = (PersistedObject) Proxy.newProxyInstance(
                 PersistedObject.class.getClassLoader(),
@@ -327,7 +346,7 @@ class FlowRepositoryTest {
                     }
 
                     return switch (method.getName()) {
-                        case "getString" -> stringValues.get((String) args[0]);
+                        case "getString" -> { getStringCallCount++; yield stringValues.get((String) args[0]); }
                         case "setString" -> {
                             setStringCallCount++;
                             stringValues.put((String) args[0], (String) args[1]);

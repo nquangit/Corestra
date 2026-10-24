@@ -1,5 +1,10 @@
 package dev.nquangit.corestra.integration;
 
+import dev.nquangit.corestra.session.SessionTrafficContext;
+import dev.nquangit.corestra.session.SessionRequestSession;
+import dev.nquangit.corestra.session.SessionExecutionBinding;
+import dev.nquangit.corestra.session.SessionBindingException;
+import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -76,6 +81,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
     private final Clock clock;
     private final ExecutorService phase3Executor;
     private final int maxPendingTriggers;
+    private SessionFlowBindingService sessionBindings;
     private final long pendingTtlMillis;
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -102,6 +108,14 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         this(flowsSupplier, flowEngine, extractionService, injectionService, Clock.systemUTC(),
                 Executors.newFixedThreadPool(2, daemonThreadFactory()),
                 DEFAULT_MAX_PENDING_TRIGGERS, DEFAULT_PENDING_TTL_MILLIS);
+    }
+
+    /** Creates a trigger handler that can inherit the initiating request's prepared session. */
+    public AutoTriggerHttpHandler(Supplier<List<FlowDefinition>> flows, FlowEngine engine,
+                                  ExtractionService extraction, InjectionService injection,
+                                  SessionFlowBindingService bindings) {
+        this(flows, engine, extraction, injection);
+        this.sessionBindings = Objects.requireNonNull(bindings, "bindings");
     }
 
     AutoTriggerHttpHandler(
@@ -153,6 +167,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 .collect(Collectors.toList());
         String body = req.bodyToString();
 
+        var initiatingSession = sessionBindings == null ? java.util.Optional.<SessionRequestSession>empty()
+                : sessionBindings.liveSession(req.messageId());
         for (FlowDefinition flow : flowsSupplier.get()) {
             if (!flow.enabled()) continue;
             List<FlowStep> steps = flow.steps();
@@ -161,12 +177,25 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 if (!step.enabled()) continue;
                 StepTriggerRule rule = step.triggerRule();
                 if (!rule.enabled()) continue;
-                if (!rule.matches(toolTypeName, host, path, allHeaders, body)) continue;
+                List<String> matchHeaders = allHeaders;
+                if (rule.inheritSession() && sessionBindings != null) {
+                    matchHeaders = initiatingSession.map(source -> SessionRequestSession.matchHeaders(source.originalTraffic().headers(), allHeaders)).orElse(allHeaders);
+                }
+                if (!rule.matches(toolTypeName, host, path, matchHeaders, body)) continue;
 
                 try {
-                    HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body);
+                    HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body, initiatingSession);
                     return RequestToBeSentAction.continueWith(modified);
+                } catch (SessionBindingException aborted) {
+                    System.err.println("[Corestra] Trigger stopped: " + aborted.getMessage());
+                    return RequestToBeSentAction.drop();
+                } catch (InteractionAbortedException aborted) {
+                    return RequestToBeSentAction.drop();
                 } catch (RuntimeException ignored) {
+                    if (rule.inheritSession()) {
+                        System.err.println("[Corestra] Trigger stopped: [SESSION_BINDING_ABORTED] Bound request preparation failed; request was not sent");
+                        return RequestToBeSentAction.drop();
+                    }
                     // Never block the live request due to a trigger failure.
                 }
                 return RequestToBeSentAction.continueWith(req);
@@ -263,7 +292,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             int matchedIndex,
             HttpRequestToBeSent req,
             List<String> allHeaders,
-            String body) {
+            String body,
+            java.util.Optional<SessionRequestSession> initiatingSession) {
 
         FlowStep matchedStep = steps.get(matchedIndex);
         StepTriggerRule rule = matchedStep.triggerRule();
@@ -272,6 +302,21 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         // Phase 1: run prerequisite steps with stored templates.
         ExecutionContext ctx = ExecutionContext.start(
                 UUID.randomUUID().toString(), flow.id(), Map.of(), System.currentTimeMillis());
+        if (rule.inheritSession()) {
+            if (sessionBindings == null) throw new SessionBindingException("Session binding runtime is unavailable");
+            var source = initiatingSession.orElseThrow(() ->
+                    new SessionBindingException("No session was prepared for the triggering request"));
+            ctx = sessionBindings.bind(ctx, source, rule);
+            var binding = SessionExecutionBinding.read(ctx);
+            binding.requireDestination(SessionTrafficContexts.fromRequest(req, binding.tool()));
+            for (int index = 0; index <= stopIdx; index++) {
+                if (index == matchedIndex || !steps.get(index).enabled()) continue;
+                var template = steps.get(index).requestTemplate();
+                binding.requireDestination(new SessionTrafficContext(binding.tool(), false,
+                        template.method(), template.host(), template.pathAndQuery(), template.headerLines(), template.body(),
+                        template.scheme(), template.port()));
+            }
+        }
         ctx = runStepRange(flow, steps, 0, matchedIndex - 1, ctx);
 
         // Build the request snapshot before storing the pending trigger — it is needed later
@@ -288,13 +333,21 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         ctx = applyExtractRulesToContext(matchedStep, requestSnapshot, emptyResponse, ctx);
 
         MutableHttpRequest mutable = new MutableHttpRequest(requestLine, allHeaders, body);
-        RequestMutationResult mutated = injectionService.apply(
-                matchedStep.injectRules(), ctx.variables(), mutable);
+        RequestMutationResult mutated = rule.inheritSession()
+                ? injectionService.applyRequired(matchedStep.injectRules(), ctx.variables(), mutable)
+                : injectionService.apply(matchedStep.injectRules(), ctx.variables(), mutable);
 
         // Phase 3 is deferred to handleHttpResponseReceived so that response-extracted variables
         // are available to downstream steps before they execute.
 
         HttpRequest modified = HttpRequestMutationAdapter.apply(req, mutated);
+        if (rule.inheritSession()) {
+            modified = sessionBindings.apply(ctx, modified);
+            if (closed.get()) throw new SessionBindingException("Extension unloaded during trigger execution");
+            requestSnapshot = new HttpMessageSnapshot(modified.method() + " " + modified.path() + " " + modified.httpVersion(),
+                    modified.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), modified.bodyToString(),
+                    HttpBodyBytes.readForExtraction(modified, matchedStep.extractRules(), ExtractRule.SourceSide.REQUEST));
+        }
         // Publish only after prerequisite execution and request preparation both succeed.
         storePending(req.messageId(), new PendingTrigger(
                 flow, matchedIndex, stopIdx, ctx, requestSnapshot, clock.millis()));
@@ -371,6 +424,15 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 slice, flow.rules(), AggregationPlan.disabled(), flow.triggerConfig());
         ExecutionResult result = flowEngine.execute(sliceFlow, ctx);
         if (!result.success()) {
+            if (SessionBindingException.isAborted(result.failureMessage())) {
+                throw new SessionBindingException("Bound step execution failed: " + result.failureMessage());
+            }
+            if (InteractionAbortedException.isAborted(result.failureMessage())) {
+                throw new InteractionAbortedException("Auto-trigger input was aborted");
+            }
+            if (SessionExecutionBinding.isBound(ctx)) {
+                throw new SessionBindingException("Bound prerequisite failed; live request was stopped");
+            }
             throw new IllegalStateException("Auto-trigger prerequisite execution failed: " + result.failureMessage());
         }
         ctx = result.finalContext().orElse(ctx);

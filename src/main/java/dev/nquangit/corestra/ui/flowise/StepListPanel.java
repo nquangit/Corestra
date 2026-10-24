@@ -60,6 +60,10 @@ public final class StepListPanel extends JPanel {
     private final AccessUiController accessController;
     private final JPanel listContainer;
 
+    private List<FlowStep> renderedSteps;
+    private boolean renderedDark;
+    private Color renderedBackground;
+    // Last rendered selection; only refresh() updates it from the controller.
     private String  selectedStepId  = null;
     private String  draggedStepId   = null;
     private int     dropTargetIndex = -1;
@@ -121,16 +125,33 @@ public final class StepListPanel extends JPanel {
         FlowDefinition active = controller.activeFlow();
         List<FlowStep> steps = (active == null) ? List.of() : active.steps();
         FlowStep controllerSelection = controller.selectedStep();
+        String previousSelection = selectedStepId;
         selectedStepId = controllerSelection != null
                 && steps.stream().anyMatch(step -> step.id().equals(controllerSelection.id()))
                 ? controllerSelection.id()
                 : null;
 
-        listContainer.removeAll();
         boolean dark = UiTheme.isDark();
 
         Color listBg = UIManager.getColor("List.background");
         if (listBg == null) listBg = dark ? new Color(0x1A2030) : new Color(0xF8FAFC);
+        if (steps.equals(renderedSteps) && dark == renderedDark && Objects.equals(listBg, renderedBackground)) {
+            if (Objects.equals(previousSelection, selectedStepId)) return;
+            for (int i = 0; i < steps.size(); i++) {
+                String id = steps.get(i).id();
+                if (id.equals(previousSelection) || id.equals(selectedStepId)) {
+                    listContainer.remove(i);
+                    listContainer.add(buildRow(steps.get(i), i, dark, listBg), i);
+                }
+            }
+            listContainer.revalidate();
+            listContainer.repaint();
+            return;
+        }
+        renderedSteps = steps;
+        renderedDark = dark;
+        renderedBackground = listBg;
+        listContainer.removeAll();
         listContainer.setBackground(listBg);
 
         for (int i = 0; i < steps.size(); i++) {
@@ -334,12 +355,20 @@ public final class StepListPanel extends JPanel {
         MouseAdapter ma = new MouseAdapter() {
             private boolean dragging = false;
 
+            private void showPopup(MouseEvent event) {
+                Point location = SwingUtilities.convertPoint(event.getComponent(), event.getPoint(), listContainer);
+                dragging = false;
+                draggedStepId = null;
+                dropTargetIndex = -1;
+                dropIndicatorY = -1;
+                controller.setSelectedStep(step);
+                // Selection can replace the clicked row; anchor the menu to the stable container.
+                contextMenu.show(listContainer, location.x, location.y);
+            }
+
             @Override public void mousePressed(MouseEvent e) {
                 if (e.isPopupTrigger()) {
-                    selectedStepId = step.id();
-                    controller.setSelectedStep(step);
-                    refresh();
-                    contextMenu.show(e.getComponent(), e.getX(), e.getY());
+                    showPopup(e);
                     return;
                 }
                 if (!SwingUtilities.isLeftMouseButton(e)) return;
@@ -361,11 +390,7 @@ public final class StepListPanel extends JPanel {
 
             @Override public void mouseReleased(MouseEvent e) {
                 if (e.isPopupTrigger()) {
-                    selectedStepId = step.id();
-                    controller.setSelectedStep(step);
-                    refresh();
-                    contextMenu.show(e.getComponent(), e.getX(), e.getY());
-                    dragging = false; draggedStepId = null; dropTargetIndex = -1; dropIndicatorY = -1;
+                    showPopup(e);
                     return;
                 }
                 if (dragging) {
@@ -383,9 +408,7 @@ public final class StepListPanel extends JPanel {
                     }
                 } else {
                     // Plain click (no drag) — select the step now.
-                    selectedStepId = step.id();
                     controller.setSelectedStep(step);
-                    refresh();
                 }
                 dragging        = false;
                 draggedStepId   = null;
@@ -552,7 +575,6 @@ public final class StepListPanel extends JPanel {
         if (agg.enabled() && agg.finalStepId().equals(step.id()))
             agg = AggregationPlan.disabled();
         if (step.id().equals(selectedStepId)) {
-            selectedStepId = null;
             controller.setSelectedStep(null);
         }
         controller.updateFlow(new FlowDefinition(active.id(), active.name(),

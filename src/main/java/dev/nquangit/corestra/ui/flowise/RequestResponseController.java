@@ -33,6 +33,10 @@ public final class RequestResponseController {
     private final HttpRequestEditor requestEditor;
     private final HttpResponseEditor responseEditor;
     private final MontoyaApi api;
+    private boolean initialized;
+    private StoredRequestTemplate displayedRequest;
+    private HttpResponse displayedCaptured;
+    private String displayedResponseRaw;
 
     /**
      * Creates a controller that wires the supplied editors to the workspace controller.
@@ -78,22 +82,23 @@ public final class RequestResponseController {
 
     private void refresh() {
         FlowStep step = workspaceController.selectedStep();
-        if (step == null) {
-            requestEditor.setRequest(HttpRequest.httpRequest("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"));
-            responseEditor.setResponse(HttpResponse.httpResponse(""));
-            return;
+        StoredRequestTemplate request = step == null ? null : step.requestTemplate();
+        HttpResponse captured = step == null ? null : workspaceController.getCapturedResponse(step.id());
+        String raw = step == null ? null : step.lastResponseRaw();
+        if (!initialized || !Objects.equals(displayedRequest, request)) {
+            requestEditor.setRequest(request == null
+                    ? HttpRequest.httpRequest("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+                    : templateToMontoyaRequest(request));
+            displayedRequest = request;
         }
-
-        requestEditor.setRequest(templateToMontoyaRequest(step.requestTemplate()));
-
-        // Priority: in-memory captured response (same session) > persisted lastResponseRaw > empty.
-        HttpResponse captured = workspaceController.getCapturedResponse(step.id());
-        if (captured != null) {
-            responseEditor.setResponse(captured);
-        } else {
-            HttpResponse persisted = decodeResponse(step.lastResponseRaw());
-            responseEditor.setResponse(persisted != null ? persisted : HttpResponse.httpResponse(""));
+        if (!initialized || displayedCaptured != captured
+                || (captured == null && !Objects.equals(displayedResponseRaw, raw))) {
+            HttpResponse response = captured != null ? captured : decodeResponse(raw);
+            responseEditor.setResponse(response != null ? response : HttpResponse.httpResponse(""));
+            displayedCaptured = captured;
+            displayedResponseRaw = raw;
         }
+        initialized = true;
     }
 
     private static HttpResponse decodeResponse(String raw) {

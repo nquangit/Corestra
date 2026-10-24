@@ -84,6 +84,14 @@ public final class FlowisePanel extends JPanel {
         refresh();
     }
 
+    /** Adds an explicit copy-to-manual action without changing Flowise request editors or flow data. */
+    public void setManualTestingAction(java.util.function.Consumer<dev.nquangit.corestra.flow.FlowDefinition> copy) {
+        var button = StyledButton.primary("Copy active flow to Manual Testing");
+        button.addActionListener(event -> { if (controller.activeFlow() != null) copy.accept(controller.activeFlow()); });
+        JPanel bar = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 2)); bar.add(button);
+        add(bar, BorderLayout.NORTH);
+    }
+
     // -------------------------------------------------------------------------
     // Internal
     // -------------------------------------------------------------------------

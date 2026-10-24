@@ -236,7 +236,8 @@ public final class RuleSummaryPanel extends JPanel {
                     rule.name(),
                     rule.target(),
                     rule.targetSelector(),
-                    rule.valueSourceType() != InjectRule.ValueSourceType.VARIABLE
+                    rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE
+                            ? "Interactive input" : rule.valueSourceType() != InjectRule.ValueSourceType.VARIABLE
                             ? "\"" + rule.staticValue() + "\""
                             : "$" + rule.valueSourceKey(),
                     String.join(" → ", rule.transformChain()),

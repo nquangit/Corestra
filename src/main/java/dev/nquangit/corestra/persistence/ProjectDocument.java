@@ -22,6 +22,7 @@ public final class ProjectDocument {
     private final ProjectMetadata metadata;
     private final ProjectSettings settings;
     private final List<FlowDefinition> flows;
+    private final List<FlowDefinition> manualFlows;
     private final AccessWorkspace accessWorkspace;
     private final List<AccessEvidence> accessEvidence;
     private final AccessPlanSummary latestAccessPlanSummary;
@@ -191,6 +192,14 @@ public final class ProjectDocument {
             AccessPlanSummary latestAccessPlanSummary,
             Map<String, SavedFindingDraft> accessReportDrafts,
             List<SessionProfile> sessionProfiles) {
+        this(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence, latestAccessPlanSummary, accessReportDrafts, sessionProfiles, List.of());
+    }
+
+    /** Creates a project document with independent manual draft configuration, excluding runtime variables/results. */
+    public ProjectDocument(int schemaVersion, ProjectMetadata metadata, ProjectSettings settings, List<FlowDefinition> flows,
+                           AccessWorkspace accessWorkspace, List<AccessEvidence> accessEvidence, AccessPlanSummary latestAccessPlanSummary,
+                           Map<String, SavedFindingDraft> accessReportDrafts, List<SessionProfile> sessionProfiles, List<FlowDefinition> manualFlows) {
+        this.manualFlows = List.copyOf(manualFlows);
         this.schemaVersion = schemaVersion;
         this.metadata = Objects.requireNonNull(metadata, "metadata");
         this.settings = Objects.requireNonNullElse(settings, ProjectSettings.defaults());
@@ -229,6 +238,15 @@ public final class ProjectDocument {
      * @return immutable flow definitions
      */
     public List<FlowDefinition> flows() { return flows; }
+
+    /** Returns independent manual drafts; runtime variables and exchanges are not project configuration. */
+    public List<FlowDefinition> manualFlows() { return manualFlows; }
+
+    /** Adds manual configuration to a document while preserving every other subsystem. */
+    public ProjectDocument withManualFlows(List<FlowDefinition> drafts) {
+        return new ProjectDocument(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence,
+                latestAccessPlanSummary, accessReportDrafts, sessionProfiles, drafts);
+    }
 
     /**
      * Returns access-testing workspace data.

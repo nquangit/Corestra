@@ -85,6 +85,7 @@ public final class ProjectSerializer {
         root.set("metadata", objectMapper.valueToTree(doc.metadata()));
         root.set("settings", objectMapper.valueToTree(doc.settings()));
         root.set("flows", flowSerializer.objectMapper().valueToTree(flowsForMode(doc.flows(), exportMode)));
+        root.set("manualFlows", flowSerializer.objectMapper().valueToTree(flowsForMode(doc.manualFlows(), exportMode)));
         root.set("access", accessWorkspaceSerializer.serialize(
                 AccessWorkspaceConfiguration.projectState(doc.accessDocument()), exportMode));
         root.set("sessions", objectMapper.valueToTree(
@@ -121,12 +122,15 @@ public final class ProjectSerializer {
             AccessWorkspaceDocument accessDocument = accessWorkspaceSerializer.deserialize(root.get("access"));
             AccessWorkspaceDocument accessProjectState = AccessWorkspaceConfiguration.projectState(accessDocument);
             List<SessionProfile> sessionProfiles = deserializeSessionProfiles(root.get("sessions"));
+            if (root.has("manualFlows") && !root.get("manualFlows").isArray()) throw new IllegalArgumentException("manualFlows must be an array");
+            List<FlowDefinition> manualFlows = root.has("manualFlows") ? deserializeFlowsNode(root.get("manualFlows")) : List.of();
+            if (manualFlows.stream().map(FlowDefinition::id).distinct().count() != manualFlows.size()) throw new IllegalArgumentException("Duplicate manual draft IDs");
             return new ProjectDocument(CURRENT_SCHEMA_VERSION, metadata, settings, flows,
                     accessProjectState.workspace(),
                     accessProjectState.evidence(),
                     accessProjectState.latestSummary().orElse(null),
                     accessProjectState.reportDrafts(),
-                    sessionProfiles);
+                    sessionProfiles).withManualFlows(manualFlows);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Failed to parse project document: " + e.getMessage(), e);
         }

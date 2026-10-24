@@ -1,5 +1,6 @@
 package dev.nquangit.corestra.ui.flowise;
 
+import dev.nquangit.corestra.interaction.InteractiveInputConfig;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
@@ -400,6 +401,21 @@ public final class RuleEditorDialog extends JDialog {
                 staticValueField.requestFocusInWindow();
             }
         });
+        var inputConfig = existing != null && existing.interactiveInput() != null
+                ? existing.interactiveInput() : InteractiveInputConfig.defaults();
+        JTextField promptField = new JTextField(inputConfig.prompt(), 24);
+        promptField.setName("interactivePrompt");
+        JCheckBox secretBox = new JCheckBox("Mask input", inputConfig.secret());
+        secretBox.setName("interactiveSecret");
+        JSpinner timeoutSpinner = new JSpinner(new SpinnerNumberModel(inputConfig.timeoutSeconds(), 1, 3600, 1));
+        timeoutSpinner.setName("interactiveTimeout");
+        JPanel interactiveOptions = new JPanel(new BorderLayout(6, 0));
+        interactiveOptions.add(secretBox, BorderLayout.WEST);
+        JPanel timeoutOptions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        timeoutOptions.add(new JLabel("Timeout (s):")); timeoutOptions.add(timeoutSpinner);
+        interactiveOptions.add(timeoutOptions, BorderLayout.CENTER);
+        JLabel promptLabel = new JLabel("Input prompt:");
+        JLabel interactiveHelp = new JLabel("Ask before this request; cancel or timeout stops execution. Transforms apply below.");
         JTextArea transformsArea = new JTextArea(
                 existing != null ? String.join("\n", existing.transformChain()) : "", 5, 24);
         JComboBox<InjectRule.WriteStrategy> strategyCombo =
@@ -409,6 +425,7 @@ public final class RuleEditorDialog extends JDialog {
         JLabel variableHelpLabel = new JLabel(variableOptions.isEmpty()
                 ? "No known variables yet; enter a custom runtime key."
                 : "Choose a known key or type a custom key. The flow stores the key, not a profile ID.");
+        JLabel previewTitle = new JLabel("Preview:");
         JLabel previewLabel = new JLabel(" ");
         JButton saveToProfileButton = new JButton("Save value to profile…");
         saveToProfileButton.setToolTipText(
@@ -426,11 +443,16 @@ public final class RuleEditorDialog extends JDialog {
         Runnable updateSourceFields = () -> {
             boolean isStatic = sourceTypeCombo.getSelectedItem() == InjectRule.ValueSourceType.STATIC;
             boolean isTemplate = sourceTypeCombo.getSelectedItem() == InjectRule.ValueSourceType.TEMPLATE;
-            sourceKeyLabel.setVisible(!isStatic);
-            sourceKeyCombo.setVisible(!isStatic);
-            variableHelpLabel.setVisible(!isStatic);
-            previewLabel.setVisible(!isStatic);
-            saveToProfileButton.setVisible(!isStatic && accessController != null);
+            boolean isInteractive = sourceTypeCombo.getSelectedItem() == InjectRule.ValueSourceType.INTERACTIVE;
+            boolean showVariable = !isStatic && !isInteractive;
+            promptLabel.setVisible(isInteractive); promptField.setVisible(isInteractive);
+            interactiveOptions.setVisible(isInteractive); interactiveHelp.setVisible(isInteractive);
+            sourceKeyLabel.setVisible(showVariable);
+            sourceKeyCombo.setVisible(showVariable);
+            variableHelpLabel.setVisible(showVariable);
+            previewLabel.setVisible(showVariable);
+            previewTitle.setVisible(showVariable);
+            saveToProfileButton.setVisible(showVariable && accessController != null);
             staticValueLabel.setText(isTemplate ? "Value template:" : "Static value:");
             staticValueLabel.setVisible(isStatic || isTemplate);
             staticValueField.setVisible(isStatic || isTemplate);
@@ -448,8 +470,11 @@ public final class RuleEditorDialog extends JDialog {
                 {"Value source:", sourceTypeCombo},
                 {sourceKeyLabel, sourceKeyCombo},
                 {"", variableHelpLabel},
-                {"Preview:", previewLabel},
+                {previewTitle, previewLabel},
                 {"", saveToProfileButton},
+                {promptLabel, promptField},
+                {"", interactiveOptions},
+                {"", interactiveHelp},
                 {staticValueLabel, staticValueField},
                 {"", insertVariableButton},
                 {"", templateHelpLabel},
@@ -516,7 +541,7 @@ public final class RuleEditorDialog extends JDialog {
 
             boolean isVariable = srcType == InjectRule.ValueSourceType.VARIABLE;
             String sourceKey = isVariable ? selectedVariableKey(sourceKeyCombo) : "";
-            String staticVal = isVariable ? "" : staticValueField.getText();
+            String staticVal = isVariable || srcType == InjectRule.ValueSourceType.INTERACTIVE ? "" : staticValueField.getText();
 
             if (isVariable && sourceKey.isEmpty()) {
                 errorLabel.setText("Variable key must not be empty.");
@@ -529,6 +554,8 @@ public final class RuleEditorDialog extends JDialog {
 
             String id = existing != null ? existing.id() : UUID.randomUUID().toString();
             InjectRule saved;
+            try { timeoutSpinner.commitEdit(); }
+            catch (java.text.ParseException exception) { errorLabel.setText("Enter a timeout between 1 and 3600 seconds."); return; }
             try {
                 saved = new InjectRule(
                         id,
@@ -540,7 +567,11 @@ public final class RuleEditorDialog extends JDialog {
                         sourceKey,
                         staticVal,
                         (InjectRule.WriteStrategy) strategyCombo.getSelectedItem(),
-                        transformLines(transformsArea.getText()));
+                        transformLines(transformsArea.getText()),
+                        existing == null ? null : existing.ruleType(),
+                        srcType == InjectRule.ValueSourceType.INTERACTIVE
+                                ? new InteractiveInputConfig(promptField.getText(),
+                                        secretBox.isSelected(), (Integer) timeoutSpinner.getValue()) : null);
             } catch (IllegalArgumentException exception) {
                 errorLabel.setText(exception.getMessage());
                 return;

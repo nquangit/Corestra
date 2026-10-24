@@ -21,6 +21,8 @@ import java.util.Objects;
  * Authentication is a shared workspace used by Flowise, Session Handler, and Access Testing.</p>
  */
 public final class CorestraRootPanel extends JPanel {
+    private final JTabbedPane tabs;
+    private JPanel manualTesting;
 
     /**
      * Creates the root panel and applies the active Burp theme.
@@ -69,7 +71,7 @@ public final class CorestraRootPanel extends JPanel {
         Objects.requireNonNull(accessTestingPanel, "accessTestingPanel");
         Objects.requireNonNull(api, "api");
 
-        JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
+        tabs = new JTabbedPane(JTabbedPane.TOP);
         tabs.addTab("Flowise", flowisePanel);
         tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Build and run reusable multi-step HTTP flows.");
         if (authenticationPanel != null) {
@@ -106,4 +108,15 @@ public final class CorestraRootPanel extends JPanel {
         ThemeCoordinator.applyTheme(this, api);
         UiPolish.apply(this);
     }
+    /** Installs Manual Testing beside Flowise while keeping Project last. */
+    public void installManualTesting(JPanel panel, MontoyaApi api) {
+        if (manualTesting != null) throw new IllegalStateException("Manual workspace already installed");
+        manualTesting = Objects.requireNonNull(panel);
+        tabs.insertTab("Manual Testing", null, panel, "Edit independent request templates and test flows manually.", 1);
+        ThemeCoordinator.applyTheme(panel, api); UiPolish.apply(panel);
+    }
+
+    /** Navigates to the explicitly installed manual workspace. */
+    public void showManualTesting() { if (manualTesting != null) tabs.setSelectedComponent(manualTesting); }
+
 }

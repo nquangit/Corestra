@@ -13,7 +13,12 @@ public final class FlowExecutionLog {
     /** Default maximum number of retained step entries. */
     public static final int DEFAULT_CAPACITY = 1_000;
 
+    /** Maximum retained HTTP text footprint, estimated conservatively at two bytes per character. */
+    public static final long DEFAULT_MAX_PAYLOAD_BYTES = 32L * 1024 * 1024;
+
     private final int capacity;
+    private final long maxPayloadBytes;
+    private long payloadBytes;
     private final Deque<Entry> entries = new ArrayDeque<>();
     private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
 
@@ -28,8 +33,15 @@ public final class FlowExecutionLog {
      * @param capacity maximum retained step entries
      */
     public FlowExecutionLog(int capacity) {
+        this(capacity, DEFAULT_MAX_PAYLOAD_BYTES);
+    }
+
+    /** Creates a log bounded by entry count and retained raw HTTP text size. */
+    public FlowExecutionLog(int capacity, long maxPayloadBytes) {
+        if (maxPayloadBytes < 1) throw new IllegalArgumentException("maxPayloadBytes must be positive");
         if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
         this.capacity = capacity;
+        this.maxPayloadBytes = maxPayloadBytes;
     }
 
     /** Adds all step records from one completed flow run. */
@@ -42,15 +54,32 @@ public final class FlowExecutionLog {
                         result.failureMessage() == null ? "" : result.failureMessage(), 0, 0L, 0L, "", ""));
             } else {
                 for (StepExecutionRecord step : result.stepRecords()) {
-                    entries.addFirst(new Entry(runId, result.flowId(), result.flowName(), step.stepId(),
-                            step.success(), step.errorMessage(), step.responseStatusCode(),
+                    boolean oversized = payloadSize(step.renderedRequest(), step.receivedResponse()) > maxPayloadBytes;
+                    String error = Objects.requireNonNullElse(step.errorMessage(), "");
+                    if (oversized) error += " [Raw HTTP omitted from Flow Log: exceeds retained payload limit]";
+                    Entry entry = new Entry(runId, result.flowId(), result.flowName(), step.stepId(),
+                            step.success(), error, step.responseStatusCode(),
                             step.startedAtEpochMillis(), step.completedAtEpochMillis(),
-                            step.renderedRequest(), step.receivedResponse()));
+                            oversized ? "" : step.renderedRequest(), oversized ? "" : step.receivedResponse());
+                    entries.addFirst(entry);
+                    payloadBytes += payloadSize(entry.request(), entry.response());
+                    trimToLimits();
                 }
             }
-            while (entries.size() > capacity) entries.removeLast();
+            trimToLimits();
         }
         listeners.forEach(Runnable::run);
+    }
+
+    private void trimToLimits() {
+        while (entries.size() > capacity || payloadBytes > maxPayloadBytes) {
+            Entry removed = entries.removeLast();
+            payloadBytes -= payloadSize(removed.request(), removed.response());
+        }
+    }
+
+    private static long payloadSize(String request, String response) {
+        return 2L * ((request == null ? 0L : request.length()) + (response == null ? 0L : response.length()));
     }
 
     /** Returns a newest-first immutable snapshot. */
@@ -64,6 +93,7 @@ public final class FlowExecutionLog {
     public void clear() {
         synchronized (entries) {
             entries.clear();
+            payloadBytes = 0;
         }
         listeners.forEach(Runnable::run);
     }

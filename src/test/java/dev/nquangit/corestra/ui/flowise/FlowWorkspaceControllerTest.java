@@ -43,6 +43,39 @@ class FlowWorkspaceControllerTest {
     }
 
     @Test
+    void triggerSessionControlsSaveRestoreAndPreserveScopeAndCriteria() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                var criteria = List.of(new dev.nquangit.corestra.flow.StepTriggerRule.MatchCriterion(
+                        dev.nquangit.corestra.flow.StepTriggerRule.MatchCriterion.MatchType.HEADER, "X-User", "^x$"));
+                var rule = new dev.nquangit.corestra.flow.StepTriggerRule(true, List.of("REPEATER"), criteria,
+                        dev.nquangit.corestra.flow.StepTriggerRule.ExecutionScope.FULL_FLOW, "");
+                var initial = flow("f1", "Flow", List.of(step("s1", "One").withTriggerRule(rule), step("s2", "Two")));
+                controller.addFlow(initial); controller.setActiveFlow(initial);
+                TriggerPanel panel = new TriggerPanel(controller);
+                var checkField = TriggerPanel.class.getDeclaredField("inheritSessionBox"); checkField.setAccessible(true);
+                var originsField = TriggerPanel.class.getDeclaredField("sessionOriginsField"); originsField.setAccessible(true);
+                var checkbox = (javax.swing.JCheckBox)checkField.get(panel);
+                var origins = (javax.swing.JTextField)originsField.get(panel);
+                assertFalse(checkbox.isSelected()); assertFalse(origins.isEnabled());
+                checkbox.doClick(); assertTrue(controller.selectedStep().triggerRule().inheritSession());
+                origins.setText("https://API.TEST, https://files.test:8443"); origins.postActionEvent();
+                var saved = controller.selectedStep().triggerRule();
+                assertEquals(List.of("https://api.test:443", "https://files.test:8443"), saved.sessionOrigins());
+                assertEquals(criteria, saved.criteria()); assertEquals(rule.scope(), saved.scope());
+                assertEquals(saved, flowRepository(persistence).loadAll().getFirst().steps().getFirst().triggerRule());
+                controller.setSelectedStep(controller.activeFlow().steps().get(1));
+                assertFalse(checkbox.isSelected()); assertEquals("", origins.getText());
+                for (var listener : origins.getFocusListeners()) listener.focusLost(new java.awt.event.FocusEvent(origins, java.awt.event.FocusEvent.FOCUS_LOST));
+                assertFalse(controller.selectedStep().triggerRule().inheritSession());
+                controller.setSelectedStep(controller.activeFlow().steps().getFirst());
+                assertTrue(checkbox.isSelected()); assertEquals("https://api.test:443, https://files.test:8443", origins.getText());
+                controller.setActiveFlow(null); assertFalse(checkbox.isEnabled()); assertFalse(origins.isEnabled());
+            } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
+        });
+    }
+
+    @Test
     void routeSelectorSavesOnlySelectedRequestAndRestoresInheritanceWithoutChangingOtherSteps() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             FlowDefinition initial = flow("f1", "Flow", List.of(step("s1", "One"), step("s2", "Two")));

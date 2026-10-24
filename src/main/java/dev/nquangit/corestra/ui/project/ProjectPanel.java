@@ -54,6 +54,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -96,6 +97,10 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
     private final JComboBox<ExportMode> accessExportModeCombo = new JComboBox<>(
             new ExportMode[]{ExportMode.FULL_EXPORT, ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS});
     private boolean refreshingSettingsControls;
+    private List<FlowDefinition> countedFlows;
+    private javax.swing.SwingWorker<ProjectDataMaintenanceService.StorageUsage, Void> usageWorker;
+    private boolean closed;
+    private boolean usageRefreshPending;
 
     /**
      * Creates a project panel without access repository integration.
@@ -208,10 +213,17 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         wireListeners();
         refreshAll();
         controller.addFlowChangeListener(this::refreshStats);
+        addHierarchyListener(event -> {
+            if ((event.getChangeFlags() & java.awt.event.HierarchyEvent.SHOWING_CHANGED) != 0 && isShowing()) {
+                refreshProjectDataUsage();
+            }
+        });
     }
 
     /** Stops the runtime monitor when the extension unloads. */
     @Override public void close() {
+        closed = true;
+        if (usageWorker != null) usageWorker.cancel(true);
         if (schedulerJobsPanel != null) schedulerJobsPanel.close();
     }
 
@@ -398,6 +410,10 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         actionRow.setLayout(new BoxLayout(actionRow, BoxLayout.X_AXIS));
         actionRow.add(storageUsageLabel);
         actionRow.add(Box.createHorizontalGlue());
+        StyledButton refreshUsage = StyledButton.neutral("Refresh size");
+        refreshUsage.addActionListener(event -> refreshProjectDataUsage());
+        actionRow.add(refreshUsage);
+        actionRow.add(Box.createHorizontalStrut(8));
         actionRow.add(cleanButton);
 
         JPanel section = new JPanel();
@@ -465,7 +481,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         currentSettings = new ProjectSettings(
                 proxyPipelineRadio.isSelected() ? HttpSendMode.PROXY_PIPELINE : HttpSendMode.STANDARD,
                 proxyHostField.getText(),
-                proxyPort);
+                proxyPort, settingsRepo.load().sessionSelection());
         settingsRepo.save(currentSettings);
         touchProject();
         refreshSettingsControls();
@@ -493,6 +509,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         refreshSettingsControls();
         refreshTimestamps();
         refreshStats();
+        refreshProjectDataUsage();
     }
 
     private void refreshSettingsControls() {
@@ -518,23 +535,54 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
 
     private void refreshStats() {
         List<FlowDefinition> flows = controller.flows();
+        if (flows.equals(countedFlows)) return;
+        countedFlows = flows;
         int stepCount = flows.stream().mapToInt(f -> f.steps().size()).sum();
         int ruleCount = flows.stream().flatMap(f -> f.steps().stream())
                 .mapToInt(s -> s.extractRules().size() + s.injectRules().size()).sum();
         statsLabel.setText("Flows: " + flows.size()
                 + "   •   Steps: " + stepCount
                 + "   •   Rules: " + ruleCount);
-        refreshProjectDataUsage();
     }
 
     /** Refreshes the project-scoped Corestra persistence usage shown in Danger Zone. */
     public void refreshProjectDataUsage() {
-        ProjectDataMaintenanceService.StorageUsage usage = dataMaintenanceService.storageUsage();
-        storageUsageLabel.setText("Stored by Corestra: "
-                + ProjectDataMaintenanceService.formatBytes(usage.serializedStringBytes())
-                + " in " + usage.entryCount() + " project entr" + (usage.entryCount() == 1 ? "y" : "ies"));
-        storageUsageLabel.setToolTipText(
-                "Exact UTF-8 size of serialized string data. Burp project container overhead is not included.");
+        if (!javax.swing.SwingUtilities.isEventDispatchThread()) {
+            javax.swing.SwingUtilities.invokeLater(this::refreshProjectDataUsage);
+            return;
+        }
+        if (closed) return;
+        if (usageWorker != null) {
+            // Coalesce another requested measurement after this worker finishes.
+            usageRefreshPending = true;
+            return;
+        }
+        usageRefreshPending = false;
+        usageWorker = new javax.swing.SwingWorker<>() {
+            @Override protected ProjectDataMaintenanceService.StorageUsage doInBackground() {
+                return dataMaintenanceService.storageUsage();
+            }
+            @Override protected void done() {
+                if (closed) return;
+                try {
+                    var usage = get();
+                    storageUsageLabel.setText("Current Corestra data: "
+                            + ProjectDataMaintenanceService.formatBytes(usage.serializedStringBytes())
+                            + (usage.complete() ? "" : " (partial)")
+                            + " in " + usage.entryCount() + " project entries");
+                    storageUsageLabel.setToolTipText("UTF-8 bytes of current persisted strings, including recovery data. "
+                            + "Unmeasured non-string entries: " + usage.unmeasuredEntryCount()
+                            + "; read failures: " + usage.readFailureCount()
+                            + ". Excludes Burp history/Logger traffic, container overhead, previous writes and physical disk usage.");
+                } catch (Exception exception) {
+                    storageUsageLabel.setText("Corestra data size unavailable");
+                } finally {
+                    usageWorker = null;
+                    if (usageRefreshPending) refreshProjectDataUsage();
+                }
+            }
+        };
+        usageWorker.execute();
     }
 
     private void cleanBurpProjectData() {
@@ -579,6 +627,14 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
 
     // ── Export project ────────────────────────────────────────────────────────
 
+    private FlowWorkspaceController manualController;
+    private Runnable manualIdleCheck = () -> { };
+
+    /** Includes isolated manual drafts in project import/export and checks that no manual send is active. */
+    public void configureManualWorkspace(FlowWorkspaceController controller, Runnable idleCheck) {
+        manualController = Objects.requireNonNull(controller); manualIdleCheck = Objects.requireNonNull(idleCheck);
+    }
+
     private void exportProject() {
         long now = System.currentTimeMillis();
         currentMeta = currentMeta.withUpdatedAtEpochMillis(now);
@@ -590,6 +646,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
             return;
         }
 
+        currentSettings = settingsRepo.load();
         ProjectDocument doc = new ProjectDocument(
                 1,
                 currentMeta,
@@ -600,6 +657,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
                 accessRepository.snapshotDocument().latestSummary().orElse(null),
                 accessRepository.snapshotDocument().reportDrafts(),
                 sessionRepository.loadProfiles());
+        if (manualController != null) doc = doc.withManualFlows(manualController.flows());
         String json;
         try {
             json = projectSerializer.serializeProject(doc, exportMode);
@@ -620,6 +678,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
     // ── Import project ────────────────────────────────────────────────────────
 
     private void importProject() {
+        try { manualIdleCheck.run(); } catch (RuntimeException exception) { showError(exception.getMessage()); return; }
         JFileChooser chooser = jsonChooser(JFileChooser.OPEN_DIALOG);
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
 
@@ -646,6 +705,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
                 + doc.accessWorkspace().results().size() + " latest result(s), "
                 + doc.accessEvidence().size() + " evidence item(s), "
                 + doc.accessReportDrafts().size() + " saved report draft(s), "
+                + doc.manualFlows().size() + " manual draft(s), "
                 + doc.sessionProfiles().size() + " session profile(s), "
                 + "send mode " + doc.settings().sendMode() + ".\n\n"
                 + "Runtime scenarios are not stored in project files.\n\n"
@@ -660,6 +720,12 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         refreshSettingsControls();
         touchProject();
         applyImportedFlows(doc.flows(), choice == 1);
+        if (manualController != null) {
+            Map<String, FlowDefinition> merged = new java.util.LinkedHashMap<>();
+            if (choice != 1) manualController.flows().forEach(f -> merged.put(f.id(), f));
+            doc.manualFlows().forEach(f -> merged.put(f.id(), f));
+            manualController.replaceAll(new ArrayList<>(merged.values()));
+        }
         accessRepository.replaceWith(doc.accessDocument());
         sessionRepository.saveProfiles(doc.sessionProfiles());
         accessRefreshCallback.run();

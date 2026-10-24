@@ -165,8 +165,9 @@ public final class FlowWorkspaceController {
      */
     public void removeFlow(FlowDefinition flow) {
         Objects.requireNonNull(flow, "flow");
-        flows.remove(flow);
-        if (Objects.equals(activeFlow, flow)) {
+        flows.removeIf(existing -> existing.id().equals(flow.id()));
+        pruneCapturedResponses();
+        if (activeFlow != null && activeFlow.id().equals(flow.id())) {
             activeFlow = null;
             selectedStep = null;
         }
@@ -191,18 +192,33 @@ public final class FlowWorkspaceController {
             throw new IllegalArgumentException("No flow found with id: " + updated.id());
         }
         flows.set(index, updated);
+        pruneCapturedResponses();
         if (activeFlow != null && activeFlow.id().equals(updated.id())) {
             activeFlow = updated;
             // Freshen selectedStep so panels read the latest field values (e.g. lastResponseRaw
             // updated by background aggregation) rather than a stale snapshot.
             if (selectedStep != null) {
-                updated.steps().stream()
+                selectedStep = updated.steps().stream()
                         .filter(s -> s.id().equals(selectedStep.id()))
-                        .findFirst()
-                        .ifPresent(s -> selectedStep = s);
+                        .findFirst().orElse(null);
             }
         }
         persist();
+        notifyListeners();
+    }
+
+    /** Replaces an isolated workspace atomically after persistence succeeds, preserving selection when possible. */
+    public void replaceAll(List<FlowDefinition> replacements) {
+        List<FlowDefinition> snapshot = List.copyOf(replacements);
+        if (snapshot.stream().map(FlowDefinition::id).distinct().count() != snapshot.size()) throw new IllegalArgumentException("Duplicate flow IDs");
+        flowRepository.saveAll(snapshot);
+        String selectedFlowId = activeFlow == null ? "" : activeFlow.id();
+        String selectedStepId = selectedStep == null ? "" : selectedStep.id();
+        flows.clear(); flows.addAll(snapshot); pruneCapturedResponses();
+        activeFlow = flows.stream().filter(f -> f.id().equals(selectedFlowId)).findFirst().orElse(flows.isEmpty() ? null : flows.getFirst());
+        selectedStep = activeFlow == null ? null : activeFlow.steps().stream().filter(s -> s.id().equals(selectedStepId)).findFirst()
+                .orElse(activeFlow.steps().isEmpty() ? null : activeFlow.steps().getFirst());
+        lastExecutionResult = null;
         notifyListeners();
     }
 
@@ -266,6 +282,12 @@ public final class FlowWorkspaceController {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+
+    private void pruneCapturedResponses() {
+        var stepIds = flows.stream().flatMap(flow -> flow.steps().stream())
+                .map(FlowStep::id).collect(java.util.stream.Collectors.toSet());
+        capturedResponses.keySet().retainAll(stepIds);
+    }
 
     private void persist() {
         flowRepository.saveAll(List.copyOf(flows));

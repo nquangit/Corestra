@@ -76,7 +76,12 @@ class CorestraSessionHttpHandlerTest {
         previousFactory = ObjectFactoryLocator.FACTORY;
         ObjectFactoryLocator.FACTORY = proxy(MontoyaObjectFactory.class, (p, m, a) -> switch (m.getName()) {
             case "httpHeader" -> header((String) a[0], (String) a[1]);
-            case "requestResult" -> proxy(RequestToBeSentAction.class,
+            case "requestResult" -> proxy(RequestToBeSentAction.class, (q, n, b) -> switch(n.getName()) {
+                case "request" -> a.length == 4 ? a[1] : a[0];
+                case "action" -> a.length == 4 ? a[0] : burp.api.montoya.http.handler.RequestAction.CONTINUE;
+                default -> null;
+            });
+            case "actionResult" -> proxy(burp.api.montoya.http.sessions.ActionResult.class,
                     (q, n, b) -> n.getName().equals("request") ? a[0] : null);
             case "responseResult" -> proxy(ResponseReceivedAction.class,
                     (q, n, b) -> n.getName().equals("response") ? a[0] : null);
@@ -310,6 +315,107 @@ class CorestraSessionHttpHandlerTest {
         }
     }
 
+    @Test
+    void explicitChoiceOverridesDefaultProfileAndTracksChosenResponse() {
+        repository.saveProfile(profile("", List.of(new SessionInjectionRule("auth", true,
+                InjectRule.Target.REQUEST_HEADER, "Authorization", "Bearer {{session.accessToken}}",
+                InjectRule.WriteStrategy.OVERWRITE, List.of("PROXY")))));
+        SessionProfile chosen = new SessionProfile("alice", "Alice", true, false,
+                SessionScope.custom(List.of(new dev.nquangit.corestra.session.SessionScopeCriterion(
+                        dev.nquangit.corestra.session.SessionCriterionType.HOST, "", "never-matches"))),
+                SessionAuthConfig.defaults(), SessionSchedulerConfig.disabled(), state("alice"),
+                List.of(new SessionInjectionRule("auth", true, InjectRule.Target.REQUEST_HEADER, "Authorization",
+                        "Bearer {{session.accessToken}}", InjectRule.WriteStrategy.OVERWRITE, List.of("PROXY"))),
+                repository.profile(SessionProfile.GENERAL_ID).orElseThrow().extractionRules());
+        repository.saveProfile(chosen);
+        java.util.concurrent.atomic.AtomicInteger prompts = new java.util.concurrent.atomic.AtomicInteger();
+        configureSelection((context, choices, timeout) -> {
+            prompts.incrementAndGet();
+            assertTrue(choices.stream().anyMatch(choice -> choice.profileId().equals("alice")));
+            return java.util.Optional.of("alice");
+        });
+        HttpRequest sent = handler.handleHttpRequestToBeSent(request(301, "/api", List.of(
+                header("X-User-Selection", "yes"), header("Authorization", "Bearer captured")))).request();
+        assertEquals("Bearer alice", sent.headerValue("Authorization"));
+        assertFalse(sent.hasHeader("X-User-Selection"));
+        assertEquals(1, prompts.get());
+        handler.handleHttpResponseReceived(response(301, sent, "alice-rotated"));
+        assertEquals("alice-rotated", repository.profile("alice").orElseThrow().state().values().get("accessToken"));
+        assertEquals("old", stateToken());
+    }
+
+    @Test
+    void cancelNoUsableSessionAndExpirationWhileChoosingDropTheRequest() {
+        repository.saveProfile(profile("", List.of(new SessionInjectionRule("auth", true,
+                InjectRule.Target.REQUEST_HEADER, "Authorization", "Bearer {{session.accessToken}}",
+                InjectRule.WriteStrategy.OVERWRITE, List.of("PROXY")))));
+        configureSelection((context, choices, timeout) -> java.util.Optional.empty());
+        assertNull(handler.handleHttpRequestToBeSent(request(302, "/api", List.of(header("X-User-Selection", "1")))).request());
+        configureSelection((context, choices, timeout) -> {
+            manager.clearState(SessionProfile.GENERAL_ID);
+            return java.util.Optional.of(SessionProfile.GENERAL_ID);
+        });
+        assertNull(handler.handleHttpRequestToBeSent(request(303, "/api", List.of(header("X-User-Selection", "1")))).request());
+        configureSelection((context, choices, timeout) -> { fail("No sessions must not show a choice popup"); return java.util.Optional.empty(); });
+        assertNull(handler.handleHttpRequestToBeSent(request(304, "/api", List.of(header("X-User-Selection", "1")))).request());
+    }
+
+    @Test
+    void unmatchedAndInternalRequestsNeverAskForSession() {
+        configureSelection((context, choices, timeout) -> { fail("Request should bypass selection"); return java.util.Optional.empty(); });
+        HttpRequestToBeSent ordinary = request(305, "/api", List.of());
+        assertSame(ordinary, handler.handleHttpRequestToBeSent(ordinary).request());
+        HttpRequestToBeSent internal = request(306, "/api", List.of(header("X-User-Selection", "1"),
+                header(ProxyPipelineHttpClient.MARKER_HEADER, "internal")));
+        assertSame(internal, handler.handleHttpRequestToBeSent(internal).request());
+        dev.nquangit.corestra.session.SessionGuard.enter();
+        try {
+            HttpRequestToBeSent guarded = request(307, "/api", List.of(header("X-User-Selection", "1")));
+            assertSame(guarded, handler.handleHttpRequestToBeSent(guarded).request());
+        } finally { dev.nquangit.corestra.session.SessionGuard.exit(); }
+    }
+
+    @Test
+    void cancelledNativePrerequisiteMarkerDropsParentRequest() {
+        var action = handler.handleHttpRequestToBeSent(request(308, "/api", List.of(
+                header(CorestraSessionHandlingAction.INTERACTION_ABORT_HEADER, "true"))));
+        assertEquals(burp.api.montoya.http.handler.RequestAction.DROP, action.action());
+        assertNull(action.request());
+    }
+
+    @Test
+    void nativeActionCancellationMarksParentForActualDrop() {
+        var flow = new FlowDefinition("native", "Native", "", true, List.of(), null, null,
+                new dev.nquangit.corestra.flow.FlowTriggerConfig(List.of(), List.of(), null, true, List.of()));
+        var nativeAction = new CorestraSessionHandlingAction(() -> List.of(flow), selected -> {
+            throw new dev.nquangit.corestra.interaction.InteractionAbortedException("Cancelled");
+        }, new SessionHandlingFlowMapper());
+        var original = request(309, "/api", List.of());
+        var result = nativeAction.performAction(proxy(burp.api.montoya.http.sessions.SessionHandlingActionData.class,
+                (p, m, a) -> m.getName().equals("request") ? original : null));
+        assertTrue(result.request().hasHeader(CorestraSessionHandlingAction.INTERACTION_ABORT_HEADER));
+        assertEquals(burp.api.montoya.http.handler.RequestAction.DROP,
+                handler.handleHttpRequestToBeSent((HttpRequestToBeSent) result.request()).action());
+    }
+
+    @Test
+    void failedSelectedSessionMutationDropsRatherThanSendingOriginalBody() {
+        repository.saveProfile(profile("", List.of(new SessionInjectionRule("json", true,
+                InjectRule.Target.REQUEST_JSON_PATH, "token", "{{session.accessToken}}",
+                InjectRule.WriteStrategy.OVERWRITE, List.of("PROXY")))));
+        configureSelection((context, choices, timeout) -> java.util.Optional.of(SessionProfile.GENERAL_ID));
+        var action = handler.handleHttpRequestToBeSent(request(310, "/api", List.of(header("X-User-Selection", "1"))));
+        assertEquals(burp.api.montoya.http.handler.RequestAction.DROP, action.action());
+        assertNull(action.request());
+    }
+
+    private void configureSelection(dev.nquangit.corestra.session.SessionChoicePrompt prompt) {
+        var config = new dev.nquangit.corestra.session.SessionSelectionConfig(true,
+                dev.nquangit.corestra.session.SessionSelectionConfig.disabled().scope(), List.of("PROXY"), 30, "X-User-Selection");
+        var selector = new dev.nquangit.corestra.session.SessionSelectionService(manager, () -> config, prompt);
+        handler = new CorestraSessionHttpHandler(manager, new InjectionService(), selector, message -> { });
+    }
+
     private String stateToken() {
         return repository.profile(SessionProfile.GENERAL_ID).orElseThrow().state().values().get("accessToken");
     }
@@ -367,6 +473,12 @@ class CorestraSessionHttpHandlerTest {
             case "headerValue" -> headers.stream().filter(h -> h.name().equalsIgnoreCase((String) a[0]))
                     .map(HttpHeader::value).findFirst().orElse(null);
             case "hasHeader" -> headers.stream().anyMatch(h -> h.name().equalsIgnoreCase((String) a[0]));
+            case "withHeader" -> {
+                List<HttpHeader> updated = new ArrayList<>(headers.stream()
+                        .filter(h -> !h.name().equalsIgnoreCase((String) a[0])).toList());
+                updated.add(header((String) a[0], (String) a[1]));
+                yield request(id, path, updated);
+            }
             case "withMethod" -> request(id, path, headers);
             case "withPath" -> request(id, (String) a[0], headers);
             case "withRemovedHeaders" -> request(id, path, List.of());
