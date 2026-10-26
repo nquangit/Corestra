@@ -9,7 +9,8 @@ import java.util.Objects;
  * Extracts a value from a JSON body string using a dot-separated path selector.
  *
  * <p>Path segments are split on {@code '.'} and traversed sequentially through the JSON tree.
- * Array element access is not supported; use {@link RegexExtractor} for those cases.
+ * Selectors prefixed with {@code pointer:} use JSON Pointer instead, including array indices
+ * and escaped property names. Existing dot-path selectors keep their original behavior.
  */
 public final class JsonBodyExtractor {
 
@@ -42,6 +43,24 @@ public final class JsonBodyExtractor {
             return ExtractionResult.failure(targetVariable,
                     "Body is not valid JSON: " + e.getMessage());
         }
+
+        return extractTree(root, dotPath, targetVariable);
+    }
+
+    ExtractionResult extractTree(JsonNode root, String dotPath, String targetVariable) {
+        if (dotPath.startsWith("pointer:")) {
+            try {
+                JsonNode selected = root == null ? null : root.at(dotPath.substring("pointer:".length()));
+                if (selected == null || selected.isMissingNode() || selected.isNull()) {
+                    return ExtractionResult.failure(targetVariable, "JSON Pointer did not resolve to a non-null value");
+                }
+                return ExtractionResult.success(targetVariable,
+                        selected.isContainerNode() ? selected.toString() : selected.asText());
+            } catch (IllegalArgumentException invalid) {
+                return ExtractionResult.failure(targetVariable, "Invalid JSON Pointer selector");
+            }
+        }
+        if (root == null) return ExtractionResult.failure(targetVariable, "Body is empty");
 
         String[] segments = dotPath.split("\\.", -1);
         JsonNode current = root;

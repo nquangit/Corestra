@@ -256,6 +256,29 @@ class FlowisePerformanceTest {
         now + 1, 0, 8, 8, 1, false, java.awt.event.MouseEvent.BUTTON1));
   }
 
+  @Test void manualCopyMenuUsesTheRightClickedFlowAndItsLatestContentsWithoutExtraEditors() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      try {
+        var persistence = persistence();
+        var controller = new FlowWorkspaceController(new FlowRepository(persistence, new FlowSerializer(), new PersistenceMigrationService()));
+        var a = flow("A"); var b = flow("B"); controller.addFlow(a); controller.addFlow(b); controller.setActiveFlow(a);
+        var panel = new FlowisePanel(controller, api(persistence));
+        var selected = new java.util.concurrent.atomic.AtomicReference<FlowDefinition>();
+        panel.setManualTestingAction(selected::set);
+        assertNull(((java.awt.BorderLayout) panel.getLayout()).getLayoutComponent(java.awt.BorderLayout.NORTH));
+        var tabsField = FlowisePanel.class.getDeclaredField("flowTabsPanel"); tabsField.setAccessible(true);
+        var tabs = (FlowTabsPanel) tabsField.get(panel);
+        var method = FlowTabsPanel.class.getDeclaredMethod("buildTabContextMenu", FlowDefinition.class); method.setAccessible(true);
+        var menu = (JPopupMenu) method.invoke(tabs, b);
+        var changed = new FlowDefinition(b.id(), "B updated", b.description(), b.enabled(), b.steps(), b.rules(), b.aggregation(), b.triggerConfig());
+        controller.updateFlow(changed);
+        for (java.awt.Component item : menu.getComponents()) if (item instanceof JMenuItem action && action.getText().equals("Copy to Manual Testing")) action.doClick();
+        assertEquals(changed, selected.get()); assertEquals(a.id(), controller.activeFlow().id());
+        assertEquals(4, created);
+      } catch (Exception e) { throw new RuntimeException(e); }
+    });
+  }
+
   @Test void projectMeasuresStorageOffEdtAndDoesNotRereadItOnSelection() throws Exception {
     var persistence=persistence();
     var serializer=new FlowSerializer();

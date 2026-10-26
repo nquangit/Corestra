@@ -52,6 +52,7 @@ public final class RuleSummaryPanel extends JPanel {
     private final FlowWorkspaceController controller;
     private final Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier;
     private final AccessUiController accessController;
+    private final Supplier<Optional<burp.api.montoya.http.message.responses.HttpResponse>> responseSupplier;
 
     private final DefaultTableModel extractModel;
     private final DefaultTableModel injectModel;
@@ -85,10 +86,19 @@ public final class RuleSummaryPanel extends JPanel {
             FlowWorkspaceController controller,
             Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier,
             AccessUiController accessController) {
+        this(controller, regexSelectionSupplier, accessController, Optional::empty);
+    }
+
+    /** Creates a rule panel using the currently displayed response for optional extraction discovery. */
+    public RuleSummaryPanel(FlowWorkspaceController controller,
+            Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier,
+            AccessUiController accessController,
+            Supplier<Optional<burp.api.montoya.http.message.responses.HttpResponse>> responseSupplier) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
         this.regexSelectionSupplier = Objects.requireNonNull(regexSelectionSupplier, "regexSelectionSupplier");
         this.accessController = accessController;
+        this.responseSupplier = Objects.requireNonNull(responseSupplier, "responseSupplier");
 
         extractModel = readOnlyModel(EXTRACT_COLUMNS);
         injectModel  = readOnlyModel(INJECT_COLUMNS);
@@ -114,7 +124,7 @@ public final class RuleSummaryPanel extends JPanel {
         });
 
         JPanel extractSection = buildSection("Extract Rules", extractTable,
-                this::addExtractRule, this::editSelectedExtractRule, this::removeSelectedExtractRule, null);
+                this::addExtractRule, this::editSelectedExtractRule, this::removeSelectedExtractRule, this::suggestExtractRules);
         JPanel injectSection = buildSection("Inject Rules", injectTable,
                 this::addInjectRule, this::editSelectedInjectRule, this::removeSelectedInjectRule,
                 this::suggestInjectRules);
@@ -190,8 +200,10 @@ public final class RuleSummaryPanel extends JPanel {
         buttonBar.add(removeBtn);
         if (onSuggest != null) {
             buttonBar.add(Box.createHorizontalStrut(4));
-            StyledButton suggestBtn = StyledButton.neutral("Suggest");
-            suggestBtn.setToolTipText("Suggest injection rules from extractors in earlier steps");
+            boolean extract = title.equals("Extract Rules");
+            StyledButton suggestBtn = StyledButton.neutral(extract ? "Auto…" : "Suggest");
+            suggestBtn.setToolTipText(extract ? "Analyze the displayed response and choose fields to extract; no request is sent"
+                    : "Suggest injection rules from extractors in earlier steps");
             suggestBtn.addActionListener(event -> onSuggest.run());
             buttonBar.add(suggestBtn);
         }
@@ -395,5 +407,25 @@ public final class RuleSummaryPanel extends JPanel {
         List<T> result = new ArrayList<>(existing);
         result.remove(index);
         return result;
+    }
+    private void suggestExtractRules() {
+        FlowDefinition flow = controller.activeFlow(); FlowStep step = controller.selectedStep();
+        if (flow == null || step == null) return;
+        var snapshot = responseSupplier.get();
+        if (snapshot.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No response is displayed for this request. Capture or run it first.", "Auto extract", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        var message = snapshot.get();
+        ResponseExtractionDialog.open(this, () -> ResponseExtractionDialog.snapshot(message).orElseThrow(), step.extractRules(), selected -> {
+            FlowDefinition current = controller.flows().stream().filter(f -> f.id().equals(flow.id())).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("The source flow no longer exists"));
+            FlowStep currentStep = current.steps().stream().filter(s -> s.id().equals(step.id())).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("The source request no longer exists"));
+            var rules = new dev.nquangit.corestra.http.extract.ResponseExtractionSuggestionService().merge(currentStep.extractRules(), selected);
+            FlowStep updated = currentStep.withExtractRules(rules);
+            controller.updateFlow(new FlowDefinition(current.id(), current.name(), current.description(), current.enabled(),
+                    current.steps().stream().map(s -> s.id().equals(updated.id()) ? updated : s).toList(), current.rules(), current.aggregation(), current.triggerConfig()));
+        });
     }
 }

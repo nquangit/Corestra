@@ -36,7 +36,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private final JComboBox<String> suggestedVariables = new JComboBox<>();
     private final JComboBox<String> tool = new JComboBox<>(new String[]{"REPEATER", "PROXY", "SCANNER", "INTRUDER"});
     private final JTextField origins = new JTextField(18), target = new JTextField(30), name = new JTextField(18);
-    private final JTextField status = new JTextField("Copy a Flowise flow or create a draft. Requests are sent only by Run buttons.");
+    private final JTextField status = new JTextField("Copy a Flowise flow or create a manual flow. Requests are sent only by Run buttons.");
     private final DefaultTableModel variables = new DefaultTableModel(new String[]{"Variable", "Value"}, 0);
     private final JTable variableTable = new JTable(variables);
     private final Map<String, ManualTestRunner.State> states = new HashMap<>();
@@ -74,12 +74,18 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         JPanel editors = new JPanel(new BorderLayout());
         JPanel address = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         address.add(new JLabel("Step")); address.add(name); address.add(new JLabel("Target origin")); address.add(target);
-        address.add(new RequestSendModeControl(controller)); address.add(button("Save template", () -> commitDisplayed(true)));
+        address.add(new RequestSendModeControl(controller));
+        var saveRequest = button("Save request", () -> { if (commitDisplayed(true)) status("Request saved to the manual flow. No request was sent."); });
+        saveRequest.setToolTipText("Save edits without sending. Switching requests or pressing Run also saves automatically.");
+        address.add(saveRequest);
         target.setToolTipText("Actual routing destination, independent of Host. Exact scheme://host:port; no placeholders.");
         editors.add(address, BorderLayout.NORTH);
         JSplitPane messages = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, request.uiComponent(), response.uiComponent()); messages.setResizeWeight(.5);
         editors.add(messages, BorderLayout.CENTER);
-        editors.add(new JLabel("Inline: {{token}}, Bearer {{auth.accessToken}}, {{id|urlEncode}}. Replace a placeholder with literal test data to override it."), BorderLayout.SOUTH);
+        JPanel hints = new JPanel(new GridLayout(0, 1));
+        hints.add(new JLabel("Inline: {{token}}, Bearer {{auth.accessToken}}, {{id|urlEncode}}. Replace a placeholder with literal test data to override it."));
+        hints.add(new JLabel("Edits save automatically when switching requests/flows or pressing Run. Save request stores edits without sending."));
+        editors.add(hints, BorderLayout.SOUTH);
         JTabbedPane details = new JTabbedPane();
         details.addTab("Variables", variablePanel());
         JPanel rules = new JPanel(new BorderLayout());
@@ -87,12 +93,12 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         ruleControls.add(new JLabel("Retained inject rules run after the editable template."));
         ruleControls.add(button("Disable injects for this request", this::disableInjects));
         rules.add(ruleControls, BorderLayout.NORTH);
-        rules.add(new RuleSummaryPanel(controller, Optional::empty, access), BorderLayout.CENTER);
+        rules.add(new RuleSummaryPanel(controller, Optional::empty, access, () -> ResponseExtractionDialog.available(response.getResponse())), BorderLayout.CENTER);
         details.addTab("Extract / Inject Rules", rules);
         details.addTab("Conditions & Actions", new ConditionActionPanel(controller));
-        details.addTab("Flow Log", new FlowLogPanel(controller, log, api));
         JSplitPane right = new JSplitPane(JSplitPane.VERTICAL_SPLIT, editors, details); right.setResizeWeight(.78); right.setDividerLocation(440); right.setOneTouchExpandable(true);
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right); split.setResizeWeight(.20); split.setDividerLocation(230);
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left,
+                new FlowEditorLogPanel(right, new FlowLogPanel(controller, log, api))); split.setResizeWeight(.20); split.setDividerLocation(230);
         add(split, BorderLayout.CENTER); status.setEditable(false); add(status, BorderLayout.SOUTH);
         drafts.addActionListener(e -> {
             if (!refreshing && !running && drafts.getSelectedItem() instanceof FlowItem item) {
@@ -111,8 +117,9 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         JPanel all = new JPanel(); all.setLayout(new BoxLayout(all, BoxLayout.Y_AXIS));
         JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         drafts.setPreferredSize(new Dimension(245, 26));
-        row.add(new JLabel("Draft")); row.add(drafts); row.add(button("Copy from Flowise…", this::chooseSource));
-        row.add(button("+ New", this::newDraft)); row.add(button("Rename", this::renameDraft)); row.add(button("Delete", this::deleteDraft)); all.add(row);
+        row.add(new JLabel("Manual flow")); row.add(drafts); row.add(button("Copy from Flowise…", this::chooseSource));
+        drafts.setToolTipText("Independent editable flow, saved in the Burp project. Runtime variables are kept only in memory.");
+        row.add(button("+ New flow", this::newDraft)); row.add(button("Rename", this::renameDraft)); row.add(button("Delete", this::deleteDraft)); all.add(row);
         JPanel run = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         run.add(button("Run selected", () -> run(0))); run.add(button("Run from here", () -> run(1))); run.add(button("Run all", () -> run(2)));
         run.add(stop); run.add(button("Reset runtime", this::resetRuntime)); run.add(new JLabel("Session")); run.add(session);
@@ -154,7 +161,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         var copy = new ManualFlowImporter().copy(flow, source.flows());
         List<FlowDefinition> combined = new ArrayList<>(controller.flows()); combined.addAll(copy.flows());
         controller.replaceAll(combined); controller.setActiveFlow(copy.flows().getFirst());
-        status("Copied " + copy.flows().size() + " draft(s); " + copy.notices().size() + " injection rule(s) retained in Rules.");
+        status("Copied " + copy.flows().size() + " manual flow(s); " + copy.notices().size() + " injection rule(s) retained in Rules.");
         if (!copy.notices().isEmpty()) {
             JTextArea text = new JTextArea(String.join("\n", copy.notices()), 10, 70); text.setEditable(false); text.setCaretPosition(0);
             JOptionPane.showMessageDialog(this, new JScrollPane(text), "Manual copy: retained injection rules", JOptionPane.INFORMATION_MESSAGE);
@@ -169,19 +176,19 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     }
     private void newDraft() {
         if (!commitDisplayed(true)) return;
-        String label = JOptionPane.showInputDialog(this, "Draft name", "Manual test"); if (label == null || label.isBlank()) return;
+        String label = JOptionPane.showInputDialog(this, "Manual flow name", "Manual test"); if (label == null || label.isBlank()) return;
         var flow = new FlowDefinition(UUID.randomUUID().toString(), label, "", true, List.of(), null, null, null);
         controller.addFlow(flow); controller.setActiveFlow(flow); addRequest();
     }
     private void renameDraft() {
         var f = controller.activeFlow(); if (f == null || !commitDisplayed(true)) return;
         f = controller.activeFlow();
-        String label = JOptionPane.showInputDialog(this, "Draft name", f.name()); if (label == null || label.isBlank()) return;
+        String label = JOptionPane.showInputDialog(this, "Manual flow name", f.name()); if (label == null || label.isBlank()) return;
         controller.updateFlow(new FlowDefinition(f.id(), label, f.description(), f.enabled(), f.steps(), f.rules(), f.aggregation(), f.triggerConfig()));
     }
     private void deleteDraft() {
         var f = controller.activeFlow(); if (f == null) return;
-        if (JOptionPane.showConfirmDialog(this, "Delete manual draft ‘" + f.name() + "’?", "Delete draft", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
+        if (JOptionPane.showConfirmDialog(this, "Delete manual flow ‘" + f.name() + "’?", "Delete manual flow", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
             displayedFlow = null; displayedStep = null; controller.removeFlow(f);
         }
     }

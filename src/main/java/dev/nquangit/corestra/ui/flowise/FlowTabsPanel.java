@@ -94,6 +94,7 @@ public final class FlowTabsPanel extends JTabbedPane {
     private String workspaceFlowId;
     private List<FlowDefinition> renderedFlows = List.of();
     private boolean refreshing = false;
+    private java.util.function.Consumer<FlowDefinition> manualTestingAction;
 
     public FlowTabsPanel(FlowWorkspaceController controller, MontoyaApi api) {
         this(controller, api, null, new FlowExecutionLog());
@@ -332,6 +333,12 @@ public final class FlowTabsPanel extends JTabbedPane {
     // Context menu
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** Installs the copy action in flow tab context menus, without a workspace toolbar. */
+    public void setManualTestingAction(java.util.function.Consumer<FlowDefinition> action) {
+        manualTestingAction = Objects.requireNonNull(action, "action");
+        renderedFlows = List.of(); refresh();
+    }
+
     private JPopupMenu buildTabContextMenu(FlowDefinition flow) {
         JPopupMenu menu = new JPopupMenu();
 
@@ -342,6 +349,12 @@ public final class FlowTabsPanel extends JTabbedPane {
         JMenuItem duplicate = new JMenuItem("Duplicate");
         duplicate.addActionListener(e -> duplicateFlow(flow));
         menu.add(duplicate);
+
+        if (manualTestingAction != null) {
+            JMenuItem manual = new JMenuItem("Copy to Manual Testing");
+            manual.addActionListener(e -> controller.flows().stream().filter(f -> f.id().equals(flow.id())).findFirst().ifPresent(manualTestingAction));
+            menu.add(manual);
+        }
 
         if (accessController != null) {
             menu.addSeparator();

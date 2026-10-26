@@ -2,16 +2,20 @@
 
 **Manual Testing** là workspace bên cạnh **Flowise**. Bạn sao chép flow sang đây để sửa request trực tiếp, dùng placeholder trong path/header/body, chạy từng request và thay đổi biến giữa các bước. Không cần bật Auto Trigger.
 
-Bản sao có ID riêng, không sửa flow gốc và không được dùng làm flow login/scheduler/auto-trigger của Flowise. Các action `TRIGGER_FLOW` đang bật được sao chép kèm dependency và đổi tham chiếu sang các manual draft tương ứng. Nếu thiếu child flow, thao tác copy báo lỗi trước khi lưu. Mỗi lần copy tối đa 64 flow, kể cả dependency.
+Bản sao có ID riêng, không sửa flow gốc và không được dùng làm flow login/scheduler/auto-trigger của Flowise. Các action `TRIGGER_FLOW` đang bật được sao chép kèm dependency và đổi tham chiếu sang các manual flow tương ứng. Nếu thiếu child flow, thao tác copy báo lỗi trước khi lưu. Mỗi lần copy tối đa 64 flow, kể cả dependency.
+
+**Manual flow** là flow riêng dùng để thử tay và được lưu trong Burp project bình thường. Nhãn cũ **Draft** chỉ bản sao này, không có nghĩa là chưa lưu hoặc sẽ mất khi đóng extension. Giao diện dùng tên Manual flow để tránh nhầm lẫn. Biến runtime/session binding/lịch sử chạy vẫn chỉ nằm trong RAM.
 
 ## 1. Bắt đầu từ flow có sẵn
 
-1. Trong **Flowise**, chọn flow rồi nhấn **Copy active flow to Manual Testing**. Hoặc vào **Manual Testing → Copy from Flowise…**.
-2. Chọn draft trong dropdown **Draft**. Khi mở draft, request đầu tiên được chọn.
+1. Trong **Flowise**, nháy chuột phải vào **tab của flow → Copy to Manual Testing**. Menu dùng đúng flow vừa nháy phải, kể cả đó không phải tab đang chọn. Hoặc vào **Manual Testing → Copy from Flowise…**.
+2. Chọn flow trong dropdown **Manual flow**. Khi mở flow, request đầu tiên được chọn. **+ New flow** tạo flow thử tay từ đầu.
 3. Danh sách bên trái cho chọn request, bật/tắt và đổi thứ tự như Flowise. Các nút dưới danh sách cho thêm, duplicate hoặc xoá request.
 4. Trên editor, sửa tên bước và **Target origin**, ví dụ `https://api.example.test:443`. Target là nơi kết nối thực tế; sửa `Host:` trong message không tự đổi target.
 5. Sửa method, path, headers và body ngay trong editor request. Response bên phải là kết quả nhận được, chỉ đọc.
-6. Nhấn **Save template**, hoặc chạy request. Chuyển request/draft cũng lưu phần request đang sửa. Nếu request/target không hợp lệ, việc chuyển bị chặn để giữ nội dung chưa lưu.
+6. **Save request** lưu method/path/headers/body, tên bước và target đang sửa vào manual flow, **không gửi request**. Chuyển request/manual flow hoặc nhấn Run cũng tự lưu. Nếu request/target không hợp lệ, việc chuyển bị chặn để giữ nội dung chưa lưu.
+
+“Template” chỉ request text có thể chứa `{{biến}}`; không phải một loại dữ liệu cần lưu ở nơi khác. Ví dụ bạn sửa body thành `id={{objectId}}`, Save request lưu đúng chuỗi này; khi nhấn Run, Corestra mới thay biến và gửi. Bạn không bắt buộc phải bấm Save request trước mỗi lần Run.
 
 Template dùng mô hình request HTTP/1.1 của flow hiện tại. Phiên bản trong request line được chuẩn hoá; đây không phải raw socket editor để giữ nguyên mọi byte framing. `Content-Length` được Montoya cập nhật khi chuẩn bị body thực tế. Override **Send via** vẫn thuộc từng request và ưu tiên hơn Project.
 
@@ -32,7 +36,21 @@ Transform của VARIABLE được giữ trong placeholder khi biểu diễn đư
 
 **Regex replacement, interactive input, template có transform phức tạp, hoặc mutation không chuyển an toàn được** sẽ ở lại tab **Extract / Inject Rules**. Để giữ đúng thứ tự, các inject rule phía sau rule chưa chuyển cũng được giữ lại. Thông báo sau khi copy liệt kê chúng. Các rule còn bật này chạy **sau** template và có thể ghi đè nội dung bạn sửa.
 
-Nếu muốn sửa hoàn toàn bằng tay, vào **Extract / Inject Rules → Disable injects for this request**. Nút chỉ tắt inject rule của request trong draft; extractor vẫn giữ nguyên. Sau đó dùng placeholder hoặc giá trị literal ngay trong editor. Session injection là lớp riêng, tuân theo lựa chọn Session ở toolbar.
+Nếu muốn sửa hoàn toàn bằng tay, vào **Extract / Inject Rules → Disable injects for this request**. Nút chỉ tắt inject rule của request trong manual flow; extractor vẫn giữ nguyên. Sau đó dùng placeholder hoặc giá trị literal ngay trong editor. Session injection là lớp riêng, tuân theo lựa chọn Session ở toolbar.
+
+### Tự gợi ý extractor từ response
+
+Tính năng này có trong cả **Flowise → Rules → Extract Rules** và **Manual Testing → Extract / Inject Rules → Extract Rules**:
+
+1. Chọn request có response đang hiển thị. Trong Manual Testing, chạy request trước nếu chưa có response.
+2. Nhấn **Auto…** ở pane Extract Rules. Chỉ response được phân tích; thao tác này không gửi request và không đọc request để tạo gợi ý.
+3. Bảng liệt kê cookie từ từng `Set-Cookie`, header, status code, các giá trị JSON và body text nếu nhận diện được là text. Không coi `Path`, `HttpOnly` hay `SameSite` là cookie.
+4. Tick **Use** ở field cần lấy. Xem **Sample value**, sửa **Variable** theo tên muốn dùng. Ban đầu chưa chọn field nào; **Select all / Clear selection** hỗ trợ chọn nhanh.
+5. **Apply selected** tạo các Extract Rule thông thường cho đúng request đó. Sau đó vẫn có thể Edit để thêm transforms, đổi tên, tắt hoặc xoá. Cancel không tạo rule.
+
+JSON gợi ý dùng selector `pointer:/data/items/0/id` để đọc mảng/nested key. `/` trong tên key được escape thành `~1`, `~` thành `~0`; dấu chấm trong key được giữ nguyên. `pointer:` lấy toàn bộ JSON; object/array được trả dưới dạng JSON text. Selector dot-path cũ như `data.token` vẫn hoạt động theo cách cũ. JSON `null` không được gợi ý vì extractor không trả giá trị cho null.
+
+Rule đã có cùng nguồn sẽ được bỏ qua, kể cả khi tên variable khác. Không tạo hai extractor trong cùng request ghi đè vào một variable qua bảng Auto. Với nhiều header/cookie cùng tên, preview phản ánh **giá trị đầu tiên**, đúng logic runtime; không tự đoán Path/Domain. Phân tích giới hạn 500 gợi ý, 2.000 JSON node, 32 tầng và JSON body tối đa 1 Mi ký tự, có thông báo khi chạm giới hạn. Response binary vẫn dùng Raw body thủ công như mục 6.
 
 ## 3. Placeholder, biến và transform
 
@@ -75,7 +93,7 @@ Không tự encode giá trị nhập tay. Bạn quyết định chỗ nào dùng
 - **Available**: gợi ý các key trong bảng và extractor của các bước bật trước request đang chọn.
 - **Copy placeholder**: copy key đang chọn trong bảng; nếu chưa chọn row, dùng key ở Available. Dán vào editor tại vị trí muốn thử.
 
-Kết quả extract tự cập nhật Variables sau mỗi lần chạy. Bạn có thể sửa nó trước lần chạy tiếp theo. Biến runtime của mỗi draft được giữ riêng; muốn bắt đầu một biến thể độc lập, copy flow thành draft khác.
+Kết quả extract tự cập nhật Variables sau mỗi lần chạy. Bạn có thể sửa nó trước lần chạy tiếp theo. Biến runtime của mỗi manual flow được giữ riêng; muốn bắt đầu một biến thể độc lập, copy thành manual flow khác.
 
 ## 4. Các cách chạy
 
@@ -84,14 +102,18 @@ Kết quả extract tự cập nhật Variables sau mỗi lần chạy. Bạn c�
 | **Run selected** | Chạy đúng request đang chọn, kể cả request đang tắt. Không chạy Conditions & Actions của nó, nên retry/child flow không làm phát sinh request bất ngờ. Vẫn extract và cập nhật biến. Giữ focus để xem response. |
 | **Run from here** | Chạy các bước bật từ request đang chọn đến cuối; dùng các biến đang có. Conditions & Actions hoạt động theo cấu hình. |
 | **Run all** | Chạy các bước bật từ đầu đến cuối; dùng bảng Variables hiện tại. Conditions & Actions hoạt động theo cấu hình. |
-| **Reset runtime** | Xoá biến và ràng buộc session của draft hiện tại. Template/rule không bị xoá. Response cũ vẫn tra được trong Flow Log nhưng không còn hiển thị như response của runtime mới. |
+| **Reset runtime** | Xoá biến và ràng buộc session của manual flow hiện tại. Template/rule không bị xoá. Response cũ vẫn tra được trong Flow Log nhưng không còn hiển thị như response của runtime mới. |
 | **Stop** | Yêu cầu dừng, đóng prompt đang chờ và ngăn gửi bước tiếp theo. Một request đã gửi hoặc thao tác login đang chờ network không thể thu hồi; chờ job kết thúc mới chạy tiếp hoặc clean project. |
 
 `Run all` không ngầm xoá Variables: đây là workspace thử tay. Dùng Reset runtime trước nếu cần chạy từ đầu mà không tái dùng bất kỳ biến cũ nào.
 
-Mỗi lần Run dùng snapshot immutable của draft lúc bắt đầu. Editor vẫn cho chuẩn bị sửa template; nội dung đó có hiệu lực ở lần chạy tiếp. Chỉ có một job manual đang chạy trong workspace. Các child flow vẫn có giới hạn cycle/retry như engine hiện tại.
+Mỗi lần Run dùng snapshot immutable của manual flow lúc bắt đầu. Editor vẫn cho chuẩn bị sửa template; nội dung đó có hiệu lực ở lần chạy tiếp. Chỉ có một job manual đang chạy trong workspace. Các child flow vẫn có giới hạn cycle/retry như engine hiện tại.
 
 **Flow Log** lưu request thực tế sau render/session injection, response, status và lỗi. Trạng thái “Completed” cho biết lượt thực thi đã kết thúc; cần xem response/HTTP status để kết luận về test case. Continue on error có thể tạo lượt Completed with failed steps. Sau khi một request đã gửi, lỗi ở bước sau không hoàn tác request trước.
+
+Chọn **Flow Log** ở thanh **Request editor / Flow Log** phía trên vùng bên phải để dành toàn bộ chiều cao cho log. Nó không còn nằm dưới vùng Rules nhỏ. Bảng lịch sử ở trên, request/response thực tế ở dưới; kéo divider hoặc thu bảng để tăng chỗ đọc message. **Side by side / Stacked** đổi cách chia hai message viewer khi cửa sổ hẹp. Chuyển lại **Request editor** giữ nguyên nội dung đang sửa.
+
+Mặc định log chỉ hiển thị flow đang chọn. Bật **All flows (incl. child flows)** để xem các child flow được gọi kèm. Filter tìm theo tên flow, tên request, request line, step ID, HTTP status hoặc lỗi. Dòng chi tiết phía dưới cho xem run/step ID và lỗi đầy đủ, có tooltip. Chọn dòng cũ vẫn giữ dòng đó khi log có thêm dữ liệu.
 
 ## 5. Session Handler và chọn actor
 
@@ -133,7 +155,7 @@ Các mode giữ session yêu cầu injection OVERWRITE/OVERRIDE và target áp d
 
 Session hết TTL, profile/actor/provider bị tắt, plan thiếu giá trị, login/refresh đổi dấu phiên hoặc token/cookie thay đổi thì runtime đã pin sẽ dừng. Dùng Reset runtime và chạy lại các bước lấy dữ liệu theo phiên. Keep-alive chỉ kéo dài TTL, giữ nguyên auth thì có thể tiếp tục. Kiểm tra đích của các bước trong range trước khi bắt đầu; child flow và request thực tế còn được kiểm tra khi gửi. TTL/dấu phiên cục bộ không chứng minh server vẫn chấp nhận session.
 
-Response extraction của Session Handler có thể cập nhật State chung của profile như traffic thông thường. Variables của manual draft là dữ liệu riêng, không tự đồng bộ mọi `auth.*` từ Session Profile. Nạp profile hoặc extract đúng key khi template cần chúng.
+Response extraction của Session Handler có thể cập nhật State chung của profile như traffic thông thường. Variables của manual flow là dữ liệu riêng, không tự đồng bộ mọi `auth.*` từ Session Profile. Nạp profile hoặc extract đúng key khi template cần chúng.
 
 ## 6. Ảnh binary và lưu project
 
@@ -145,8 +167,8 @@ Response binary vẫn extract từ bytes gốc. Ví dụ giữ rule **Response �
 
 Template request được chỉnh dưới dạng text. Không convert binary response qua `bodyToString` để tính base64. Xem [Binary body](BINARY_BODY.md).
 
-Drafts (request/template, rule, step order và route override) được lưu trong Burp project riêng với Flowise và đi cùng **Project import/export**. Export sanitized/exclude-secrets áp dụng cả manual drafts. Project cũ không có manual drafts vẫn mở bình thường.
+Manual flows (request/template, rule, step order và route override) được lưu trong Burp project riêng với Flowise và đi cùng **Project import/export**. Export sanitized/exclude-secrets áp dụng cả manual flows. Project cũ chưa có chúng vẫn mở bình thường.
 
-Variables, session binding và lịch sử chạy manual chỉ ở RAM, không nằm trong project configuration; mở lại project cần nạp/chạy lại runtime. **Flow Log** riêng của workspace bị chặn ở 1.000 entry và 32 MiB raw HTTP text; entry cũ bị loại hoặc payload quá lớn được ghi rõ là omitted. Editor được dùng lại giữa các draft, không tạo thêm native editor cho từng lần mở draft.
+Variables, session binding và lịch sử chạy manual chỉ ở RAM, không nằm trong project configuration; mở lại project cần nạp/chạy lại runtime. **Flow Log** riêng của workspace bị chặn ở 1.000 entry và 32 MiB raw HTTP text; entry cũ bị loại hoặc payload quá lớn được ghi rõ là omitted. Editor được dùng lại giữa các manual flow và hai chế độ xem, không tạo thêm native editor cho từng lần mở.
 
-**Clean Burp Project Data** xoá cả manual drafts/runtime. Khi job manual chưa kết thúc, cleanup/import bị chặn để tránh job cũ gửi thêm request hoặc ghi trả State vào project vừa thay.
+**Clean Burp Project Data** xoá cả manual flows/runtime. Khi job manual chưa kết thúc, cleanup/import bị chặn để tránh job cũ gửi thêm request hoặc ghi trả State vào project vừa thay.

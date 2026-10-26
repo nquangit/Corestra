@@ -18,6 +18,7 @@ import dev.nquangit.corestra.persistence.*;
 import dev.nquangit.corestra.session.*;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
+import dev.nquangit.corestra.ui.flowise.FlowEditorLogPanel;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import javax.swing.*;
@@ -119,5 +120,23 @@ class ManualTestingPanelTest {
     }
     @Test void cleanupClearsOnlyManualConfigurationAndRuntime() throws Exception {
         SwingUtilities.invokeAndWait(()->{copy();panel.clearWorkspace();assertTrue(manualRepo.loadAll().isEmpty());assertEquals(1,source.flows().size());assertNull(manual.activeFlow());});
+    }
+    @Test void fullHeightLogSwitchKeepsUnsavedRequestAndReusesNativeEditors() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            copy(); edit("unsaved-test-value");
+            FlowEditorLogPanel view = findView(panel); assertNotNull(view);
+            for (int i = 0; i < 20; i++) { view.showLog(true); assertTrue(view.isLogVisible()); view.showLog(false); }
+            assertTrue(modified.get()); assertTrue(edited.get().contains("unsaved-test-value"));
+            assertEquals(4, editorCount.get()); assertEquals(0, sends.get());
+            manual.setSelectedStep(manual.activeFlow().steps().get(1));
+            assertEquals("unsaved-test-value", manualRepo.loadAll().getFirst().steps().getFirst().requestTemplate().body());
+        });
+    }
+    private static FlowEditorLogPanel findView(java.awt.Component component) {
+        if (component instanceof FlowEditorLogPanel view) return view;
+        if (component instanceof java.awt.Container container) for (var child : container.getComponents()) {
+            var found = findView(child); if (found != null) return found;
+        }
+        return null;
     }
 }

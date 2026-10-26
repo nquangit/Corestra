@@ -43,6 +43,7 @@ public final class FlowWorkspacePanel extends JPanel {
     private final JTabbedPane detailTabs;
     private final JSplitPane rightSplit;
     private final JSplitPane mainSplit;
+    private final FlowEditorLogPanel editorLog;
 
     /**
      * Creates a workspace panel for one flow, wired to the supplied controller.
@@ -103,7 +104,8 @@ public final class FlowWorkspacePanel extends JPanel {
             }
         });
 
-        mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, stepList, rightSplit);
+        editorLog = new FlowEditorLogPanel(rightSplit, new FlowLogPanel(controller, executionLog, api));
+        mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, stepList, editorLog);
         mainSplit.setDividerSize(4);
         mainSplit.setBorder(BorderFactory.createEmptyBorder());
         // Set initial divider to ~30 % of the actual panel width on first layout.
@@ -121,14 +123,17 @@ public final class FlowWorkspacePanel extends JPanel {
     }
 
     // Preserve per-flow view preferences without retaining another native editor workspace.
-    record ViewState(int detailTab, int detailDivider, int stepsDivider) { }
+    record ViewState(int detailTab, int detailDivider, int stepsDivider, boolean logVisible) {
+        ViewState(int detailTab, int detailDivider, int stepsDivider) { this(detailTab, detailDivider, stepsDivider, false); }
+    }
 
     ViewState viewState() {
-        return new ViewState(detailTabs.getSelectedIndex(), rightSplit.getDividerLocation(), mainSplit.getDividerLocation());
+        return new ViewState(detailTabs.getSelectedIndex(), rightSplit.getDividerLocation(), mainSplit.getDividerLocation(), editorLog.isLogVisible());
     }
 
     void restoreViewState(ViewState state) {
         detailTabs.setSelectedIndex(state == null ? 0 : state.detailTab());
+        editorLog.showLog(state != null && state.logVisible());
         if (state != null) {
             rightSplit.setDividerLocation(state.detailDivider());
             mainSplit.setDividerLocation(state.stepsDivider());
@@ -158,10 +163,9 @@ public final class FlowWorkspacePanel extends JPanel {
         JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
 
         tabs.addTab("Rules", new RuleSummaryPanel(
-                controller, requestResponsePanel::responseRegexSelection, accessController));
+                controller, requestResponsePanel::responseRegexSelection, accessController, requestResponsePanel::displayedResponse));
         tabs.addTab("Conditions & Actions", new ConditionActionPanel(controller));
         tabs.addTab("Execution", new ExecutionPanel(controller, accessController));
-        tabs.addTab("Flow Log", new FlowLogPanel(controller, executionLog, api));
         tabs.addTab("Auto Trigger Flow", new TriggerPanel(controller));
         tabs.addTab("Aggregation", new AggregationPanel(controller));
         tabs.addTab("Notes", buildNotesPanel(controller));

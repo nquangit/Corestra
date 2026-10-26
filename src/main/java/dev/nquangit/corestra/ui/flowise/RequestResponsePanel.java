@@ -124,6 +124,11 @@ public final class RequestResponsePanel extends JPanel {
         });
     }
 
+    /** Returns the response currently shown for optional extraction discovery. */
+    public Optional<burp.api.montoya.http.message.responses.HttpResponse> displayedResponse() {
+        return ResponseExtractionDialog.available(responseEditor.getResponse());
+    }
+
     /** Selection coordinates resolved against either response headers or body. */
     public record ResponseRegexSelection(
             HttpMessageSnapshot snapshot,

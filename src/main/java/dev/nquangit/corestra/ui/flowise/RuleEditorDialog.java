@@ -178,6 +178,7 @@ public final class RuleEditorDialog extends JDialog {
         JComboBox<ExtractRule.ExtractorType> extractorTypeCombo =
                 new JComboBox<>(ExtractRule.ExtractorType.selectableValues());
         JTextField selectorField = new JTextField(existing != null ? existing.sourceSelector() : "", 24);
+        selectorField.setToolTipText("JSON: data.token or pointer:/data/items/0/id; pointer: selects the whole JSON value. Other types use their normal selector.");
         JTextField variableField = new JTextField(existing != null ? existing.targetVariableName() : "", 24);
         JComboBox<ExtractRule.RegexSource> regexSourceCombo =
                 new JComboBox<>(ExtractRule.RegexSource.values());
