@@ -269,7 +269,9 @@ public final class CorestraBootstrap {
         ParameterDiscoveryHandler parameterDiscoveryHandler =
                 new ParameterDiscoveryHandler(parameterDictionary, redactionService);
         ParameterDictionaryPanel parameterDictionaryPanel =
-                new ParameterDictionaryPanel(parameterDictionary, parameterDiscoveryHandler);
+                new ParameterDictionaryPanel(parameterDictionary, parameterDiscoveryHandler, api);
+        registry.registerCloseable(parameterDiscoveryHandler);
+        registry.registerCloseable(parameterDictionaryPanel);
         CorestraRootPanel rootPanel = new CorestraRootPanel(
                 flowisePanel, projectPanel, authenticationPanel, sessionHandlerPanel, accessTestingPanel,
                 parameterDictionaryPanel, api);

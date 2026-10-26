@@ -84,7 +84,7 @@ public final class CorestraRootPanel extends JPanel {
         tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Build and execute access-control test matrices.");
         if (parameterDictionaryPanel != null) {
             tabs.addTab("Parameters", parameterDictionaryPanel);
-            tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Inspect parameters discovered from in-scope traffic.");
+            tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Collect categorized wordlists, export files and rescan saved Proxy History.");
         }
         tabs.addTab("Project", projectPanel);
         tabs.setToolTipTextAt(tabs.getTabCount() - 1, "Project metadata, transport settings, import/export, and storage.");

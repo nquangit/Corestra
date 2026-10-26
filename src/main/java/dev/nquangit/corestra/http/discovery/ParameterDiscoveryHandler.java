@@ -9,6 +9,7 @@ import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.params.ParsedHttpParameter;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.nquangit.corestra.access.security.RedactionService;
@@ -16,11 +17,13 @@ import dev.nquangit.corestra.integration.ProxyPipelineHttpClient;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Passive HTTP handler that populates a scoped, runtime-only parameter dictionary. */
-public final class ParameterDiscoveryHandler implements HttpHandler {
+public final class ParameterDiscoveryHandler implements HttpHandler, AutoCloseable {
     private static final int MAX_RESPONSE_BODY = 1_000_000;
     private static final int MAX_FIELDS_PER_MESSAGE = 500;
     private static final Pattern HTML_NAME = Pattern.compile(
@@ -30,11 +33,23 @@ public final class ParameterDiscoveryHandler implements HttpHandler {
     private final ObjectMapper mapper = new ObjectMapper();
     private final AtomicBoolean inScopeOnly = new AtomicBoolean(true);
     private final AtomicBoolean collectExamples = new AtomicBoolean(false);
+    private final AtomicBoolean includeRepeater = new AtomicBoolean(false), collectValues = new AtomicBoolean(true), paused = new AtomicBoolean(false);
+    private final WordlistDictionary wordlists = new WordlistDictionary();
+    private final WordlistNoiseFilter noise = new WordlistNoiseFilter();
+    private final TrafficWordlistAnalyzer analyzer;
+    private final Object mutationLock = new Object();
+    private final AtomicLong generation = new AtomicLong(), dropped = new AtomicLong(), skipped = new AtomicLong();
+    // Preserve request-side exclusions when another handler strips a proxy marker before the response.
+    private final java.util.LinkedHashSet<Integer> ignoredMessages = new java.util.LinkedHashSet<>();
+    private volatile boolean closed;
+    private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(32), r -> { Thread t = new Thread(r, "corestra-vocabulary"); t.setDaemon(true); return t; }, new ThreadPoolExecutor.AbortPolicy());
 
     /** Creates the passive collector. */
     public ParameterDiscoveryHandler(ParameterDictionary dictionary, RedactionService redactionService) {
         this.dictionary = Objects.requireNonNull(dictionary, "dictionary");
         this.redactionService = Objects.requireNonNull(redactionService, "redactionService");
+        analyzer = new TrafficWordlistAnalyzer(wordlists, noise, redactionService);
     }
 
     /** Enables or disables Burp-scope filtering. */
@@ -42,8 +57,7 @@ public final class ParameterDiscoveryHandler implements HttpHandler {
 
     /** Enables or disables retaining examples; retained examples are key-redacted. */
     public void setCollectExamples(boolean value) {
-        collectExamples.set(value);
-        if (!value) dictionary.clearExamples();
+        synchronized (mutationLock) { collectExamples.set(value); if (!value) dictionary.clearExamples(); }
     }
 
     /** Returns whether scope filtering is enabled. */
@@ -52,20 +66,107 @@ public final class ParameterDiscoveryHandler implements HttpHandler {
     /** Returns whether redacted examples are retained. */
     public boolean collectExamples() { return collectExamples.get(); }
 
+    /** Returns the runtime wordlist corpus. */
+    public WordlistDictionary wordlists() { return wordlists; }
+    /** Explicitly opts Repeater traffic into collection. Scanner/Intruder/Extensions are always excluded. */
+    public void setIncludeRepeater(boolean value) { includeRepeater.set(value); }
+    /** Returns whether manually tested Repeater requests are included. */
+    public boolean includeRepeater() { return includeRepeater.get(); }
+    /** Enables categorical values such as action, role and format; never arbitrary values. */
+    public void setCollectValues(boolean value) {
+        synchronized (mutationLock) {
+            collectValues.set(value);
+            if (!value) wordlists.remove(wordlists.snapshot().stream().filter(e -> e.category() == WordlistDictionary.Category.VALUE_WORDS).toList());
+        }
+    }
+    /** Returns whether categorical values are enabled. */
+    public boolean collectValues() { return collectValues.get(); }
+    /** Pauses new live observations, independently of an explicit history rescan. */
+    public void setPaused(boolean value) { paused.set(value); }
+    /** Returns whether live collection is paused. */
+    public boolean paused() { return paused.get(); }
+    /** Counts rejected/failed queue work; collection never blocks sending traffic. */
+    public long dropped() { return dropped.get(); }
+    /** Counts messages rejected by source/scope/noise checks. */
+    public long skipped() { return skipped.get(); }
+
+    /** Clears both dictionaries and invalidates queued work from before the clear. */
+    public void clear() {
+        synchronized (mutationLock) { generation.incrementAndGet(); dictionary.clear(); wordlists.clear(); skipped.set(0); dropped.set(0); }
+    }
+
+    /** Passively processes one saved Proxy record, applying the same scope/noise policy as live traffic. */
+    public boolean scanStored(HttpRequest request, HttpResponse response) {
+        if (closed || !eligible(request, ToolType.PROXY)) { skipped.incrementAndGet(); return false; }
+        return collect(request, response, true, true, generation.get());
+    }
+
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent request) {
-        if (eligible(request, request.toolSource().toolType())) dictionary.batch(() -> collectRequest(request));
+        try {
+            if (!paused.get() && eligible(request, request.toolSource().toolType())) {
+                takeIgnored(request.messageId()); submit(request, null, true, false, request.messageId());
+            } else { ignore(request.messageId()); skipped.incrementAndGet(); }
+        }
+        catch (RuntimeException unavailable) { dropped.incrementAndGet(); }
         return RequestToBeSentAction.continueWith(request);
     }
 
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived response) {
-        HttpRequest request = response.initiatingRequest();
-        if (eligible(request, response.toolSource().toolType())) {
-            String body = response.bodyToString();
-            if (body.length() <= MAX_RESPONSE_BODY) dictionary.batch(() -> collectResponse(request, body));
-        }
+        try {
+            HttpRequest request = response.initiatingRequest();
+            if (takeIgnored(response.messageId())) skipped.incrementAndGet();
+            else if (!paused.get() && eligible(request, response.toolSource().toolType())) submit(request, response, false, true, response.messageId()); else skipped.incrementAndGet();
+        } catch (RuntimeException unavailable) { dropped.incrementAndGet(); }
         return ResponseReceivedAction.continueWith(response);
+    }
+
+    private void submit(HttpRequest request, HttpResponse response, boolean requestSide, boolean responseSide, int messageId) {
+        if (closed || request.body().length() > MAX_RESPONSE_BODY || (response != null && response.body().length() > MAX_RESPONSE_BODY)) {
+            if (requestSide) ignore(messageId); skipped.incrementAndGet(); return;
+        }
+        long epoch = generation.get();
+        try { worker.execute(() -> {
+            try {
+                if (responseSide && takeIgnored(messageId)) { skipped.incrementAndGet(); return; }
+                if (!collect(request, response, requestSide, responseSide, epoch) && requestSide) ignore(messageId);
+            } catch (RuntimeException failed) { if (requestSide) ignore(messageId); dropped.incrementAndGet(); }
+        }); }
+        catch (RejectedExecutionException busy) { if (requestSide) ignore(messageId); dropped.incrementAndGet(); }
+    }
+
+    private void ignore(int id) {
+        synchronized (ignoredMessages) {
+            ignoredMessages.add(id);
+            while (ignoredMessages.size() > 10_000) ignoredMessages.remove(ignoredMessages.iterator().next());
+        }
+    }
+    private boolean takeIgnored(int id) { synchronized (ignoredMessages) { return ignoredMessages.remove(id); } }
+
+    private boolean collect(HttpRequest request, HttpResponse response, boolean requestSide, boolean responseSide, long epoch) {
+        if (!noise.accepts(request)) { skipped.incrementAndGet(); return false; }
+        synchronized (mutationLock) {
+            if (closed || epoch != generation.get()) return false;
+            dictionary.batch(() -> {
+                if (requestSide) { collectRequest(request); analyzer.request(request, collectValues.get()); }
+                if (responseSide && response != null) {
+                    analyzer.response(request, response, collectValues.get());
+                    if (response.body().length() <= MAX_RESPONSE_BODY) collectResponse(request, response.bodyToString());
+                }
+            });
+        }
+        return true;
+    }
+
+    // Package-visible synchronization seam used by collector regression tests.
+    void awaitIdle() throws Exception { worker.submit(() -> { }).get(5, TimeUnit.SECONDS); }
+
+    /** Stops background work and releases runtime data on extension unload. */
+    @Override public void close() {
+        closed = true; generation.incrementAndGet(); worker.shutdownNow();
+        synchronized (mutationLock) { dictionary.clear(); wordlists.clear(); }
+        synchronized (ignoredMessages) { ignoredMessages.clear(); }
     }
 
     private void collectRequest(HttpRequest request) {
@@ -113,12 +214,13 @@ public final class ParameterDiscoveryHandler implements HttpHandler {
                 walkJson(value, host, path, count, depth + 1);
             });
         } else if (node.isArray()) {
-            node.forEach(child -> walkJson(child, host, path, count, depth + 1));
+            for (var child : node) { if (++count[0] >= MAX_FIELDS_PER_MESSAGE) break; walkJson(child, host, path, count, depth + 1); }
         }
     }
 
     private boolean eligible(HttpRequest request, ToolType toolType) {
-        if (request == null || toolType == ToolType.EXTENSIONS
+        if (request == null || (toolType != ToolType.PROXY && !(toolType == ToolType.REPEATER && includeRepeater.get()))
+                || request.httpService() == null
                 || request.hasHeader(ProxyPipelineHttpClient.MARKER_HEADER)) {
             return false;
         }
