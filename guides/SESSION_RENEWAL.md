@@ -68,12 +68,14 @@ Với **Proxy/Scanner**, có thể dùng auto-trigger trên step action:
    context hiện tại. Request GET đã capture từ trang cũ có thể chứa page ID cũ;
    chỉ thay `dse_sessionId` trong URL vẫn chưa đủ.
 
-Auto-trigger hiện khởi tạo execution context rỗng; nó không tự seed các biến
-`auth.*` của linked profile. Session-aware transport có thể inject các rule đã
-cấu hình vào request setup, nhưng không tự cung cấp page/processor context.
-Không đặt `{{auth.someKey}}` vào rule prerequisite rồi giả định key đó luôn tồn tại.
-Cần cấu hình nguồn đầu vào/extractor phù hợp hoặc bổ sung cơ chế truyền auth
-snapshot vào setup trước khi áp dụng cách này cho flow cụ thể.
+Trong **Auto Trigger Flow**, có thể chọn **Auth Profile** để cung cấp credentials
+và các biến `auth.*` hiện có cho prerequisite. Chọn profile không tự login, không
+tự tạo page/processor context và không tự đồng bộ lựa chọn với Session Handler.
+Nếu bật kế thừa session, chọn actor phù hợp với session của request khởi đầu.
+Giữ bước mở lại trang để extract context mới; không dùng lại processor ID chỉ vì
+cookie/token còn hợp lệ. **Check inputs…** phát hiện key thiếu; input còn thiếu
+khi chạy sẽ dừng trước khi gửi bước cần nó. Xem
+[Auto Trigger inputs và các trường hợp None](AUTO_TRIGGER_INPUTS.md).
 
 ## Tiêu chí login thành công
 

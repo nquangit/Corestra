@@ -155,4 +155,19 @@ class ManualFlowExecutionTest {
         sent.clear();
         var selected=runner.run(flow(one),0,0,true,Map.of(),ManualTestRunner.State.empty(),fixed("x"),new AtomicBoolean());assertTrue(selected.result().success());assertEquals(1,sent.size());
     }
+    @Test void manualProgressStartsBeforeSendingAndKeepsChildIdentityAndRunsIsolated() {
+        var action = new StepAction("a", "Child", true, StepActionType.TRIGGER_FLOW, Map.of("flowId", "child"));
+        var one = step("one", "/one", "").withConditionActionRules(List.of(new StepConditionActionRule("r", "r", true, ConditionMatchPolicy.ALL, List.of(), List.of(action))));
+        catalog.add(new FlowDefinition("child", "Child", "", true, List.of(step("childstep", "/child", "")), null, null, null));
+        List<StepExecutionProgress> events = new ArrayList<>();
+        respond.set(request -> { assertEquals(StepExecutionProgress.Phase.STARTED, events.getLast().phase()); return response("ok"); });
+        var result = runner.run(flow(one), 0, 0, false, Map.of(), ManualTestRunner.State.empty(), fixed("x"), new AtomicBoolean(), events::add);
+        assertTrue(result.result().success());
+        assertEquals(List.of("flow:one:STARTED", "flow:one:COMPLETED", "child:childstep:STARTED", "child:childstep:COMPLETED"),
+                events.stream().map(e -> e.flowId() + ":" + e.stepId() + ":" + e.phase()).toList());
+        assertEquals(1, events.stream().map(StepExecutionProgress::runId).distinct().count());
+        String firstRun = events.getFirst().runId(); events.clear();
+        runner.run(flow(one), 0, 0, true, Map.of(), ManualTestRunner.State.empty(), fixed("x"), new AtomicBoolean(), events::add);
+        assertEquals(2, events.size()); assertNotEquals(firstRun, events.getFirst().runId());
+    }
 }

@@ -15,6 +15,12 @@ Bản sao có ID riêng, không sửa flow gốc và không được dùng làm 
 5. Sửa method, path, headers và body ngay trong editor request. Response bên phải là kết quả nhận được, chỉ đọc.
 6. **Save request** lưu method/path/headers/body, tên bước và target đang sửa vào manual flow, **không gửi request**. Chuyển request/manual flow hoặc nhấn Run cũng tự lưu. Nếu request/target không hợp lệ, việc chuyển bị chặn để giữ nội dung chưa lưu.
 
+Danh sách request dùng item hai dòng: tên request và method/số rule/trạng thái. Không hiển thị thêm dòng host/path; hover item hoặc method để xem endpoint đầy đủ. Tên bạn đã đặt được giữ nguyên; tên dài hiển thị dấu `…`. Kéo trực tiếp trên item hoặc tên để đổi thứ tự, không cần biểu tượng kéo riêng. Checkbox bật/tắt và menu chuột phải vẫn dùng như trước.
+
+Sidebar Manual Testing mặc định khoảng 270 px và kéo divider để đổi chiều rộng. Chiều rộng này dùng chung khi chuyển flow trong cùng workspace, không tự tăng theo tên request, response, màu tiến trình hoặc khi đổi sang Flow Log. Khi tăng kích thước cửa sổ, phần rộng thêm dành cho editor; nếu cửa sổ tạm quá hẹp, sidebar sẽ trở về chiều rộng đã chọn khi có đủ chỗ. Thiết lập này chỉ giữ trong phiên UI, không ghi thêm dữ liệu vào Burp project.
+
+Flowise dùng cùng cơ chế giữ chiều rộng nhưng có bố cục danh sách riêng: mặc định khoảng 320 px, tên request và item lớn hơn một chút. Extract/Inject/Conditions có badge `E`, `I`, `C` nhỏ hơn method; hover để xem tên đầy đủ và số rule. Manual Testing giữ kiểu compact ở trên.
+
 “Template” chỉ request text có thể chứa `{{biến}}`; không phải một loại dữ liệu cần lưu ở nơi khác. Ví dụ bạn sửa body thành `id={{objectId}}`, Save request lưu đúng chuỗi này; khi nhấn Run, Corestra mới thay biến và gửi. Bạn không bắt buộc phải bấm Save request trước mỗi lần Run.
 
 Template dùng mô hình request HTTP/1.1 của flow hiện tại. Phiên bản trong request line được chuẩn hoá; đây không phải raw socket editor để giữ nguyên mọi byte framing. `Content-Length` được Montoya cập nhật khi chuẩn bị body thực tế. Override **Send via** vẫn thuộc từng request và ưu tiên hơn Project.
@@ -108,6 +114,31 @@ Kết quả extract tự cập nhật Variables sau mỗi lần chạy. Bạn c�
 `Run all` không ngầm xoá Variables: đây là workspace thử tay. Dùng Reset runtime trước nếu cần chạy từ đầu mà không tái dùng bất kỳ biến cũ nào.
 
 Mỗi lần Run dùng snapshot immutable của manual flow lúc bắt đầu. Editor vẫn cho chuẩn bị sửa template; nội dung đó có hiệu lực ở lần chạy tiếp. Chỉ có một job manual đang chạy trong workspace. Các child flow vẫn có giới hạn cycle/retry như engine hiện tại.
+
+### Tiến trình từng request
+
+Danh sách request bên trái cập nhật ngay khi engine bắt đầu/kết thúc từng bước trong **Run selected**, **Run from here** và **Run all**:
+
+| Màu / nhãn | Ý nghĩa |
+| --- | --- |
+| Vàng — **Running** | Đang chuẩn bị hoặc thực thi bước này, gồm render/inject, đợi auth/input, gửi request và extract response. |
+| Xanh lá — **Done** | Bước đã thực thi xong theo kết quả engine. HTTP status hiện bên phải tên request; hover để xem thêm số attempt. |
+| Đỏ — **Failed** | Lỗi thực thi, ví dụ thiếu biến bắt buộc hoặc gửi request thất bại. Lỗi đầy đủ nằm ở tooltip / Flow Log. |
+| Xám — **Not run** | Chưa chạy trong lượt này; có thể chưa đến lượt hoặc flow đã dừng trước đó. |
+| Xám — **Skipped / Stopped** | Bị tắt/nằm ngoài range được chọn, hoặc attempt đang chạy bị dừng. |
+
+Dòng trên danh sách hiển thị số request Done / tổng request được chọn chạy. Retry không tăng tổng request; attempt sau có nhãn như `Running #2`. Retry cả flow sẽ xoá màu hoàn tất ở các bước phía sau, tránh nhầm kết quả của vòng trước. Chỉ có metadata tiến trình ở RAM, không ghi màu/trạng thái chạy vào project.
+
+Request đang chọn có nền xanh dương và viền rõ ở cả Flowise lẫn Manual Testing,
+kể cả sau khi đã chạy và khi focus chuyển sang HTTP editor. Nhãn Running/Done/Failed
+vẫn giữ màu trạng thái. Trong Manual Testing, badge bên phải tên hiển thị HTTP code
+thực tế như `200`, `302`, `403`; lỗi không nhận được response hiển thị `—`. Lượt chạy
+mới xoá code cũ theo cùng cơ chế reset tiến trình, không dùng response snapshot làm
+kết quả của lượt chạy mới.
+
+Mỗi lần Run bắt đầu lại màu cho lượt mới. Chuyển giữa các manual flow giữ tiến trình gần nhất riêng của từng flow; **Reset runtime** xoá trạng thái này. Dòng đang chạy được cuộn vào vùng nhìn thấy, **không đổi request đang chọn hoặc nội dung editor**. Child flow có flow ID riêng, không ghi đè màu các bước của flow cha; thanh trạng thái cho biết tên child/bước đang thực thi.
+
+**Done là trạng thái thực thi, không kết luận test thành công hay session hợp lệ.** HTTP 302/4xx/5xx vẫn cần xem response và rules đánh giá; chúng không tự động là lỗi network. Các Conditions & Actions có thể tiếp tục xử lý sau khi request đã Done.
 
 **Flow Log** lưu request thực tế sau render/session injection, response, status và lỗi. Trạng thái “Completed” cho biết lượt thực thi đã kết thúc; cần xem response/HTTP status để kết luận về test case. Continue on error có thể tạo lượt Completed with failed steps. Sau khi một request đã gửi, lỗi ở bước sau không hoàn tác request trước.
 

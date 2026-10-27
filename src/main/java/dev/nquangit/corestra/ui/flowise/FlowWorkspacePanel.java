@@ -6,6 +6,7 @@ import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.execution.FlowExecutionLog;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.StyledButton;
+import dev.nquangit.corestra.ui.component.StableSidebarSplitPane;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -81,7 +82,7 @@ public final class FlowWorkspacePanel extends JPanel {
         Objects.requireNonNull(controller, "controller");
         Objects.requireNonNull(api, "api");
 
-        StepListPanel stepList = new StepListPanel(controller, accessController);
+        StepListPanel stepList = new StepListPanel(controller, accessController, StepListPanel.Presentation.FLOWISE);
         RequestResponsePanel reqResp = new RequestResponsePanel(controller, api);
         detailTabs = buildDetailTabs(controller, api, reqResp, accessController,
                 Objects.requireNonNull(executionLog, "executionLog"));
@@ -105,30 +106,17 @@ public final class FlowWorkspacePanel extends JPanel {
         });
 
         editorLog = new FlowEditorLogPanel(rightSplit, new FlowLogPanel(controller, executionLog, api));
-        mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, stepList, editorLog);
-        mainSplit.setDividerSize(4);
-        mainSplit.setBorder(BorderFactory.createEmptyBorder());
-        // Set initial divider to ~30 % of the actual panel width on first layout.
-        mainSplit.addComponentListener(new ComponentAdapter() {
-            private boolean set = false;
-            @Override public void componentResized(ComponentEvent e) {
-                if (!set && mainSplit.getWidth() > 0) {
-                    mainSplit.setDividerLocation((int) (mainSplit.getWidth() * 0.30));
-                    set = true;
-                }
-            }
-        });
+        mainSplit = new StableSidebarSplitPane(stepList, editorLog, 320);
+        mainSplit.setName("flowRequestListSplit");
 
         add(mainSplit, BorderLayout.CENTER);
     }
 
     // Preserve per-flow view preferences without retaining another native editor workspace.
-    record ViewState(int detailTab, int detailDivider, int stepsDivider, boolean logVisible) {
-        ViewState(int detailTab, int detailDivider, int stepsDivider) { this(detailTab, detailDivider, stepsDivider, false); }
-    }
+    record ViewState(int detailTab, int detailDivider, boolean logVisible) { }
 
     ViewState viewState() {
-        return new ViewState(detailTabs.getSelectedIndex(), rightSplit.getDividerLocation(), mainSplit.getDividerLocation(), editorLog.isLogVisible());
+        return new ViewState(detailTabs.getSelectedIndex(), rightSplit.getDividerLocation(), editorLog.isLogVisible());
     }
 
     void restoreViewState(ViewState state) {
@@ -136,10 +124,8 @@ public final class FlowWorkspacePanel extends JPanel {
         editorLog.showLog(state != null && state.logVisible());
         if (state != null) {
             rightSplit.setDividerLocation(state.detailDivider());
-            mainSplit.setDividerLocation(state.stepsDivider());
         } else {
             if (rightSplit.getHeight() > 0) rightSplit.setDividerLocation(defaultDetailDividerLocation(rightSplit.getHeight()));
-            if (mainSplit.getWidth() > 0) mainSplit.setDividerLocation((int) (mainSplit.getWidth() * 0.30));
         }
     }
 
@@ -166,7 +152,7 @@ public final class FlowWorkspacePanel extends JPanel {
                 controller, requestResponsePanel::responseRegexSelection, accessController, requestResponsePanel::displayedResponse));
         tabs.addTab("Conditions & Actions", new ConditionActionPanel(controller));
         tabs.addTab("Execution", new ExecutionPanel(controller, accessController));
-        tabs.addTab("Auto Trigger Flow", new TriggerPanel(controller));
+        tabs.addTab("Auto Trigger Flow", new TriggerPanel(controller, accessController));
         tabs.addTab("Aggregation", new AggregationPanel(controller));
         tabs.addTab("Notes", buildNotesPanel(controller));
 

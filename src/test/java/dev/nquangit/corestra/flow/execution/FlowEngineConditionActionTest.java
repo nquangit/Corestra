@@ -65,11 +65,13 @@ class FlowEngineConditionActionTest {
                 action(StepActionType.RETRY_CURRENT_STEP, Map.of("maxAttempts", "1")),
                 statusCondition("500"))));
         FlowDefinition flow = flow("flow-1", step1, step("step-2"));
-
-        ExecutionResult result = engine(executor).execute(flow, context("flow-1"));
+        List<StepExecutionProgress> progress = new ArrayList<>();
+        ExecutionResult result = engine(executor).execute(flow, context("flow-1"), progress::add);
 
         assertTrue(result.success());
         assertEquals(List.of("step-1", "step-1", "step-2"), executor.executedSteps());
+        assertEquals(List.of(1, 2, 1), progress.stream().filter(e -> e.phase() == StepExecutionProgress.Phase.STARTED).map(StepExecutionProgress::attempt).toList());
+        assertEquals(6, progress.size());
         assertEquals(3, result.stepRecords().size());
         assertEquals(StepActionStatus.COMPLETED, result.actionRecords().getFirst().status());
     }
@@ -274,5 +276,17 @@ class FlowEngineConditionActionTest {
             }
             return queue.remove();
         }
+    }
+
+    @Test void observersArePerRunAndFailuresCannotChangeExecutionOrProduceSkippedStepEvents() {
+        QueueStepExecutor executor = new QueueStepExecutor();
+        var engine = engine(executor);
+        var flow = flow("flow", step("one"), step("off").withEnabled(false), step("two"));
+        List<StepExecutionProgress> events = new ArrayList<>();
+        assertTrue(engine.execute(flow, context("flow"), events::add).success());
+        assertEquals(List.of("one", "one", "two", "two"), events.stream().map(StepExecutionProgress::stepId).toList());
+        int recorded = events.size();
+        assertTrue(engine.execute(flow, context("flow"), event -> { throw new IllegalStateException("UI failure"); }).success());
+        assertEquals(recorded, events.size());
     }
 }

@@ -3,6 +3,7 @@ package dev.nquangit.corestra.ui.project;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.session.SessionScheduledJob;
 import dev.nquangit.corestra.session.SessionSchedulerSnapshot;
+import dev.nquangit.corestra.ui.component.WrappedText;
 
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
@@ -59,8 +60,9 @@ public final class SchedulerJobsPanel extends JPanel implements AutoCloseable {
         }
         JScrollPane scroll = new JScrollPane(table);
         scroll.setPreferredSize(new Dimension(900, 190));
-        JLabel note = new JLabel("<html>Runtime only · Timings include waiting for authentication.<br>"
-                + "Next run is an estimate; busy workers can delay it.</html>");
+        var note = new WrappedText(
+                "Runtime only · Timings include waiting for authentication.\n"
+                + "Next run is an estimate; busy workers can delay it.");
         note.setToolTipText("Last result belongs to this scheduler's last attempt. Manual and traffic-triggered auth can also move the next due time.");
         add(summary, BorderLayout.NORTH);
         add(scroll, BorderLayout.CENTER);

@@ -14,6 +14,7 @@ import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.StoredRequestTemplate;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.UiTheme;
+import dev.nquangit.corestra.manual.ManualRunProgress;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -44,6 +45,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -58,16 +60,23 @@ public final class StepListPanel extends JPanel {
 
     private final FlowWorkspaceController controller;
     private final AccessUiController accessController;
+    private final Presentation presentation;
     private final JPanel listContainer;
 
     private List<FlowStep> renderedSteps;
     private boolean renderedDark;
     private Color renderedBackground;
+    private boolean executionProgressEnabled;
+    private String executionFlowId;
+    private Map<String, ManualRunProgress.Status> executionStatuses = Map.of(), renderedStatuses = Map.of();
     // Last rendered selection; only refresh() updates it from the controller.
     private String  selectedStepId  = null;
     private String  draggedStepId   = null;
     private int     dropTargetIndex = -1;
     private int     dropIndicatorY  = -1;
+
+    /** Chooses roomier Flowise rows or the existing compact manual-testing layout. */
+    public enum Presentation { COMPACT, FLOWISE }
 
     public StepListPanel(FlowWorkspaceController controller) {
         this(controller, null);
@@ -80,9 +89,17 @@ public final class StepListPanel extends JPanel {
      * @param accessController optional Access Testing controller
      */
     public StepListPanel(FlowWorkspaceController controller, AccessUiController accessController) {
+        this(controller, accessController, Presentation.COMPACT);
+    }
+
+    /** Creates a request list with an explicit workspace presentation, without changing request data. */
+    public StepListPanel(FlowWorkspaceController controller, AccessUiController accessController, Presentation presentation) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
         this.accessController = accessController;
+        this.presentation = Objects.requireNonNull(presentation, "presentation");
+        setMinimumSize(new java.awt.Dimension(160, 0));
+        setPreferredSize(new java.awt.Dimension(presentation == Presentation.FLOWISE ? 320 : 260, 300));
 
         listContainer = new JPanel() {
             @Override
@@ -120,6 +137,24 @@ public final class StepListPanel extends JPanel {
     // Refresh
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** Applies transient progress to this workspace only; no controller updates or persistence writes occur. Call on the EDT. */
+    public void setExecutionStatuses(String flowId, Map<String, ManualRunProgress.Status> statuses) {
+        Map<String, ManualRunProgress.Status> previous = executionStatuses;
+        boolean first = !executionProgressEnabled; executionProgressEnabled = true; executionFlowId = flowId;
+        executionStatuses = Map.copyOf(statuses); if (first) renderedSteps = null;
+        refresh();
+        var active = controller.activeFlow();
+        if (active == null || !active.id().equals(flowId)) return;
+        for (int i = 0; i < active.steps().size(); i++) {
+            var s = executionStatuses.get(active.steps().get(i).id());
+            if (s != null && s.state() == ManualRunProgress.State.RUNNING && !s.equals(previous.get(active.steps().get(i).id()))) {
+                JPanel row = (JPanel) listContainer.getComponent(i);
+                row.scrollRectToVisible(new Rectangle(0, 0, row.getWidth(), row.getHeight()));
+                break;
+            }
+        }
+    }
+
     private void refresh() {
         if (draggedStepId != null) return; // don't interrupt an active drag
         FlowDefinition active = controller.activeFlow();
@@ -136,14 +171,17 @@ public final class StepListPanel extends JPanel {
         Color listBg = UIManager.getColor("List.background");
         if (listBg == null) listBg = dark ? new Color(0x1A2030) : new Color(0xF8FAFC);
         if (steps.equals(renderedSteps) && dark == renderedDark && Objects.equals(listBg, renderedBackground)) {
-            if (Objects.equals(previousSelection, selectedStepId)) return;
+            boolean selectionChanged = !Objects.equals(previousSelection, selectedStepId);
+            if (!selectionChanged && renderedStatuses.equals(executionStatuses)) return;
             for (int i = 0; i < steps.size(); i++) {
                 String id = steps.get(i).id();
-                if (id.equals(previousSelection) || id.equals(selectedStepId)) {
+                if ((selectionChanged && (id.equals(previousSelection) || id.equals(selectedStepId)))
+                        || !Objects.equals(renderedStatuses.get(id), executionStatuses.get(id))) {
                     listContainer.remove(i);
                     listContainer.add(buildRow(steps.get(i), i, dark, listBg), i);
                 }
             }
+            renderedStatuses = executionStatuses;
             listContainer.revalidate();
             listContainer.repaint();
             return;
@@ -151,6 +189,7 @@ public final class StepListPanel extends JPanel {
         renderedSteps = steps;
         renderedDark = dark;
         renderedBackground = listBg;
+        renderedStatuses = executionStatuses;
         listContainer.removeAll();
         listContainer.setBackground(listBg);
 
@@ -168,6 +207,7 @@ public final class StepListPanel extends JPanel {
 
     private JPanel buildRow(FlowStep step, int index, boolean dark, Color listBg) {
         boolean selected = step.id().equals(selectedStepId);
+        boolean roomy = presentation == Presentation.FLOWISE;
 
         // ── Colours ──────────────────────────────────────────────────────────
         Color sep = dark ? new Color(0x1E293B) : new Color(0xE9EEF5);
@@ -176,33 +216,42 @@ public final class StepListPanel extends JPanel {
             @Override protected void paintComponent(Graphics g) {
                 super.paintComponent(g);
                 if (selected) {
-                    // Left accent bar for selected row
+                    // Keep selection visible when the editor owns focus and across progress updates.
                     Graphics2D g2 = (Graphics2D) g.create();
-                    g2.setColor(new Color(0x3B82F6));
-                    g2.fillRect(0, 0, 3, getHeight());
+                    g2.setColor(dark ? new Color(0x79B8FF) : new Color(0x2563BE));
+                    g2.fillRect(0, 0, 4, getHeight());
+                    g2.drawRect(0, 0, getWidth() - 1, getHeight() - 2);
                     g2.dispose();
                 }
             }
         };
 
-        if (selected) {
-            row.setBackground(dark ? new Color(0x1A2840) : new Color(0xEFF6FF));
-        } else {
-            row.setBackground(listBg);
+        row.setBackground(listBg);
+        ManualRunProgress.Status progress = executionProgressEnabled
+                ? (controller.activeFlow() != null && Objects.equals(executionFlowId, controller.activeFlow().id())
+                    ? executionStatuses.getOrDefault(step.id(), ManualRunProgress.Status.initial(step.enabled()))
+                    : ManualRunProgress.Status.initial(step.enabled())) : null;
+        if (progress != null) {
+            Color tint = switch (progress.state()) {
+                case RUNNING -> dark ? new Color(0x3F340F) : new Color(0xFFF5CC);
+                case COMPLETED -> dark ? new Color(0x103321) : new Color(0xEAF8EE);
+                case FAILED -> dark ? new Color(0x3D2028) : new Color(0xFDEDEF);
+                default -> dark ? new Color(0x242A34) : new Color(0xF1F3F5);
+            };
+            row.setBackground(tint); row.putClientProperty("executionState", progress.state());
+            row.setToolTipText(progressTooltip(progress));
         }
+        // Progress tints describe unselected rows; selection must always take precedence.
+        if (selected) row.setBackground(dark ? new Color(0x173D66) : new Color(0xD0E3FF));
         row.setOpaque(true);
         row.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 0, 1, 0, sep),
-                BorderFactory.createEmptyBorder(7, 12, 7, 10)));
-        row.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, 68));
-
-        // ── Drag handle ───────────────────────────────────────────────────────
-        JLabel handle = new JLabel("⠿");
-        handle.setForeground(dark ? new Color(0x3D5068) : new Color(0xCBD5E1));
-        handle.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
-        handle.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 6));
+                BorderFactory.createEmptyBorder(roomy ? 9 : 6, roomy ? 10 : 8, roomy ? 9 : 6, roomy ? 9 : 7)));
         Font base = UIManager.getFont("Label.font");
-        if (base != null) handle.setFont(base.deriveFont(base.getSize2D() + 1f));
+        int height = Math.max(roomy ? 54 : 44, row.getFontMetrics(base == null ? row.getFont() : base).getHeight() * 2 + (roomy ? 20 : 12));
+        row.setMinimumSize(new java.awt.Dimension(0, height));
+        row.setPreferredSize(new java.awt.Dimension(roomy ? 320 : 260, height));
+        row.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, height));
 
         // ── Enable / disable checkbox ─────────────────────────────────────────
         JCheckBox enableBox = new JCheckBox();
@@ -215,74 +264,87 @@ public final class StepListPanel extends JPanel {
         // ── Method badge ──────────────────────────────────────────────────────
         StoredRequestTemplate tmpl = step.requestTemplate();
         String method = tmpl != null && tmpl.method() != null ? tmpl.method().toUpperCase() : "GET";
-        String path   = tmpl != null && tmpl.pathAndQuery() != null ? tmpl.pathAndQuery() : "/";
-        String host   = tmpl != null && tmpl.host() != null ? tmpl.host() : "";
-        if (path.isEmpty()) path = "/";
-        if (path.length() > 42) path = path.substring(0, 42) + "…";
-
-        JLabel badge = buildMethodBadge(method, dark, base);
+        String endpoint = tmpl == null ? "" : tmpl.scheme() + "://" + tmpl.host() + ":" + tmpl.port() + tmpl.pathAndQuery();
+        String tooltip = step.name() + " · " + method + " " + endpoint + (progress == null ? "" : " · " + progressTooltip(progress));
+        row.setToolTipText(tooltip);
+        JLabel badge = buildMethodBadge(method.length() > 10 ? method.substring(0, 9) + "…" : method, dark, base);
+        if (roomy) {
+            if (base != null) badge.setFont(base.deriveFont(Font.BOLD, base.getSize2D() - .5f));
+            badge.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+            badge.setMaximumSize(badge.getPreferredSize());
+            badge.setName("flowiseMethodBadge");
+        }
+        badge.setToolTipText(method + " " + endpoint);
 
         // ── Text block ────────────────────────────────────────────────────────
-        Color nameFg = selected
-                ? (dark ? new Color(0xBAC8FF) : new Color(0x1D4ED8))
-                : (step.enabled()
+        Color nameFg = step.enabled()
                         ? (dark ? new Color(0xCDD5E0) : new Color(0x1E293B))
-                        : (dark ? new Color(0x4A5568) : new Color(0xA0AEC0)));
-        Color pathFg = selected
-                ? (dark ? new Color(0x7FB3FF) : new Color(0x3B82F6))
-                : (dark ? new Color(0x64748B) : new Color(0x64748B));
-        Color hostFg = dark ? new Color(0x374151) : new Color(0xADB5BD);
-
+                        : (dark ? new Color(0x64748B) : new Color(0x8491A2));
+        if (selected) nameFg = dark ? new Color(0xF1F7FF) : new Color(0x123B68);
         JLabel nameLabel = new JLabel(step.name());
         nameLabel.setForeground(nameFg);
-        if (base != null) nameLabel.setFont(base.deriveFont(Font.BOLD, base.getSize2D()));
+        if (base != null) nameLabel.setFont(base.deriveFont(selected ? Font.BOLD : Font.PLAIN, base.getSize2D() + (roomy ? 1 : 0)));
         nameLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        JLabel pathLabel = new JLabel(path);
-        pathLabel.setForeground(pathFg);
-        if (base != null) pathLabel.setFont(base.deriveFont(base.getSize2D() - 1.5f));
-        pathLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
-
-        JLabel hostLabel = new JLabel(host);
-        hostLabel.setForeground(hostFg);
-        if (base != null) hostLabel.setFont(base.deriveFont(base.getSize2D() - 1.5f));
-        hostLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
-
-        JPanel textBlock = new JPanel();
-        textBlock.setLayout(new BoxLayout(textBlock, BoxLayout.Y_AXIS));
+        nameLabel.setToolTipText(tooltip);
+        nameLabel.setMinimumSize(new java.awt.Dimension(0, nameLabel.getPreferredSize().height));
+        JPanel textBlock = new JPanel(new BorderLayout(0, roomy ? 2 : 1));
         textBlock.setOpaque(false);
-        textBlock.add(nameLabel);
-        textBlock.add(pathLabel);
-        textBlock.add(hostLabel);
-
-        // ── Rule badges ───────────────────────────────────────────────────────
-        JPanel badges = new JPanel();
-        badges.setLayout(new BoxLayout(badges, BoxLayout.X_AXIS));
-        badges.setOpaque(false);
-
-        if (!step.extractRules().isEmpty()) {
-            badges.add(buildPill("E " + step.extractRules().size(),
-                    dark ? new Color(0x052E16) : new Color(0xD1FAE5),
-                    dark ? new Color(0x34D399) : new Color(0x065F46), base));
+        textBlock.setMinimumSize(new java.awt.Dimension(0, 0));
+        if (progress == null) {
+            textBlock.add(nameLabel, BorderLayout.NORTH);
+        } else {
+            JPanel title = new JPanel(new BorderLayout(6, 0));
+            title.setOpaque(false);
+            title.setMinimumSize(new java.awt.Dimension(0, nameLabel.getPreferredSize().height));
+            title.add(nameLabel, BorderLayout.CENTER);
+            title.add(buildHttpStatusBadge(progress, dark, base), BorderLayout.EAST);
+            textBlock.add(title, BorderLayout.NORTH);
         }
-        if (!step.injectRules().isEmpty()) {
-            if (!step.extractRules().isEmpty()) badges.add(Box.createHorizontalStrut(4));
-            badges.add(buildPill("I " + step.injectRules().size(),
-                    dark ? new Color(0x3B1F08) : new Color(0xFEF3C7),
-                    dark ? new Color(0xFBBF24) : new Color(0x92400E), base));
+        JPanel metadata = new JPanel(new BorderLayout(5, 0)); metadata.setOpaque(false);
+        metadata.add(badge, BorderLayout.WEST);
+        if (roomy) {
+            JPanel badges = new JPanel(); badges.setOpaque(false); badges.setLayout(new BoxLayout(badges, BoxLayout.X_AXIS));
+            if (!step.extractRules().isEmpty()) badges.add(buildRuleBadge("E", "Extract", step.extractRules().size(), dark, base));
+            if (!step.injectRules().isEmpty()) { if (badges.getComponentCount() > 0) badges.add(Box.createHorizontalStrut(4)); badges.add(buildRuleBadge("I", "Inject", step.injectRules().size(), dark, base)); }
+            if (!step.conditionActionRules().isEmpty()) { if (badges.getComponentCount() > 0) badges.add(Box.createHorizontalStrut(4)); badges.add(buildRuleBadge("C", "Conditions/actions", step.conditionActionRules().size(), dark, base)); }
+            metadata.add(badges, BorderLayout.CENTER);
+        } else {
+            List<String> rules = new ArrayList<>();
+            if (!step.extractRules().isEmpty()) rules.add("E" + step.extractRules().size());
+            if (!step.injectRules().isEmpty()) rules.add("I" + step.injectRules().size());
+            if (!step.conditionActionRules().isEmpty()) rules.add("C" + step.conditionActionRules().size());
+            JLabel counts = new JLabel(String.join(" · ", rules));
+            counts.setForeground(selected
+                    ? (dark ? new Color(0xC2D9F5) : new Color(0x35557A))
+                    : (dark ? new Color(0xA6B0BD) : new Color(0x697586)));
+            if (base != null) counts.setFont(base.deriveFont(base.getSize2D() - 1f));
+            counts.setToolTipText("Extract: " + step.extractRules().size() + " · Inject: " + step.injectRules().size() + " · Conditions/actions: " + step.conditionActionRules().size());
+            metadata.add(counts, BorderLayout.CENTER);
         }
-        if (!step.conditionActionRules().isEmpty()) {
-            if (!step.extractRules().isEmpty() || !step.injectRules().isEmpty()) badges.add(Box.createHorizontalStrut(4));
-            badges.add(buildPill("C " + step.conditionActionRules().size(),
-                    dark ? new Color(0x111827) : new Color(0xE0E7FF),
-                    dark ? new Color(0xA5B4FC) : new Color(0x3730A3), base));
+        if (progress != null) {
+            JLabel state = new JLabel(progress.state().label() + (progress.attempt() > 1 ? " #" + progress.attempt() : ""));
+            state.setForeground(switch (progress.state()) {
+                case RUNNING -> dark ? new Color(0xF5CE68) : selected ? new Color(0x7A5400) : new Color(0x8A6100);
+                case COMPLETED -> dark ? new Color(0x7BE0A6) : new Color(0x13733A);
+                case FAILED -> dark ? new Color(0xFFADB6) : new Color(0xB32639);
+                default -> selected ? (dark ? new Color(0xC2D9F5) : new Color(0x35557A))
+                        : (dark ? new Color(0xA6B0BD) : new Color(0x697586));
+            });
+            if (base != null) state.setFont(base.deriveFont(base.getSize2D() - 1f));
+            state.setToolTipText(progressTooltip(progress));
+            state.setHorizontalAlignment(JLabel.RIGHT);
+            state.setPreferredSize(new java.awt.Dimension(state.getFontMetrics(state.getFont()).stringWidth("Running #10") + 3, state.getPreferredSize().height));
+            metadata.add(state, BorderLayout.EAST);
         }
+        textBlock.add(metadata, BorderLayout.SOUTH);
 
         // ── Remove button ─────────────────────────────────────────────────────
-        // Plain JButton instead of StyledButton — keeps the row compact and avoids
-        // the drag listener swallowing its events (it is passed as excluded below).
+        // Exclude the remove control from the row's selection/drag listener.
         JLabel removeBtn = new JLabel("×");
-        removeBtn.setForeground(dark ? new Color(0x4A5568) : new Color(0xCBD5E1));
+        Color removeFg = selected ? (dark ? new Color(0xB5CAE3) : new Color(0x4F6E93))
+                : (dark ? new Color(0x4A5568) : new Color(0xCBD5E1));
+        removeBtn.setForeground(removeFg);
         removeBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         removeBtn.setBorder(BorderFactory.createEmptyBorder(0, 8, 0, 0));
         removeBtn.setToolTipText("Remove this step");
@@ -293,27 +355,21 @@ public final class StepListPanel extends JPanel {
             }
             @Override public void mouseEntered(MouseEvent e) { removeBtn.setForeground(new Color(0xEF4444)); }
             @Override public void mouseExited(MouseEvent e)  {
-                removeBtn.setForeground(dark ? new Color(0x4A5568) : new Color(0xCBD5E1));
+                removeBtn.setForeground(removeFg);
             }
         });
 
-        // Right side: rule pills + remove button
+        // Right side: remove button; metadata stays under the request name.
         JPanel eastPanel = new JPanel();
         eastPanel.setLayout(new BoxLayout(eastPanel, BoxLayout.X_AXIS));
         eastPanel.setOpaque(false);
         eastPanel.setAlignmentY(Component.CENTER_ALIGNMENT);
-        eastPanel.add(badges);
         eastPanel.add(removeBtn);
 
-        // Left side: handle + enable checkbox + method badge
-        JPanel leftPanel = new JPanel();
-        leftPanel.setLayout(new BoxLayout(leftPanel, BoxLayout.X_AXIS));
+        // Align the checkbox with the name; the row and its text already support dragging.
+        JPanel leftPanel = new JPanel(new BorderLayout());
         leftPanel.setOpaque(false);
-        leftPanel.setAlignmentY(Component.CENTER_ALIGNMENT);
-        leftPanel.add(handle);
-        leftPanel.add(enableBox);
-        leftPanel.add(Box.createHorizontalStrut(4));
-        leftPanel.add(badge);
+        leftPanel.add(enableBox, BorderLayout.NORTH);
 
         row.add(leftPanel,  BorderLayout.WEST);
         row.add(textBlock,  BorderLayout.CENTER);
@@ -323,7 +379,59 @@ public final class StepListPanel extends JPanel {
         // enableBox and removeBtn are excluded: each handles its own events via its own listener.
         JPopupMenu contextMenu = buildRowContextMenu(step);
         attachRowListeners(row, step, index, contextMenu, Set.of(enableBox, removeBtn));
+        if (roomy) {
+            int nameHeight = nameLabel.getPreferredSize().height;
+            if (base != null) nameHeight = Math.max(row.getFontMetrics(base.deriveFont(Font.BOLD, base.getSize2D() + 1)).getHeight(),
+                    row.getFontMetrics(base.deriveFont(Font.PLAIN, base.getSize2D() + 1)).getHeight());
+            int fitHeight = Math.max(height, nameHeight + metadata.getPreferredSize().height + 2 + row.getInsets().top + row.getInsets().bottom);
+            row.setMinimumSize(new java.awt.Dimension(0, fitHeight));
+            row.setPreferredSize(new java.awt.Dimension(320, fitHeight));
+            row.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, fitHeight));
+        }
         return row;
+    }
+
+    private static String progressTooltip(ManualRunProgress.Status status) {
+        return status.state().label() + (status.attempt() == 0 ? "" : " · attempt " + status.attempt())
+                + (status.statusCode() == 0 ? "" : " · HTTP " + status.statusCode())
+                + (status.detail() == null || status.detail().isBlank() ? "" : " · " + status.detail());
+    }
+
+    private static JLabel buildHttpStatusBadge(ManualRunProgress.Status status, boolean dark, Font base) {
+        boolean finished = status.state() == ManualRunProgress.State.COMPLETED
+                || status.state() == ManualRunProgress.State.FAILED || status.state() == ManualRunProgress.State.STOPPED;
+        String text = status.statusCode() > 0 ? Integer.toString(status.statusCode()) : finished ? "—" : "";
+        JLabel badge = new JLabel(text, JLabel.CENTER) {
+            @Override protected void paintComponent(Graphics g) {
+                if (!getText().isEmpty()) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(getBackground());
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 6, 6);
+                    g2.dispose();
+                }
+                super.paintComponent(g);
+            }
+        };
+        badge.setName("requestHttpStatus");
+        badge.setOpaque(false);
+        int group = status.statusCode() / 100;
+        badge.setForeground(group == 2 ? (dark ? new Color(0x7BE0A6) : new Color(0x13733A))
+                : group == 3 ? (dark ? new Color(0xF5CE68) : new Color(0x8A6100))
+                : group >= 4 ? (dark ? new Color(0xFFADB6) : new Color(0xB32639))
+                : dark ? new Color(0xE1E8F0) : new Color(0x34435B));
+        badge.setBackground(group == 2 ? (dark ? new Color(0x103321) : new Color(0xEAF8EE))
+                : group == 3 ? (dark ? new Color(0x3F340F) : new Color(0xFFF5CC))
+                : group >= 4 ? (dark ? new Color(0x3D2028) : new Color(0xFDEDEF))
+                : dark ? new Color(0x2B3648) : new Color(0xEDF0F4));
+        if (base != null) badge.setFont(base.deriveFont(Font.BOLD, base.getSize2D() - 1f));
+        badge.setBorder(BorderFactory.createEmptyBorder(0, 5, 0, 5));
+        // Reserve the same width before/after execution; response changes must not resize the sidebar.
+        badge.setPreferredSize(new java.awt.Dimension(badge.getFontMetrics(badge.getFont()).stringWidth("999") + 10,
+                badge.getFontMetrics(badge.getFont()).getHeight()));
+        badge.setToolTipText(status.statusCode() > 0 ? progressTooltip(status)
+                : finished ? "No HTTP response · " + progressTooltip(status) : progressTooltip(status));
+        return badge;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -526,32 +634,37 @@ public final class StepListPanel extends JPanel {
         badge.setOpaque(false);
         badge.setBackground(bg);
         badge.setForeground(fg);
-        badge.setBorder(BorderFactory.createEmptyBorder(3, 7, 3, 7));
+        badge.setBorder(BorderFactory.createEmptyBorder(1, 5, 1, 5));
         badge.setHorizontalAlignment(JLabel.CENTER);
         badge.setAlignmentY(Component.CENTER_ALIGNMENT);
-        if (base != null) badge.setFont(base.deriveFont(Font.BOLD, base.getSize2D() - 0.5f));
-        badge.setPreferredSize(new java.awt.Dimension(58, badge.getPreferredSize().height + 4));
+        if (base != null) badge.setFont(base.deriveFont(Font.BOLD, base.getSize2D() - 1.5f));
+        badge.setMaximumSize(badge.getPreferredSize());
         return badge;
     }
 
-    private static JLabel buildPill(String text, Color bg, Color fg, Font base) {
-        JLabel pill = new JLabel(text) {
+    private static JLabel buildRuleBadge(String shortName, String name, int count, boolean dark, Font base) {
+        Color background = switch (shortName) {
+            case "E" -> dark ? new Color(0x16382B) : new Color(0xE4F3EB);
+            case "I" -> dark ? new Color(0x3C321B) : new Color(0xFBF0D6);
+            default -> dark ? new Color(0x292A48) : new Color(0xECEBFA);
+        };
+        Color foreground = switch (shortName) {
+            case "E" -> dark ? new Color(0x8CD3AD) : new Color(0x276344);
+            case "I" -> dark ? new Color(0xE6C576) : new Color(0x806218);
+            default -> dark ? new Color(0xB9B3EF) : new Color(0x5D5194);
+        };
+        JLabel label = new JLabel(shortName + " " + count) {
             @Override protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(getBackground());
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 10, 10);
-                g2.dispose();
+                Graphics2D copy = (Graphics2D) g.create();
+                copy.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                copy.setColor(getBackground()); copy.fillRoundRect(0, 0, getWidth(), getHeight(), 6, 6); copy.dispose();
                 super.paintComponent(g);
             }
         };
-        pill.setOpaque(false);
-        pill.setBackground(bg);
-        pill.setForeground(fg);
-        pill.setBorder(BorderFactory.createEmptyBorder(2, 7, 2, 7));
-        pill.setAlignmentY(Component.CENTER_ALIGNMENT);
-        if (base != null) pill.setFont(base.deriveFont(Font.BOLD, base.getSize2D() - 1.5f));
-        return pill;
+        label.setName("flowiseRuleBadge"); label.setOpaque(false); label.setBackground(background); label.setForeground(foreground);
+        label.setToolTipText(name + ": " + count); label.setBorder(BorderFactory.createEmptyBorder(1, 5, 1, 5));
+        if (base != null) label.setFont(base.deriveFont(Font.BOLD, base.getSize2D() - 1.5f));
+        label.setMaximumSize(label.getPreferredSize()); return label;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

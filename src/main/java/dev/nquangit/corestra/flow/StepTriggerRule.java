@@ -45,6 +45,7 @@ public final class StepTriggerRule {
     private final String stopAtStepId;
     private final boolean inheritSession;
     private final List<String> sessionOrigins;
+    private final TriggerInputBindings inputBindings;
 
     /** Creates a trigger with optional execution-wide session inheritance and exact extra origins. */
     @JsonCreator
@@ -55,7 +56,9 @@ public final class StepTriggerRule {
             @JsonProperty("scope") ExecutionScope scope,
             @JsonProperty("stopAtStepId") String stopAtStepId,
             @JsonProperty("inheritSession") boolean inheritSession,
-            @JsonProperty("sessionOrigins") List<String> sessionOrigins) {
+            @JsonProperty("sessionOrigins") List<String> sessionOrigins,
+            @JsonProperty("inputBindings") TriggerInputBindings inputBindings) {
+        this.inputBindings = Objects.requireNonNullElseGet(inputBindings, TriggerInputBindings::none);
         this.inheritSession = inheritSession;
         this.sessionOrigins = (sessionOrigins == null ? List.<String>of() : sessionOrigins).stream()
                 .map(SessionExecutionBinding::normalizeOrigin).distinct().toList();
@@ -67,6 +70,15 @@ public final class StepTriggerRule {
         String rawStopId = stopAtStepId == null ? "" : stopAtStepId.strip();
         this.stopAtStepId = (this.scope == ExecutionScope.STOP_AT_STEP) ? rawStopId : "";
     }
+
+    /** Creates a trigger without profile inputs, compatible with existing callers. */
+    public StepTriggerRule(boolean enabled, List<String> tools, List<MatchCriterion> criteria,
+                           ExecutionScope scope, String stopAtStepId, boolean inheritSession, List<String> origins) {
+        this(enabled, tools, criteria, scope, stopAtStepId, inheritSession, origins, TriggerInputBindings.none());
+    }
+
+    /** Returns inputs supplied only to automatic executions of this trigger. */
+    public TriggerInputBindings inputBindings() { return inputBindings; }
 
     /** Creates a legacy trigger without session inheritance. */
     public StepTriggerRule(boolean enabled, List<String> tools, List<MatchCriterion> criteria,
@@ -160,6 +172,7 @@ public final class StepTriggerRule {
         return enabled == that.enabled
                 && inheritSession == that.inheritSession
                 && sessionOrigins.equals(that.sessionOrigins)
+                && inputBindings.equals(that.inputBindings)
                 && Objects.equals(allowedToolTypes, that.allowedToolTypes)
                 && Objects.equals(criteria, that.criteria)
                 && scope == that.scope
@@ -168,7 +181,7 @@ public final class StepTriggerRule {
 
     @Override
     public int hashCode() {
-        return Objects.hash(enabled, allowedToolTypes, criteria, scope, stopAtStepId, inheritSession, sessionOrigins);
+        return Objects.hash(enabled, allowedToolTypes, criteria, scope, stopAtStepId, inheritSession, sessionOrigins, inputBindings);
     }
 
     @Override

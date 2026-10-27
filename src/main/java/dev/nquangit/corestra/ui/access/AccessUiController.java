@@ -294,6 +294,9 @@ public final class AccessUiController {
         return repository.dataProfiles();
     }
 
+    /** Returns a consistent profile-only snapshot for input selection and validation. */
+    public AccessWorkspace profileSnapshot() { return repository.profileSnapshot(); }
+
     /**
      * Returns access templates in UI order.
      *

@@ -38,6 +38,7 @@ class ManualTestingPanelTest {
     private final AtomicReference<String> edited=new AtomicReference<>("");
     private final AtomicBoolean modified=new AtomicBoolean();
     private final AtomicInteger editorCount=new AtomicInteger(),sends=new AtomicInteger();
+    private final AtomicReference<java.util.function.Function<HttpRequest, HttpResponse>> responder = new AtomicReference<>(r -> ManualTestMessages.response("{\"token\":\"value\"}"));
     private FlowWorkspaceController source,manual;
     private ManualTestingPanel panel;
     private FlowRepository manualRepo;
@@ -54,7 +55,7 @@ class ManualTestingPanelTest {
             var extraction=new ExtractionService();var injection=new InjectionService();var sessions=new SessionProfileRepository();sessions.saveProfile(SessionProfile.general().withEnabled(false));
             var manager=new SessionManager(sessions,source::flows,new FlowEngine(extraction,injection,r->null),extraction,Clock.systemUTC());
             var selector=new SessionSelectionService(manager,SessionSelectionConfig::disabled,(c,o,t)->Optional.empty());
-            var transport=new ManualSessionHttpClient(r->{sends.incrementAndGet();return ManualTestMessages.response("{\"token\":\"value\"}");},manager,selector,injection);
+            var transport=new ManualSessionHttpClient(r->{sends.incrementAndGet();return responder.get().apply(r);},manager,selector,injection);
             var engine=new FlowEngine(extraction,injection,transport);var log=new FlowExecutionLog();engine.addExecutionListener(log::record);
             manual=new FlowWorkspaceController(manualRepo,engine);
             var ui=proxy(UserInterface.class,(p,m,a)->switch(m.getName()){
@@ -138,5 +139,100 @@ class ManualTestingPanelTest {
             var found = findView(child); if (found != null) return found;
         }
         return null;
+    }
+    @Test void runAllUpdatesRowsDuringBlockedRequestsWithoutChangingSelectionEditorOrPersistence() throws Exception {
+        var first = new CountDownLatch(1); var second = new CountDownLatch(1); var releaseFirst = new CountDownLatch(1); var releaseSecond = new CountDownLatch(1);
+        responder.set(r -> {
+            try {
+                if (sends.get() == 1) { first.countDown(); assertTrue(releaseFirst.await(5, TimeUnit.SECONDS)); }
+                if (sends.get() == 2) { second.countDown(); assertTrue(releaseSecond.await(5, TimeUnit.SECONDS)); }
+                return ManualTestMessages.response("HTTP/1.1 " + (sends.get() == 1 ? "302 Found" : "403 Forbidden") + "\r\n\r\nresult");
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
+        });
+        Map<String, String> persisted = new HashMap<>(); AtomicReference<String> selection = new AtomicReference<>();
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                copy(); selection.set(manual.selectedStep().id()); persisted.putAll(saved); invokeRun(2);
+            });
+            assertTrue(first.await(5, TimeUnit.SECONDS));
+            SwingUtilities.invokeAndWait(() -> {
+                assertEquals(ManualRunProgress.State.RUNNING, rowState(0)); assertEquals(ManualRunProgress.State.NOT_RUN, rowState(1));
+                assertEquals("", rowCode(0)); assertEquals("", rowCode(1));
+                assertEquals(persisted, saved); edit("prepared-for-next-run");
+            });
+            releaseFirst.countDown(); assertTrue(second.await(5, TimeUnit.SECONDS));
+            SwingUtilities.invokeAndWait(() -> {
+                assertEquals(ManualRunProgress.State.COMPLETED, rowState(0)); assertEquals(ManualRunProgress.State.RUNNING, rowState(1));
+                assertEquals("302", rowCode(0)); assertEquals("", rowCode(1));
+                assertEquals(selection.get(), manual.selectedStep().id()); assertTrue(edited.get().contains("prepared-for-next-run"));
+                assertEquals(persisted, saved); assertEquals(4, editorCount.get());
+            });
+            releaseSecond.countDown(); waitIdle();
+            SwingUtilities.invokeAndWait(() -> {
+                assertEquals(ManualRunProgress.State.COMPLETED, rowState(0)); assertEquals(ManualRunProgress.State.COMPLETED, rowState(1));
+                assertEquals("302", rowCode(0)); assertEquals("403", rowCode(1));
+                assertEquals(selection.get(), manual.selectedStep().id()); assertTrue(edited.get().contains("prepared-for-next-run"));
+                assertTrue(field("progressLabel", JLabel.class).getText().contains("2/2 done"));
+            });
+        } finally { releaseFirst.countDown(); releaseSecond.countDown(); }
+    }
+    @Test void stoppingRunAndStartingAnotherClearsOldColorsAndDoesNotSendRemainingRequests() throws Exception {
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        responder.set(r -> { entered.countDown(); try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException("cancelled"); } return ManualTestMessages.response("ok"); });
+        try {
+            SwingUtilities.invokeAndWait(() -> { copy(); invokeRun(2); }); assertTrue(entered.await(5, TimeUnit.SECONDS));
+            SwingUtilities.invokeAndWait(() -> field("stop", JButton.class).doClick()); waitIdle();
+            SwingUtilities.invokeAndWait(() -> {
+                assertEquals(1, sends.get()); assertEquals(ManualRunProgress.State.STOPPED, rowState(0)); assertEquals(ManualRunProgress.State.NOT_RUN, rowState(1));
+            });
+            responder.set(r -> ManualTestMessages.response("ok"));
+            SwingUtilities.invokeAndWait(() -> invokeRun(0)); waitIdle();
+            SwingUtilities.invokeAndWait(() -> {
+                assertEquals(ManualRunProgress.State.COMPLETED, rowState(0)); assertEquals(ManualRunProgress.State.SKIPPED, rowState(1));
+                assertEquals(2, sends.get());
+            });
+        } finally { release.countDown(); }
+    }
+    private ManualRunProgress.State rowState(int row) {
+        try {
+            var steps = field("steps", dev.nquangit.corestra.ui.flowise.StepListPanel.class);
+            var f = steps.getClass().getDeclaredField("listContainer"); f.setAccessible(true);
+            return (ManualRunProgress.State) ((JPanel) ((JPanel) f.get(steps)).getComponent(row)).getClientProperty("executionState");
+        } catch (Exception e) { throw new AssertionError(e); }
+    }
+    private String rowCode(int row) {
+        try {
+            var steps = field("steps", dev.nquangit.corestra.ui.flowise.StepListPanel.class);
+            var f = steps.getClass().getDeclaredField("listContainer"); f.setAccessible(true);
+            return findHttpCode(((JPanel) f.get(steps)).getComponent(row));
+        } catch (Exception e) { throw new AssertionError(e); }
+    }
+    private static String findHttpCode(java.awt.Component component) {
+        if (component instanceof JLabel label && "requestHttpStatus".equals(label.getName())) return label.getText();
+        if (component instanceof java.awt.Container c) for (var child : c.getComponents()) { String value = findHttpCode(child); if (value != null) return value; }
+        return null;
+    }
+    @Test void manualSidebarKeepsUserWidthWithOversizedNativeEditorsAcrossFlowsAndViews() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            copy(); var first = manual.activeFlow();
+            var split = (JSplitPane) ((java.awt.BorderLayout) panel.getLayout()).getLayoutComponent(java.awt.BorderLayout.CENTER);
+            split.setSize(1100, 700); split.doLayout(); split.setDividerLocation(320); split.doLayout();
+            field("request", HttpRequestEditor.class).uiComponent().setMinimumSize(new java.awt.Dimension(1800, 800));
+            field("response", HttpResponseEditor.class).uiComponent().setMinimumSize(new java.awt.Dimension(1800, 800));
+            panel.copyFrom(source.flows().getFirst()); split.doLayout(); assertEquals(320, split.getLeftComponent().getWidth());
+            manual.setActiveFlow(first); split.setSize(1400, 700); split.doLayout(); assertEquals(320, split.getLeftComponent().getWidth());
+            var view = (FlowEditorLogPanel) split.getRightComponent(); view.showLog(true); split.doLayout(); assertEquals(320, split.getLeftComponent().getWidth());
+            view.showLog(false); split.doLayout(); assertEquals(320, split.getLeftComponent().getWidth());
+            assertEquals(4, editorCount.get());
+        });
+    }
+    private void invokeRun(int mode) { try { Method run=ManualTestingPanel.class.getDeclaredMethod("run",int.class);run.setAccessible(true);run.invoke(panel,mode); } catch(Exception e) { throw new AssertionError(e); } }
+    private void waitIdle() throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            AtomicBoolean done = new AtomicBoolean(); SwingUtilities.invokeAndWait(() -> { try { panel.assertIdle(); done.set(true); } catch (IllegalStateException ignored) { } });
+            if (done.get()) return; Thread.sleep(10);
+        }
+        fail("Manual run did not finish");
     }
 }

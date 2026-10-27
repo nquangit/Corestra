@@ -60,6 +60,7 @@ public final class TriggerPanel extends JPanel {
     };
 
     private final FlowWorkspaceController controller;
+    private final TriggerInputsPanel inputPanel;
 
     private final JLabel stepNameLabel = new JLabel("No step selected", SwingConstants.LEFT);
     private final JCheckBox enabledBox = new JCheckBox("Enable auto-trigger for this step");
@@ -89,8 +90,14 @@ public final class TriggerPanel extends JPanel {
      * @param controller the workspace controller that owns step selection state
      */
     public TriggerPanel(FlowWorkspaceController controller) {
+        this(controller, null);
+    }
+
+    /** Creates a trigger editor with optional shared profile sources. */
+    public TriggerPanel(FlowWorkspaceController controller, dev.nquangit.corestra.ui.access.AccessUiController access) {
         super(new BorderLayout());
         this.controller = Objects.requireNonNull(controller, "controller");
+        this.inputPanel = new TriggerInputsPanel(access, this::saveTrigger);
 
         for (String[] e : TOOL_ENTRIES) {
             JCheckBox cb = new JCheckBox(e[0]);
@@ -103,7 +110,10 @@ public final class TriggerPanel extends JPanel {
         criteriaTable.getTableHeader().setReorderingAllowed(false);
         criteriaTable.setPreferredScrollableViewportSize(new Dimension(0, 100));
 
-        add(buildContent(), BorderLayout.NORTH);
+        JScrollPane content = new JScrollPane(buildContent());
+        content.setBorder(BorderFactory.createEmptyBorder());
+        content.getVerticalScrollBar().setUnitIncrement(16);
+        add(content, BorderLayout.CENTER);
         wireListeners();
         controller.addFlowChangeListener(this::refresh);
         refresh();
@@ -151,6 +161,9 @@ public final class TriggerPanel extends JPanel {
         Font warnFont = UIManager.getFont("Label.font");
         if (warnFont != null) scopeWarningLabel.setFont(warnFont.deriveFont(warnFont.getSize2D() - 1f));
         p.add(scopeWarningLabel);
+        p.add(Box.createVerticalStrut(10));
+
+        p.add(inputPanel);
         p.add(Box.createVerticalStrut(10));
 
         inheritSessionBox.setOpaque(false);
@@ -279,7 +292,7 @@ public final class TriggerPanel extends JPanel {
         StepTriggerRule rule = step.triggerRule();
         StepTriggerRule updated = new StepTriggerRule(
                 rule.enabled(), rule.allowedToolTypes(), List.copyOf(newCriteria),
-                rule.scope(), rule.stopAtStepId(), rule.inheritSession(), rule.sessionOrigins());
+                rule.scope(), rule.stopAtStepId(), rule.inheritSession(), rule.sessionOrigins(), rule.inputBindings());
         commitRule(step, updated);
     }
 
@@ -351,6 +364,7 @@ public final class TriggerPanel extends JPanel {
 
             displayedFlowId = hasStep ? active.id() : null;
             displayedStepId = hasStep ? step.id() : null;
+            inputPanel.refresh(hasStep ? active : null, hasStep ? step : null);
             enabledBox.setEnabled(hasStep);
             inheritSessionBox.setEnabled(hasStep);
             sessionOriginsField.setEnabled(hasStep && inheritSessionBox.isSelected());
@@ -470,7 +484,7 @@ public final class TriggerPanel extends JPanel {
             List<String> origins = java.util.Arrays.stream(sessionOriginsField.getText().split(","))
                     .map(String::strip).filter(value -> !value.isEmpty()).toList();
             updated = new StepTriggerRule(enabledBox.isSelected(), allowedTools, current.criteria(), scope,
-                    stopAtStepId, inheritSessionBox.isSelected(), origins);
+                    stopAtStepId, inheritSessionBox.isSelected(), origins, inputPanel.bindings());
         } catch (IllegalArgumentException exception) {
             JOptionPane.showMessageDialog(this, exception.getMessage(), "Invalid session origin", JOptionPane.ERROR_MESSAGE);
             return;

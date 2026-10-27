@@ -159,6 +159,8 @@ The root **Parameters** tab contains **Wordlists** and the original **Observatio
 
 Open **Manual Testing** beside Flowise, or right-click a **Flowise flow tab → Copy to Manual Testing**. The independent **Manual flow** supports editable native request templates (`{{token}}`, `{{id|urlEncode}}`), preserved extractors, editable runtime variables, selected-step/range/full-flow runs, and project Session Handler scope/selection or a fixed session for the whole runtime. **Save request** stores edits without sending; changing requests/flows or pressing Run also saves automatically. Safe inject rules become inline templates; retained rules remain visible and can be disabled for manual overrides. Copying does not send traffic or enable triggers. Manual flow configuration is saved/exported separately; runtime variables and HTTP history stay in memory. See [Manual Testing: step-by-step setup and session behavior](guides/MANUAL_TESTING.md).
 
+Manual request rows show live execution progress: yellow **Running**, green **Done**, red **Failed**, and gray **Not run / Skipped / Stopped**. Progress resets per Run and is kept separately per manual flow in memory. Running rows scroll into view without changing the selected request or unsaved editor content; tooltips show attempts and HTTP status. **Done** describes step execution, not application/authentication success.
+
 In both workspaces, **Extract Rules → Auto…** analyzes only the displayed response. Review cookie/header/JSON/status/text candidates in a checkbox table, edit variable names and **Apply selected** to create ordinary extract rules. Nothing is selected initially and analysis sends no traffic. Nested JSON, arrays and unusual keys use `JSON_PATH` selectors such as `pointer:/data/items/0/id`; existing dot-path rules remain supported. Existing sources and conflicting variable names are checked before applying. Analysis is bounded and runs in the background. See the [Auto extraction walkthrough](guides/MANUAL_TESTING.md#tự-gợi-ý-extractor-từ-response).
 
 ### Choose an existing session for a live request
@@ -168,6 +170,12 @@ Open **Session Handler > Send with session…** to enable a project-wide prompt 
 ### Bind the triggering session across a flow
 
 In a selected request's **Trigger** panel, enable **Use session from triggering request for the entire execution**. Prerequisites, the live request, downstream steps and triggered child flows inherit the prepared Session Profile and original tool. Authentication is applied after ordinary step injection; missing/expired/changed sessions and injection failures stop execution. The default permits only the initiating request's exact origin. Declare additional exact HTTP(S) origins when needed; login/refresh invalidates the run while keep-alive with unchanged auth may continue. Existing triggers remain unbound until enabled. See [Trigger session binding: complete setup and limits](guides/TRIGGER_SESSION.md).
+
+### Supply profile inputs to Auto Trigger
+
+In **Flowise > select the target request > Auto Trigger Flow**, choose optional **Auth Profile** and **Data Profile** sources. Auth Profile supplies credentials and existing unexpired Auth State; Data Profile supplies `data.*`. Neither selection logs in automatically or changes Session Handler configuration. **None** is valid when no profile inputs are required or earlier extractors provide them. **Check inputs…** previews dependencies without exposing values. Missing/blank required variables, deleted/disabled selected profiles, and failed required injections stop the request instead of silently using captured values. Each trigger run has an isolated snapshot; extracted outputs do not update shared profiles.
+
+Use **Target inject rules…** to skip injections that would overwrite Scanner payloads on the live target. Saved flow rules, Auth Provider runs, prerequisites and downstream steps remain unchanged. See [Auto Trigger profile inputs, None behavior, validation and scanning examples](guides/AUTO_TRIGGER_INPUTS.md).
 
 ### Reuse an Auth Profile in Session Handler
 
@@ -192,7 +200,7 @@ Configure keep-alive's independent **Success** and **Session Expired** rules in 
 
 During a Session Handler renewal, matching requests wait until authentication finishes, then render all injection rules from the latest state. Linked provider rules and local overrides use the same Auth Profile snapshot, so cookies such as `JSESSIONID` and `token` are injected together. Internal login traffic through Proxy Pipeline is excluded from live session extraction even after its internal marker header is removed. Responses from requests sent before renewal cannot overwrite the new state. Responses without a tracked outgoing request (including expired or evicted tracking entries) are forwarded without extracting session values.
 
-Refreshing authentication does not rebuild application form or transaction context. A queued request can still contain page IDs, processor IDs, or hidden fields from the previous session even when its cookies are correct. Use a setup flow to obtain those fields with the current authentication before sending the target. See [Session renewal and stale form context](guides/SESSION_RENEWAL.md) for an evidence-based example and the current auto-trigger input limitations.
+Refreshing authentication does not rebuild application form or transaction context. A queued request can still contain page IDs, processor IDs, or hidden fields from the previous session even when its cookies are correct. Use a setup flow to obtain those fields with the current authentication before sending the target. See [Session renewal and stale form context](guides/SESSION_RENEWAL.md) and [Auto Trigger profile inputs](guides/AUTO_TRIGGER_INPUTS.md).
 
 Linked mode shares credentials, token/cookie state, provider login/refresh/validate flows, TTL, and injection rules with Access Testing. **Clear State** clears the linked actor's auth state while preserving credentials. **Standalone Flow (legacy)** remains available for existing projects and specialized session-only flows.
 

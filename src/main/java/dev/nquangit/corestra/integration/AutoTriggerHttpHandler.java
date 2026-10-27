@@ -68,7 +68,8 @@ import dev.nquangit.corestra.http.inject.RequestMutationResult;
  * aggregation were split across two separate writes.
  *
  * <p>At most one matching step is processed per request (first match wins).
- * Failures in prerequisite execution never block the live request.
+ * Missing inputs and required injection failures stop the live request. Explicit profile/session
+ * bindings also stop on preparation failures; legacy unbound transport failures retain passthrough.
  */
 public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable {
     static final int DEFAULT_MAX_PENDING_TRIGGERS = 2_048;
@@ -82,6 +83,9 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
     private final ExecutorService phase3Executor;
     private final int maxPendingTriggers;
     private SessionFlowBindingService sessionBindings;
+    private TriggerInputService triggerInputs = new TriggerInputService(
+            dev.nquangit.corestra.access.workspace.AccessWorkspace::empty, Clock.systemUTC());
+    private java.util.function.Consumer<String> errors = message -> System.err.println("[Corestra] " + message);
     private final long pendingTtlMillis;
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -116,6 +120,17 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                                   SessionFlowBindingService bindings) {
         this(flows, engine, extraction, injection);
         this.sessionBindings = Objects.requireNonNull(bindings, "bindings");
+    }
+
+    /** Creates a trigger handler with current profile inputs and Burp-visible diagnostics. */
+    public AutoTriggerHttpHandler(Supplier<List<FlowDefinition>> flows, FlowEngine engine,
+                                  ExtractionService extraction, InjectionService injection,
+                                  SessionFlowBindingService bindings, TriggerInputService inputs,
+                                  java.util.function.Consumer<String> errors) {
+        this(flows, engine, extraction, injection);
+        this.sessionBindings = bindings;
+        this.triggerInputs = Objects.requireNonNull(inputs, "inputs");
+        this.errors = Objects.requireNonNull(errors, "errors");
     }
 
     AutoTriggerHttpHandler(
@@ -186,12 +201,19 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 try {
                     HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body, initiatingSession);
                     return RequestToBeSentAction.continueWith(modified);
+                } catch (TriggerInputException invalid) {
+                    reportInputFailure(flow, step, invalid.getMessage());
+                    return RequestToBeSentAction.drop();
                 } catch (SessionBindingException aborted) {
                     System.err.println("[Corestra] Trigger stopped: " + aborted.getMessage());
                     return RequestToBeSentAction.drop();
                 } catch (InteractionAbortedException aborted) {
                     return RequestToBeSentAction.drop();
                 } catch (RuntimeException ignored) {
+                    if (rule.inputBindings().hasProfiles() || !rule.inputBindings().excludedTargetRuleIds().isEmpty()) {
+                        reportInputFailure(flow, step, "Profile-bound execution failed; request was stopped");
+                        return RequestToBeSentAction.drop();
+                    }
                     if (rule.inheritSession()) {
                         System.err.println("[Corestra] Trigger stopped: [SESSION_BINDING_ABORTED] Bound request preparation failed; request was not sent");
                         return RequestToBeSentAction.drop();
@@ -237,7 +259,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     responseReceived.bodyToString(), HttpBodyBytes.readForExtraction(
                             responseReceived, triggeredStep.extractRules(), ExtractRule.SourceSide.RESPONSE));
             ExecutionContext updatedCtx = applyExtractRulesToContext(
-                    triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx);
+                    triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx, ExtractRule.SourceSide.RESPONSE);
 
             if (pending.stopIdx > pending.matchedStepIndex) {
                 try {
@@ -245,7 +267,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     try {
                         runStepRange(flow, steps, pending.matchedStepIndex + 1, pending.stopIdx, updatedCtx);
                     } catch (Exception e) {
-                        System.err.println("[Corestra] Auto-trigger Phase 3 failed: " + e.getMessage());
+                        reportInputFailure(flow, triggeredStep, "Downstream execution failed: " + e.getMessage());
                     }
                     });
                 } catch (RejectedExecutionException ignored) {
@@ -299,9 +321,17 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         StepTriggerRule rule = matchedStep.triggerRule();
         int stopIdx = resolveStopIndex(steps, matchedIndex, rule.scope(), rule.stopAtStepId());
 
+        flow = TriggerInputService.applyTargetExclusions(flow, matchedIndex, rule.inputBindings());
+        steps = flow.steps();
+        matchedStep = steps.get(matchedIndex);
+
         // Phase 1: run prerequisite steps with stored templates.
-        ExecutionContext ctx = ExecutionContext.start(
-                UUID.randomUUID().toString(), flow.id(), Map.of(), System.currentTimeMillis());
+        Map<String, String> inputs = triggerInputs.resolve(rule.inputBindings());
+        TriggerInputService.requireInputs(flow, matchedIndex, stopIdx, inputs);
+        ExecutionContext ctx = new ExecutionContext(UUID.randomUUID().toString(), flow.id(),
+                Map.of(dev.nquangit.corestra.flow.execution.FlowInputValidator.REQUIRE_INPUTS, "true",
+                        dev.nquangit.corestra.flow.execution.FlowInputValidator.OUTPUT_SCOPE, "auth"),
+                inputs, "", Map.of(), clock.millis(), 0L);
         if (rule.inheritSession()) {
             if (sessionBindings == null) throw new SessionBindingException("Session binding runtime is unavailable");
             var source = initiatingSession.orElseThrow(() ->
@@ -327,15 +357,17 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 HttpBodyBytes.readForExtraction(req, matchedStep.extractRules(), ExtractRule.SourceSide.REQUEST));
 
         // Phase 2: apply the trigger step's extract rules to the live request.
-        // Response-side rules will silently fail here (no live response yet); they are
-        // re-applied in handleHttpResponseReceived once the real response arrives.
+        // Only request-side rules run before injection; response extracts wait for the live response.
         HttpMessageSnapshot emptyResponse = new HttpMessageSnapshot("", List.of(), "");
-        ctx = applyExtractRulesToContext(matchedStep, requestSnapshot, emptyResponse, ctx);
+        ctx = applyExtractRulesToContext(matchedStep, requestSnapshot, emptyResponse, ctx, ExtractRule.SourceSide.REQUEST);
 
         MutableHttpRequest mutable = new MutableHttpRequest(requestLine, allHeaders, body);
-        RequestMutationResult mutated = rule.inheritSession()
-                ? injectionService.applyRequired(matchedStep.injectRules(), ctx.variables(), mutable)
-                : injectionService.apply(matchedStep.injectRules(), ctx.variables(), mutable);
+        RequestMutationResult mutated;
+        try {
+            mutated = injectionService.applyRequired(matchedStep.injectRules(), ctx.variables(), mutable);
+        } catch (IllegalArgumentException invalid) {
+            throw new TriggerInputException("Target injection failed: " + invalid.getMessage());
+        }
 
         // Phase 3 is deferred to handleHttpResponseReceived so that response-extracted variables
         // are available to downstream steps before they execute.
@@ -352,6 +384,11 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         storePending(req.messageId(), new PendingTrigger(
                 flow, matchedIndex, stopIdx, ctx, requestSnapshot, clock.millis()));
         return modified;
+    }
+
+    private void reportInputFailure(FlowDefinition flow, FlowStep step, String reason) {
+        try { errors.accept("Auto-trigger stopped [" + flow.name() + " / " + step.name() + "]: " + reason); }
+        catch (RuntimeException ignored) { /* Logging must not allow an unsafe request through. */ }
     }
 
     /**
@@ -406,10 +443,21 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             HttpMessageSnapshot requestSnapshot,
             HttpMessageSnapshot responseSnapshot,
             ExecutionContext ctx) {
+        return applyExtractRulesToContext(step, requestSnapshot, responseSnapshot, ctx, null);
+    }
+
+    private ExecutionContext applyExtractRulesToContext(
+            FlowStep step, HttpMessageSnapshot requestSnapshot, HttpMessageSnapshot responseSnapshot,
+            ExecutionContext ctx, ExtractRule.SourceSide side) {
         for (var rule : step.extractRules()) {
+            if (side != null && rule.sourceSide() != side) continue;
             ExtractionResult result = extractionService.extract(rule, requestSnapshot, responseSnapshot);
             if (result.isSuccess()) {
-                ctx = ctx.withVariable(result.targetVariable(), result.value());
+                for (var output : dev.nquangit.corestra.flow.execution.FlowInputValidator.scopedOutputs(
+                        Map.of(result.targetVariable(), result.value()),
+                        ctx.metadata().get(dev.nquangit.corestra.flow.execution.FlowInputValidator.OUTPUT_SCOPE)).entrySet()) {
+                    ctx = ctx.withVariable(output.getKey(), output.getValue());
+                }
             }
         }
         return ctx;
@@ -424,6 +472,10 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 slice, flow.rules(), AggregationPlan.disabled(), flow.triggerConfig());
         ExecutionResult result = flowEngine.execute(sliceFlow, ctx);
         if (!result.success()) {
+            if (result.failureMessage() != null && result.failureMessage().contains(
+                    dev.nquangit.corestra.flow.execution.FlowInputValidator.FAILURE_PREFIX)) {
+                throw new TriggerInputException(result.failureMessage());
+            }
             if (SessionBindingException.isAborted(result.failureMessage())) {
                 throw new SessionBindingException("Bound step execution failed: " + result.failureMessage());
             }

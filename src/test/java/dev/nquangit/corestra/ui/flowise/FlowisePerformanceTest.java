@@ -187,11 +187,11 @@ class FlowisePerformanceTest {
         var tabs=new FlowTabsPanel(controller,api(persistence),null,new FlowExecutionLog());
         var workspaceField=FlowTabsPanel.class.getDeclaredField("workspace");workspaceField.setAccessible(true);
         var workspace=(FlowWorkspacePanel)workspaceField.get(tabs);
-        workspace.restoreViewState(new FlowWorkspacePanel.ViewState(2,350,210));
+        workspace.restoreViewState(new FlowWorkspacePanel.ViewState(2,350,false));
         controller.setActiveFlow(b);
         assertEquals(0,workspace.viewState().detailTab());
         controller.setActiveFlow(a);
-        assertEquals(new FlowWorkspacePanel.ViewState(2,350,210),workspace.viewState());
+        assertEquals(new FlowWorkspacePanel.ViewState(2,350,false),workspace.viewState());
       }catch(Exception e){throw new RuntimeException(e);}
     });
   }
@@ -277,6 +277,231 @@ class FlowisePerformanceTest {
         assertEquals(4, created);
       } catch (Exception e) { throw new RuntimeException(e); }
     });
+  }
+
+  @Test void compactRowsKeepTheirSizeAcrossNamesEndpointsAndProgressAndRetainFullUrlInTooltip() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      try {
+        var persistence = persistence();
+        var controller = new FlowWorkspaceController(new FlowRepository(persistence, new FlowSerializer(), new PersistenceMigrationService()));
+        var f = flow("A"); controller.addFlow(f); controller.setActiveFlow(f);
+        var panel = new StepListPanel(controller);
+        var field = StepListPanel.class.getDeclaredField("listContainer"); field.setAccessible(true);
+        var rows = (JPanel) field.get(panel); var before = rows.getComponent(0).getPreferredSize();
+        String path = "/endpoint-is-only-in-the-tooltip/" + "segment/".repeat(80);
+        var step = f.steps().getFirst().withName("Long request name ".repeat(30)).withRequestTemplate(
+            new StoredRequestTemplate("GET", "https", "api.example.test", 443, path, List.of(), ""));
+        controller.updateFlow(new FlowDefinition(f.id(), f.name(), f.description(), true, List.of(step), f.rules(), f.aggregation(), f.triggerConfig()));
+        assertEquals(before, rows.getComponent(0).getPreferredSize());
+        for (var state : dev.nquangit.corestra.manual.ManualRunProgress.State.values()) {
+          panel.setExecutionStatuses(f.id(), Map.of(step.id(), new dev.nquangit.corestra.manual.ManualRunProgress.Status(state, 2, 200, "Error details".repeat(100))));
+          var row = (JPanel) rows.getComponent(0);
+          assertEquals(before, row.getPreferredSize()); assertEquals(before.height, row.getMinimumSize().height);
+          assertTrue(row.getToolTipText().contains(path));
+          assertFalse(labelTexts(row).stream().anyMatch(text -> text.contains("endpoint-is-only-in-the-tooltip") || text.equals("api.example.test")));
+        }
+      } catch (Exception e) { throw new RuntimeException(e); }
+    });
+  }
+
+  @Test void sidebarWidthIsSharedAcrossFlowTabsAndSurvivesEditorLogAndContentChanges() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      try {
+        var persistence = persistence();
+        var controller = new FlowWorkspaceController(new FlowRepository(persistence, new FlowSerializer(), new PersistenceMigrationService()));
+        var a = flow("A"); var b = flow("B"); controller.addFlow(a); controller.addFlow(b);
+        var tabs = new FlowTabsPanel(controller, api(persistence), null, new FlowExecutionLog());
+        var field = FlowTabsPanel.class.getDeclaredField("workspace"); field.setAccessible(true);
+        var workspace = (FlowWorkspacePanel) field.get(tabs); var split = (JSplitPane) workspace.getComponent(0);
+        split.setSize(1000, 600); split.doLayout(); split.setDividerLocation(310); split.doLayout();
+        controller.setActiveFlow(b); split.setSize(1200, 600); split.doLayout(); assertEquals(310, split.getLeftComponent().getWidth());
+        split.setDividerLocation(350); split.doLayout(); controller.setActiveFlow(a); split.doLayout(); assertEquals(350, split.getLeftComponent().getWidth());
+        ((FlowEditorLogPanel) split.getRightComponent()).showLog(true); split.doLayout(); assertEquals(350, split.getLeftComponent().getWidth());
+        ((FlowEditorLogPanel) split.getRightComponent()).showLog(false); split.doLayout(); assertEquals(350, split.getLeftComponent().getWidth());
+        assertEquals(4, created);
+      } catch (Exception e) { throw new RuntimeException(e); }
+    });
+  }
+
+  private static List<String> labelTexts(java.awt.Component root) {
+    var labels = new ArrayList<String>();
+    if (root instanceof JLabel label && label.getText() != null) labels.add(label.getText());
+    if (root instanceof java.awt.Container c) for (var child : c.getComponents()) labels.addAll(labelTexts(child));
+    return labels;
+  }
+
+  @Test void selectionRemainsDistinctAcrossBothLayoutsThemesAndEveryExecutionState() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      Object panelBackground = UIManager.get("Panel.background"), listBackground = UIManager.get("List.background");
+      try {
+        for (boolean dark : List.of(false, true)) {
+          UIManager.put("Panel.background", dark ? new java.awt.Color(0x20242B) : java.awt.Color.WHITE);
+          UIManager.put("List.background", dark ? new java.awt.Color(0x20242B) : java.awt.Color.WHITE);
+          for (var presentation : StepListPanel.Presentation.values()) {
+            var controller = new FlowWorkspaceController(new FlowRepository(persistence(), new FlowSerializer(), new PersistenceMigrationService()));
+            var a = flow("A"); var first = a.steps().getFirst(); var second = flow("B").steps().getFirst();
+            var current = new FlowDefinition(a.id(), a.name(), "", true, List.of(first, second), a.rules(), a.aggregation(), a.triggerConfig());
+            controller.addFlow(current); controller.setActiveFlow(current);
+            var panel = new StepListPanel(controller, null, presentation);
+            var field = StepListPanel.class.getDeclaredField("listContainer"); field.setAccessible(true);
+            var rows = (JPanel) field.get(panel);
+            java.awt.Color selectedBackground = null;
+            for (var state : dev.nquangit.corestra.manual.ManualRunProgress.State.values()) {
+              var progress = new dev.nquangit.corestra.manual.ManualRunProgress.Status(state, 1,
+                  state == dev.nquangit.corestra.manual.ManualRunProgress.State.COMPLETED ? 302 : 0, "");
+              panel.setExecutionStatuses(current.id(), Map.of(first.id(), progress, second.id(), progress));
+              controller.setSelectedStep(first);
+              var selected = (JPanel) rows.getComponent(0); var other = (JPanel) rows.getComponent(1);
+              assertNotEquals(other.getBackground(), selected.getBackground(), presentation + " / " + state);
+              assertTrue(colorDistance(other.getBackground(), selected.getBackground()) > 30);
+              if (selectedBackground == null) selectedBackground = selected.getBackground();
+              assertEquals(selectedBackground, selected.getBackground(), "Progress must not overwrite selection");
+              assertEquals(state, selected.getClientProperty("executionState"));
+              assertTrue(labelTexts(selected).contains(state.label()));
+              assertTrue(contrast(findLabel(selected, state.label()).getForeground(), selected.getBackground()) >= 4.5,
+                  "Execution state must stay readable on the selection background");
+              var name = findLabel(selected, first.name());
+              assertTrue(contrast(name.getForeground(), selected.getBackground()) >= 4.5, "Selected name must be readable");
+              controller.setSelectedStep(second);
+              assertEquals(other.getBackground(), rows.getComponent(0).getBackground());
+              assertEquals(selectedBackground, rows.getComponent(1).getBackground());
+            }
+          }
+        }
+      } catch (Exception e) { throw new RuntimeException(e); }
+      finally { UIManager.put("Panel.background", panelBackground); UIManager.put("List.background", listBackground); }
+    });
+  }
+
+  @Test void manualStatusCodesAreVisibleAndResetWithoutChangingRowDimensions() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      try {
+        var controller = new FlowWorkspaceController(new FlowRepository(persistence(), new FlowSerializer(), new PersistenceMigrationService()));
+        var f = flow("A"); var step = f.steps().getFirst(); controller.addFlow(f); controller.setActiveFlow(f); controller.setSelectedStep(step);
+        var panel = new StepListPanel(controller);
+        panel.setExecutionStatuses(f.id(), Map.of());
+        var field = StepListPanel.class.getDeclaredField("listContainer"); field.setAccessible(true); var rows = (JPanel) field.get(panel);
+        var before = rows.getComponent(0).getPreferredSize();
+        var badgeSize = named(panel, "requestHttpStatus").getPreferredSize();
+        assertEquals("", ((JLabel) named(panel, "requestHttpStatus")).getText());
+        for (int code : List.of(200, 302, 403, 500)) {
+          panel.setExecutionStatuses(f.id(), Map.of(step.id(), new dev.nquangit.corestra.manual.ManualRunProgress.Status(
+              dev.nquangit.corestra.manual.ManualRunProgress.State.COMPLETED, 1, code, "")));
+          var badge = (JLabel) named(panel, "requestHttpStatus");
+          assertEquals(Integer.toString(code), badge.getText()); assertTrue(badge.getToolTipText().contains("HTTP " + code));
+          assertEquals(badgeSize, badge.getPreferredSize()); assertEquals(before, rows.getComponent(0).getPreferredSize());
+        }
+        panel.setExecutionStatuses(f.id(), Map.of(step.id(), new dev.nquangit.corestra.manual.ManualRunProgress.Status(
+            dev.nquangit.corestra.manual.ManualRunProgress.State.FAILED, 1, 0, "Network failed")));
+        assertEquals("—", ((JLabel) named(panel, "requestHttpStatus")).getText());
+        assertTrue(((JLabel) named(panel, "requestHttpStatus")).getToolTipText().contains("No HTTP response"));
+        panel.setExecutionStatuses(f.id(), Map.of());
+        assertEquals("", ((JLabel) named(panel, "requestHttpStatus")).getText());
+        assertEquals(before, rows.getComponent(0).getPreferredSize());
+      } catch (Exception e) { throw new RuntimeException(e); }
+    });
+  }
+
+  private static JLabel findLabel(java.awt.Component root, String text) {
+    if (root instanceof JLabel label && text.equals(label.getText())) return label;
+    if (root instanceof java.awt.Container c) for (var child : c.getComponents()) { var found = findLabel(child, text); if (found != null) return found; }
+    return null;
+  }
+  private static double colorDistance(java.awt.Color a, java.awt.Color b) {
+    return Math.sqrt(Math.pow(a.getRed() - b.getRed(), 2) + Math.pow(a.getGreen() - b.getGreen(), 2) + Math.pow(a.getBlue() - b.getBlue(), 2));
+  }
+  private static double contrast(java.awt.Color a, java.awt.Color b) {
+    double x = luminance(a), y = luminance(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
+  }
+  private static double luminance(java.awt.Color c) {
+    return .2126 * linear(c.getRed()) + .7152 * linear(c.getGreen()) + .0722 * linear(c.getBlue());
+  }
+  private static double linear(int channel) { double value = channel / 255.; return value <= .04045 ? value / 12.92 : Math.pow((value + .055) / 1.055, 2.4); }
+
+  @Test void flowiseUsesRoomierRowsWithSmallRuleBadgesWhileCompactLayoutStaysUnchanged() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      try {
+        var persistence = persistence();
+        var controller = new FlowWorkspaceController(new FlowRepository(persistence, new FlowSerializer(), new PersistenceMigrationService()));
+        var f = flow("A");
+        var extract = new dev.nquangit.corestra.flow.rule.ExtractRule("e", "Extract", true,
+            dev.nquangit.corestra.flow.rule.ExtractRule.SourceSide.RESPONSE, dev.nquangit.corestra.flow.rule.ExtractRule.ExtractorType.BODY_TEXT, "", "out", List.of());
+        var inject = new dev.nquangit.corestra.flow.rule.InjectRule("i", "Inject", true,
+            dev.nquangit.corestra.flow.rule.InjectRule.Target.REQUEST_HEADER, "X-Test", dev.nquangit.corestra.flow.rule.InjectRule.ValueSourceType.STATIC,
+            "", "value", dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy.OVERWRITE);
+        var action = new dev.nquangit.corestra.flow.control.StepAction("a", "Stop", true, dev.nquangit.corestra.flow.control.StepActionType.BREAK_FLOW, Map.of());
+        var conditions = new dev.nquangit.corestra.flow.control.StepConditionActionRule("c", "Rules", true,
+            dev.nquangit.corestra.flow.control.ConditionMatchPolicy.ALL, List.of(), List.of(action));
+        var step = f.steps().getFirst().withExtractRules(List.of(extract)).withInjectRules(List.of(inject)).withConditionActionRules(List.of(conditions));
+        controller.addFlow(new FlowDefinition(f.id(), f.name(), f.description(), true, List.of(step), f.rules(), f.aggregation(), f.triggerConfig()));
+        controller.setActiveFlow(controller.flows().getFirst());
+        var tabs = new FlowTabsPanel(controller, api(persistence), null, new FlowExecutionLog());
+        var field = FlowTabsPanel.class.getDeclaredField("workspace"); field.setAccessible(true);
+        var workspace = (FlowWorkspacePanel) field.get(tabs); var split = (JSplitPane) workspace.getComponent(0);
+        split.setSize(1100, 650); split.doLayout(); assertEquals(320, split.getLeftComponent().getWidth());
+        var flowise = (StepListPanel) split.getLeftComponent(); var compact = new StepListPanel(controller);
+        var method = (JLabel) named(flowise, "flowiseMethodBadge"); assertNotNull(method);
+        var badges = new ArrayList<JLabel>(); ruleBadges(flowise, badges); assertEquals(3, badges.size());
+        assertEquals(List.of("E 1", "I 1", "C 1"), badges.stream().map(JLabel::getText).toList());
+        for (var b : badges) { assertTrue(b.getFont().getSize2D() < method.getFont().getSize2D()); assertTrue(b.getPreferredSize().height < method.getPreferredSize().height); }
+        assertNull(named(compact, "flowiseRuleBadge")); assertTrue(labelTexts(compact).contains("E1 · I1 · C1"));
+        var rowsField = StepListPanel.class.getDeclaredField("listContainer"); rowsField.setAccessible(true);
+        assertTrue(((JPanel) rowsField.get(flowise)).getComponent(0).getPreferredSize().height > ((JPanel) rowsField.get(compact)).getComponent(0).getPreferredSize().height);
+        layoutTree(flowise);
+        var row = (JPanel) ((JPanel) rowsField.get(flowise)).getComponent(0);
+        var text = (JPanel) ((java.awt.BorderLayout) row.getLayout()).getLayoutComponent(java.awt.BorderLayout.CENTER);
+        var name = text.getComponent(0);
+        assertTrue(SwingUtilities.convertPoint(name, 0, name.getHeight(), row).y <= SwingUtilities.convertPoint(method, 0, 0, row).y);
+        assertEquals(4, created);
+      } catch (Exception e) { throw new RuntimeException(e); }
+    });
+  }
+  private static java.awt.Component named(java.awt.Component root, String name) {
+    if (name.equals(root.getName())) return root;
+    if (root instanceof java.awt.Container c) for (var child : c.getComponents()) { var found = named(child, name); if (found != null) return found; }
+    return null;
+  }
+  private static void ruleBadges(java.awt.Component root, List<JLabel> found) {
+    if (root instanceof JLabel l && "flowiseRuleBadge".equals(l.getName())) found.add(l);
+    if (root instanceof java.awt.Container c) for (var child : c.getComponents()) ruleBadges(child, found);
+  }
+
+  @Test void draggingTheRequestNameReordersWithoutAHandleAndCheckboxRemainsIndependent() throws Exception {
+    SwingUtilities.invokeAndWait(() -> {
+      try {
+        var persistence = persistence();
+        var controller = new FlowWorkspaceController(new FlowRepository(persistence, new FlowSerializer(), new PersistenceMigrationService()));
+        var a = flow("A"); var b = flow("B").steps().getFirst(); var c = flow("C").steps().getFirst();
+        controller.addFlow(new FlowDefinition(a.id(), a.name(), a.description(), true,
+            List.of(a.steps().getFirst(), b, c), a.rules(), a.aggregation(), a.triggerConfig()));
+        controller.setActiveFlow(controller.flows().getFirst());
+        var panel = new StepListPanel(controller); panel.setSize(280, 350); layoutTree(panel);
+        var field = StepListPanel.class.getDeclaredField("listContainer"); field.setAccessible(true); var rows = (JPanel) field.get(panel);
+        var row = (JPanel) rows.getComponent(0); assertFalse(hasLabelIcon(row));
+        var text = (JPanel) ((java.awt.BorderLayout) row.getLayout()).getLayoutComponent(java.awt.BorderLayout.CENTER);
+        var name = text.getComponent(0);
+        var last = rows.getComponent(2);
+        var destination = SwingUtilities.convertPoint(rows, new java.awt.Point(30, last.getY() + last.getHeight() - 1), name);
+        long now = System.currentTimeMillis();
+        name.dispatchEvent(new java.awt.event.MouseEvent(name, java.awt.event.MouseEvent.MOUSE_PRESSED, now,
+            java.awt.event.InputEvent.BUTTON1_DOWN_MASK, 5, 5, 1, false, java.awt.event.MouseEvent.BUTTON1));
+        name.dispatchEvent(new java.awt.event.MouseEvent(name, java.awt.event.MouseEvent.MOUSE_DRAGGED, now + 1,
+            java.awt.event.InputEvent.BUTTON1_DOWN_MASK, destination.x, destination.y, 0, false, java.awt.event.MouseEvent.NOBUTTON));
+        name.dispatchEvent(new java.awt.event.MouseEvent(name, java.awt.event.MouseEvent.MOUSE_RELEASED, now + 2,
+            0, destination.x, destination.y, 1, false, java.awt.event.MouseEvent.BUTTON1));
+        assertEquals(List.of(b.id(), c.id(), a.steps().getFirst().id()), controller.activeFlow().steps().stream().map(FlowStep::id).toList());
+        var left = (JPanel) ((java.awt.BorderLayout) ((JPanel) rows.getComponent(0)).getLayout()).getLayoutComponent(java.awt.BorderLayout.WEST);
+        ((JCheckBox) left.getComponent(0)).doClick();
+        assertFalse(controller.activeFlow().steps().getFirst().enabled());
+        assertEquals(List.of(b.id(), c.id(), a.steps().getFirst().id()), controller.activeFlow().steps().stream().map(FlowStep::id).toList());
+      } catch (Exception e) { throw new RuntimeException(e); }
+    });
+  }
+  private static void layoutTree(java.awt.Container root) { root.doLayout(); for (var c : root.getComponents()) if (c instanceof java.awt.Container child) layoutTree(child); }
+  private static boolean hasLabelIcon(java.awt.Component root) {
+    if (root instanceof JLabel l && l.getIcon() != null) return true;
+    if (root instanceof java.awt.Container c) for (var child : c.getComponents()) if (hasLabelIcon(child)) return true;
+    return false;
   }
 
   @Test void projectMeasuresStorageOffEdtAndDoesNotRereadItOnSelection() throws Exception {

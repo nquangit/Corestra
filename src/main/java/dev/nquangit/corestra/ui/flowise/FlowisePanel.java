@@ -1,5 +1,7 @@
 package dev.nquangit.corestra.ui.flowise;
 
+import dev.nquangit.corestra.ui.component.WrappedText;
+
 import burp.api.montoya.MontoyaApi;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.flow.execution.FlowExecutionLog;
@@ -98,10 +100,9 @@ public final class FlowisePanel extends JPanel {
         Font base = UIManager.getFont("Label.font");
         if (base != null) title.setFont(base.deriveFont(Font.BOLD, base.getSize2D() + 2f));
 
-        JLabel hint = new JLabel(
-                "<html><div style='text-align:center'>Capture a request from Burp or create a flow, then add extraction, "
-                        + "injection, conditions, and execution rules.</div></html>",
-                SwingConstants.CENTER);
+        var hint = new WrappedText(
+                "Capture a request from Burp or create a flow, then add extraction, "
+                        + "injection, conditions, and execution rules.");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
 
         StyledButton createBtn = StyledButton.primary("+ New Flow");
@@ -122,7 +123,10 @@ public final class FlowisePanel extends JPanel {
 
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(javax.swing.BorderFactory.createEmptyBorder(24, 24, 24, 24));
-        panel.add(inner);
+        java.awt.GridBagConstraints constraints = new java.awt.GridBagConstraints();
+        constraints.fill = java.awt.GridBagConstraints.HORIZONTAL;
+        constraints.weightx = 1;
+        panel.add(inner, constraints);
         return panel;
     }
 

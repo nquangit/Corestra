@@ -585,6 +585,11 @@ public final class InMemoryAccessRepository {
                 scenarios, evaluationProfiles);
     }
 
+    /** Returns only immutable profile inputs, without copying results or evidence for live traffic. */
+    public synchronized AccessWorkspace profileSnapshot() {
+        return new AccessWorkspace(authProfiles, dataProfiles, Map.of(), Map.of(), Map.of());
+    }
+
     /**
      * Returns an immutable snapshot of all project-persistent access data.
      *

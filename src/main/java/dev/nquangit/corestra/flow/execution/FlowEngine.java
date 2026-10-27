@@ -42,6 +42,7 @@ public final class FlowEngine {
     private static final int MAX_RETRY_LIMIT = 10;
     private static final long MAX_SLEEP_SECONDS = 300L;
     private static final int MAX_TRIGGER_DEPTH = 5;
+    private static final Consumer<StepExecutionProgress> NO_PROGRESS = ignored -> { };
 
     private final StepExecutor stepExecutor;
     private final HttpClient httpClient;
@@ -134,9 +135,14 @@ public final class FlowEngine {
      * @return an {@link ExecutionResult} describing the final outcome
      */
     public ExecutionResult execute(FlowDefinition flow, ExecutionContext context) {
+        return execute(flow, context, NO_PROGRESS);
+    }
+
+    /** Executes with an observer local to this run, including child flows and retries. Observer failures are isolated. */
+    public ExecutionResult execute(FlowDefinition flow, ExecutionContext context, Consumer<StepExecutionProgress> progress) {
         Objects.requireNonNull(flow, "flow");
         Objects.requireNonNull(context, "context");
-        ExecutionResult result = executeInternal(flow, context, new ControlState());
+        ExecutionResult result = executeInternal(flow, context, new ControlState(Objects.requireNonNull(progress, "progress")));
         for (Consumer<ExecutionResult> listener : executionListeners) {
             try {
                 listener.accept(result);
@@ -178,6 +184,7 @@ public final class FlowEngine {
         ExecutionContext currentContext = context;
 
         int stepIndex = 0;
+        boolean observing = controlState.progress != NO_PROGRESS;
         try {
         while (stepIndex < flow.steps().size()) {
             FlowStep step = flow.steps().get(stepIndex);
@@ -188,7 +195,19 @@ public final class FlowEngine {
             }
 
             ExecutionContext beforeStepContext = currentContext;
-            StepExecutionRecord record = stepExecutor.execute(step, currentContext, httpClient);
+            int attempt = observing ? controlState.attempts.merge(new StepKey(flow.id(), step.id()), 1, Integer::sum) : 0;
+            if (observing) report(controlState, new StepExecutionProgress(context.runId(), flow.id(), flow.name(), step.id(), step.name(),
+                    StepExecutionProgress.Phase.STARTED, attempt, 0, ""));
+            StepExecutionRecord record;
+            try { record = stepExecutor.execute(step, currentContext, httpClient); }
+            catch (RuntimeException failure) {
+                if (observing) report(controlState, new StepExecutionProgress(context.runId(), flow.id(), flow.name(), step.id(), step.name(),
+                        StepExecutionProgress.Phase.FAILED, attempt, 0, Objects.requireNonNullElse(failure.getMessage(), "Step failed")));
+                throw failure;
+            }
+            if (observing) report(controlState, new StepExecutionProgress(context.runId(), flow.id(), flow.name(), step.id(), step.name(),
+                    record.success() ? StepExecutionProgress.Phase.COMPLETED : StepExecutionProgress.Phase.FAILED,
+                    attempt, record.responseStatusCode(), record.errorMessage()));
             allRecords.add(record);
 
             if (!record.success() && (InteractionAbortedException.isAborted(record.errorMessage())
@@ -584,9 +603,18 @@ public final class FlowEngine {
     }
 
     private static final class ControlState {
+        private final Consumer<StepExecutionProgress> progress;
+        private final Map<StepKey, Integer> attempts = new HashMap<>();
+        private ControlState(Consumer<StepExecutionProgress> progress) { this.progress = progress; }
         private final java.util.ArrayDeque<String> flowStack = new java.util.ArrayDeque<>();
         private final Map<String, Integer> stepRetryCounts = new HashMap<>();
         private final Map<String, Integer> flowRetryCounts = new HashMap<>();
+    }
+
+    private record StepKey(String flowId, String stepId) { }
+
+    private void report(ControlState state, StepExecutionProgress event) {
+        try { state.progress.accept(event); } catch (RuntimeException ignored) { /* Observers cannot alter execution. */ }
     }
 
     private record ActionOutcome(

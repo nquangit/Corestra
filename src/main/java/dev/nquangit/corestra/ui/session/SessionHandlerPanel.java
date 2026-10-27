@@ -1,5 +1,7 @@
 package dev.nquangit.corestra.ui.session;
 
+import dev.nquangit.corestra.ui.component.WrappedText;
+
 import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
 import dev.nquangit.corestra.access.auth.AuthProfile;
 import dev.nquangit.corestra.flow.FlowDefinition;
@@ -360,9 +362,10 @@ public final class SessionHandlerPanel extends JPanel {
         addLabeled(panel, 0, "Scheduler:", schedulerEnabledCheck);
         addLabeled(panel, 1, "Interval seconds:", schedulerIntervalField);
         addLabeled(panel, 2, "Startup:", schedulerStartupCheck);
-        JLabel guidance = new JLabel("<html>TTL controls when on-demand auth becomes stale; it does not send requests. "
-                + "With a linked provider's Keep-alive Flow, Scheduler maintains the existing session. "
-                + "Without it, scheduled runs use the existing authentication policy.</html>");
+        var guidance = new WrappedText(
+                "TTL controls when on-demand auth becomes stale; it does not send requests.\n"
+                + "With a linked provider's Keep-alive Flow, Scheduler maintains the existing session.\n"
+                + "Without it, scheduled runs use the existing authentication policy.");
         guidance.setToolTipText("For keep-alive sessions, use an interval safely below the server timeout.");
         addLabeled(panel, 3, "How it works:", guidance);
         addFiller(panel, 4);

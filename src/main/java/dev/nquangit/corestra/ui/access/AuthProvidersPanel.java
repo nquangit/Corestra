@@ -1,5 +1,7 @@
 package dev.nquangit.corestra.ui.access;
 
+import dev.nquangit.corestra.ui.component.WrappedText;
+
 import dev.nquangit.corestra.access.auth.AuthFailureRule;
 import dev.nquangit.corestra.access.auth.AuthFallbackPolicy;
 import dev.nquangit.corestra.access.auth.AuthInjectionLocation;
@@ -560,9 +562,10 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             keepAliveSuccessRules.setBorder(BorderFactory.createTitledBorder("Keep-alive Success"));
             keepAliveExpiredRules.setBorder(BorderFactory.createTitledBorder("Session Expired"));
             keepAlivePanel.add(split, BorderLayout.CENTER);
-            keepAlivePanel.add(new JLabel("<html>Rules are separate from login/refresh. Any Success rule confirms keep-alive; "
-                    + "any Session Expired rule permits re-authentication.<br>Expired rules take priority. "
-                    + "Timeouts and unknown responses retain state and retry with backoff (30s to 5min).</html>"), BorderLayout.SOUTH);
+            keepAlivePanel.add(new WrappedText(
+                    "Rules are separate from login/refresh. Any Success rule confirms keep-alive; "
+                    + "any Session Expired rule permits re-authentication.\nExpired rules take priority. "
+                    + "Timeouts and unknown responses retain state and retry with backoff (30s to 5min)."), BorderLayout.SOUTH);
             tabs.addTab("Keep-alive", keepAlivePanel);
             return tabs;
         }

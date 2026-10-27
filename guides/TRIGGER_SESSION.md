@@ -81,6 +81,13 @@ Corestra kiểm tra session trước khi bắt đầu flow và trước mỗi re
 
 Lỗi trước khi gửi request thật làm Burp **drop** request đó. Bước prerequisite đã gửi không được hoàn tác. Nếu session đổi sau response của request thật, các bước downstream bị dừng; request thật đã gửi cũng không thể hoàn tác. Downstream vẫn chạy bất đồng bộ sau khi extract response. Ràng buộc bị lỗi luôn dừng, kể cả có `Continue on error` hoặc retry action.
 
-Xem output của extension để tìm thông báo `Trigger stopped` hoặc `Auto-trigger Phase 3 failed` với marker `[SESSION_BINDING_ABORTED]`. Thông báo sẽ phân biệt thiếu session, session đổi, origin ngoài danh sách hoặc lỗi inject.
+Xem output của extension để tìm thông báo `Trigger stopped` hoặc `Auto-trigger stopped` với marker `[SESSION_BINDING_ABORTED]`. Thông báo sẽ phân biệt thiếu session, session đổi, origin ngoài danh sách hoặc lỗi inject.
+
+**Auth Profile/Data Profile** trong Auto Trigger là nguồn biến riêng, không thay cho
+session binding và không tự chọn cùng actor với Session Handler. Có thể để cả hai
+**None** nếu flow chỉ cần các injection từ session đã pin và các extractor trước đó.
+Nếu một inject rule còn tham chiếu `auth.*`/`credentials.*`/`data.*`, phải cung cấp key
+đó qua profile hoặc extractor phù hợp; session binding không tự seed những biến này.
+Xem [Auto Trigger inputs và Target inject rules](AUTO_TRIGGER_INPUTS.md).
 
 TTL và dấu phiên là kiểm tra trạng thái phía extension. Chúng không bảo đảm server vẫn chấp nhận phiên; server có thể huỷ session bên ngoài, và một lần renew vẫn có thể bắt đầu ngay sau lần validation cuối cùng. Ràng buộc giúp tránh trộn actor/dấu phiên giữa các bước, không đóng băng session phía server.

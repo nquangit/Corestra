@@ -319,7 +319,9 @@ public final class CorestraBootstrap {
 
         // Auto-trigger: per-step trigger rules inject flow context into matching live requests.
         AutoTriggerHttpHandler autoTriggerHttpHandler = new AutoTriggerHttpHandler(
-                controller::flows, flowEngine, extractionService, injectionService, sessionBindings);
+                controller::flows, flowEngine, extractionService, injectionService, sessionBindings,
+                new dev.nquangit.corestra.integration.TriggerInputService(accessRepository::profileSnapshot, Clock.systemUTC()),
+                api.logging()::logToError);
         registry.registerCloseable(autoTriggerHttpHandler);
         api.http().registerHttpHandler(autoTriggerHttpHandler);
 

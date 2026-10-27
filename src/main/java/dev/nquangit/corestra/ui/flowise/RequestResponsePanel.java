@@ -57,10 +57,12 @@ public final class RequestResponsePanel extends JPanel {
         Dimension equalPref = new Dimension(100, 100);
         JPanel reqWrapper = new JPanel(new BorderLayout());
         reqWrapper.setPreferredSize(equalPref);
+        reqWrapper.setMinimumSize(new Dimension(0, 0));
         reqWrapper.add(requestEditor.uiComponent(), BorderLayout.CENTER);
 
         JPanel respWrapper = new JPanel(new BorderLayout());
         respWrapper.setPreferredSize(equalPref);
+        respWrapper.setMinimumSize(new Dimension(0, 0));
         respWrapper.add(responseEditor.uiComponent(), BorderLayout.CENTER);
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, reqWrapper, respWrapper);

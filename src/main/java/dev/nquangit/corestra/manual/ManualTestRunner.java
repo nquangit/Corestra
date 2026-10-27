@@ -26,6 +26,13 @@ public final class ManualTestRunner {
     /** Executes a selected inclusive range. Full flow preserves actions; single-step mode suppresses them. */
     public Outcome run(FlowDefinition flow, int first, int last, boolean singleStep, Map<String, String> variables,
                        State previous, ManualRunOptions options, AtomicBoolean cancelled) {
+        return run(flow, first, last, singleStep, variables, previous, options, cancelled, ignored -> { });
+    }
+
+    /** Executes a range with transient per-attempt progress; HTTP and continuation semantics remain identical. */
+    public Outcome run(FlowDefinition flow, int first, int last, boolean singleStep, Map<String, String> variables,
+                       State previous, ManualRunOptions options, AtomicBoolean cancelled,
+                       java.util.function.Consumer<StepExecutionProgress> progress) {
         if (cancelled.get() || Thread.currentThread().isInterrupted()) throw new dev.nquangit.corestra.session.SessionBindingException("Manual run cancelled");
         if (first < 0 || last >= flow.steps().size() || first > last) throw new IllegalArgumentException("Select a valid request range");
         if (!flow.enabled()) throw new IllegalArgumentException("Manual draft is disabled");
@@ -57,7 +64,7 @@ public final class ManualTestRunner {
                 same ? previous.history() : Map.of(), System.currentTimeMillis(), 0);
         try (var active = transport.begin(context.runId(), options, same ? previous.binding() : Map.of(), cancelled)) {
             if (cancelled.get()) throw new dev.nquangit.corestra.session.SessionBindingException("Manual run cancelled");
-            ExecutionResult result = engine.execute(runnable, context);
+            ExecutionResult result = engine.execute(runnable, context, progress);
             var finalContext = result.finalContext().orElse(context);
             Map<String, List<StepExecutionRecord>> compact = new LinkedHashMap<>();
             finalContext.stepHistory().forEach((key, records) -> {

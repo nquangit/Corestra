@@ -12,6 +12,7 @@ import dev.nquangit.corestra.manual.*;
 import dev.nquangit.corestra.session.*;
 import dev.nquangit.corestra.ui.access.AccessUiController;
 import dev.nquangit.corestra.ui.component.StyledButton;
+import dev.nquangit.corestra.ui.component.StableSidebarSplitPane;
 import dev.nquangit.corestra.ui.flowise.*;
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
@@ -40,6 +41,8 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private final DefaultTableModel variables = new DefaultTableModel(new String[]{"Variable", "Value"}, 0);
     private final JTable variableTable = new JTable(variables);
     private final Map<String, ManualTestRunner.State> states = new HashMap<>();
+    private final Map<String, ManualRunProgress> progressByFlow = new HashMap<>();
+    private final JLabel progressLabel = new JLabel("Run progress");
     private final Map<String, Long> resetAt = new HashMap<>();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r, "corestra-manual-test"); t.setDaemon(true); return t; });
     private final AtomicReference<Thread> activeThread = new AtomicReference<>();
@@ -69,6 +72,9 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         stepLayer.setGlassPane(shield); shield.setVisible(false);
         add(toolbar(), BorderLayout.NORTH);
         JPanel left = new JPanel(new BorderLayout()); left.add(stepLayer, BorderLayout.CENTER);
+        progressLabel.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 4));
+        progressLabel.setToolTipText("Latest run: green = done, yellow = running/preparing, red = failed, gray = not run/skipped/stopped. HTTP status is shown in row tooltips.");
+        left.add(progressLabel, BorderLayout.NORTH);
         JPanel stepActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 2));
         stepActions.add(button("+ Request", this::addRequest)); stepActions.add(button("Duplicate", this::duplicateRequest)); stepActions.add(button("Remove", this::removeRequest)); left.add(stepActions, BorderLayout.SOUTH);
         JPanel editors = new JPanel(new BorderLayout());
@@ -80,7 +86,10 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         address.add(saveRequest);
         target.setToolTipText("Actual routing destination, independent of Host. Exact scheme://host:port; no placeholders.");
         editors.add(address, BorderLayout.NORTH);
-        JSplitPane messages = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, request.uiComponent(), response.uiComponent()); messages.setResizeWeight(.5);
+        JPanel requestView = new JPanel(new BorderLayout()); requestView.add(request.uiComponent(), BorderLayout.CENTER);
+        JPanel responseView = new JPanel(new BorderLayout()); responseView.add(response.uiComponent(), BorderLayout.CENTER);
+        for (JPanel view : List.of(requestView, responseView)) { view.setMinimumSize(new Dimension(0, 0)); view.setPreferredSize(new Dimension(100, 100)); }
+        JSplitPane messages = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, requestView, responseView); messages.setResizeWeight(.5);
         editors.add(messages, BorderLayout.CENTER);
         JPanel hints = new JPanel(new GridLayout(0, 1));
         hints.add(new JLabel("Inline: {{token}}, Bearer {{auth.accessToken}}, {{id|urlEncode}}. Replace a placeholder with literal test data to override it."));
@@ -97,8 +106,9 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         details.addTab("Extract / Inject Rules", rules);
         details.addTab("Conditions & Actions", new ConditionActionPanel(controller));
         JSplitPane right = new JSplitPane(JSplitPane.VERTICAL_SPLIT, editors, details); right.setResizeWeight(.78); right.setDividerLocation(440); right.setOneTouchExpandable(true);
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left,
-                new FlowEditorLogPanel(right, new FlowLogPanel(controller, log, api))); split.setResizeWeight(.20); split.setDividerLocation(230);
+        JSplitPane split = new StableSidebarSplitPane(left,
+                new FlowEditorLogPanel(right, new FlowLogPanel(controller, log, api)), 270);
+        split.setName("manualRequestListSplit");
         add(split, BorderLayout.CENTER); status.setEditable(false); add(status, BorderLayout.SOUTH);
         drafts.addActionListener(e -> {
             if (!refreshing && !running && drafts.getSelectedItem() instanceof FlowItem item) {
@@ -255,13 +265,23 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         var input = editedVariables(); var config = options(); var previous = states.getOrDefault(flow.id(), ManualTestRunner.State.empty());
         if (states.containsKey(flow.id()) && !previous.options().equals(config) && !keepVariables.isSelected())
             throw new IllegalArgumentException("Session options changed. Reset runtime first, or explicitly enable Keep variables when changing session.");
-        cancelled.set(false); setRunning(true); status("Running ‘" + flow.name() + "’…");
+        var progress = new ManualRunProgress(flow, first, last, mode == 0);
+        progressByFlow.put(flow.id(), progress);
+        cancelled.set(false); setRunning(true); showProgress(); status("Running ‘" + flow.name() + "’…");
         executor.submit(() -> {
             activeThread.set(Thread.currentThread());
             try {
-                var outcome = runner.run(flow, first, last, mode == 0, input, previous, config, cancelled);
+                var outcome = runner.run(flow, first, last, mode == 0, input, previous, config, cancelled, event ->
+                    SwingUtilities.invokeLater(() -> {
+                        if (closed || !running || progressByFlow.get(flow.id()) != progress) return;
+                        progress.accept(event, cancelled.get()); showProgress();
+                        if (event.phase() == StepExecutionProgress.Phase.STARTED && !cancelled.get())
+                            status("Running ‘" + event.flowName() + " / " + event.stepName() + "’"
+                                    + (event.attempt() > 1 ? " — attempt " + event.attempt() : "") + "…");
+                    }));
                 SwingUtilities.invokeLater(() -> {
                     if (closed) return;
+                    progress.finish(cancelled.get()); showProgress();
                     states.put(flow.id(), outcome.state());
                     if (controller.activeFlow() != null && controller.activeFlow().id().equals(flow.id())) {
                         showVariables(outcome.state().variables()); showResponse();
@@ -272,7 +292,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
                             : outcome.result().success() ? "Completed" + (failedSteps ? " with failed steps" : "") + " — " + outcome.result().stepRecords().size() + " request(s); inspect responses in Flow Log"
                             : "FAILED — " + outcome.result().failureMessage());
                 });
-            } catch (Exception e) { SwingUtilities.invokeLater(() -> { if (!closed) status("Stopped: " + e.getMessage()); }); }
+            } catch (Exception e) { SwingUtilities.invokeLater(() -> { if (!closed) { progress.finish(cancelled.get()); showProgress(); status("Stopped: " + e.getMessage()); } }); }
             finally { activeThread.set(null); Thread.interrupted(); SwingUtilities.invokeLater(() -> { if (!closed) setRunning(false); }); }
         });
     }
@@ -304,7 +324,8 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
                 displayedTemplate = selected.requestTemplate(); name.setText(selected.name()); target.setText(ManualRequestCodec.origin(displayedTemplate));
             } else if (!name.getText().equals(selected.name())) name.setText(selected.name());
             drafts.removeAllItems(); for (var f : controller.flows()) { var item = new FlowItem(f.id(), f.name()); drafts.addItem(item); if (f.id().equals(nextFlow)) drafts.setSelectedItem(item); }
-            var ids = controller.flows().stream().map(FlowDefinition::id).toList(); states.keySet().retainAll(ids); resetAt.keySet().retainAll(ids);
+            var ids = controller.flows().stream().map(FlowDefinition::id).toList(); states.keySet().retainAll(ids); resetAt.keySet().retainAll(ids); progressByFlow.keySet().retainAll(ids);
+            showProgress();
             showResponse(); updateSuggestions();
         } catch (RuntimeException e) {
             status("Could not switch request: " + e.getMessage());
@@ -375,6 +396,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     }
     private void resetRuntime() {
         if (displayedFlow == null) return;
+        progressByFlow.remove(displayedFlow); showProgress();
         states.remove(displayedFlow); resetAt.put(displayedFlow, System.currentTimeMillis()); showVariables(Map.of()); showResponse();
         status("Runtime cleared. Templates and rules are preserved; the next run obtains a fresh session binding.");
     }
@@ -396,16 +418,17 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private void setRunning(boolean value) {
         running = value; idleButtons.forEach(b -> b.setEnabled(!value)); drafts.setEnabled(!value); session.setEnabled(!value); tool.setEnabled(!value); origins.setEnabled(!value);
         name.setEnabled(!value); target.setEnabled(!value); variableTable.setEnabled(!value); stepLayer.getGlassPane().setVisible(value); keepVariables.setEnabled(!value); stop.setEnabled(value);
+        showProgress();
         // Editing the native template is allowed while a run uses its immutable snapshot; it is saved before the next run.
     }
     private void cancel() { cancelled.set(true); Thread thread = activeThread.get(); if (thread != null) thread.interrupt(); status("Stopping… waiting for the current send to return; no further manual request will be sent."); }
     /** Rejects project cleanup/import while a request may still be in flight. */
     public void assertIdle() { if (running) throw new IllegalStateException("Stop the active Manual Testing run and wait for it to finish first"); if (closed) throw new IllegalStateException("Manual Testing is closed"); }
     /** Clears runtime and draft configuration during explicit project cleanup. */
-    public void clearWorkspace() { assertIdle(); displayedFlow = null; displayedStep = null; states.clear(); resetAt.clear(); log.clear(); controller.replaceAll(List.of()); controller.setActiveFlow(null); showVariables(Map.of()); }
+    public void clearWorkspace() { assertIdle(); displayedFlow = null; displayedStep = null; states.clear(); resetAt.clear(); progressByFlow.clear(); log.clear(); controller.replaceAll(List.of()); controller.setActiveFlow(null); showVariables(Map.of()); showProgress(); }
     /** Drops all actor-specific continuation state after importing/replacing project configuration. */
     public void resetAllRuntime() {
-        assertIdle(); states.clear(); resetAt.clear(); log.clear();
+        assertIdle(); states.clear(); resetAt.clear(); progressByFlow.clear(); log.clear(); showProgress();
         boolean was = refreshing; refreshing = true;
         try { reloadSessions(); restoreOptions(ManualRunOptions.defaults()); } finally { refreshing = was; }
         showVariables(Map.of()); showResponse();
@@ -414,8 +437,13 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private void error(RuntimeException e) { status(e.getMessage()); JOptionPane.showMessageDialog(this, e.getMessage(), "Manual Testing", JOptionPane.ERROR_MESSAGE); }
     @Override public void close() {
         closed = true; cancelled.set(true); Thread active = activeThread.get(); if (active != null) active.interrupt(); executor.shutdownNow();
-        Runnable cleanup = () -> { states.clear(); log.clear(); status("Manual Testing closed"); };
+        Runnable cleanup = () -> { states.clear(); progressByFlow.clear(); log.clear(); status("Manual Testing closed"); };
         if (SwingUtilities.isEventDispatchThread()) cleanup.run(); else SwingUtilities.invokeLater(cleanup);
+    }
+    private void showProgress() {
+        var flow = controller.activeFlow(); var progress = flow == null ? null : progressByFlow.get(flow.id());
+        steps.setExecutionStatuses(flow == null ? null : flow.id(), progress == null ? Map.of() : progress.snapshot());
+        progressLabel.setText(progress == null ? "Run progress · not run" : (running ? "Running · " : "Last run · ") + progress.summary());
     }
     private record FlowItem(String id, String label) { @Override public String toString() { return label; } }
     private record SessionItem(ManualRunOptions.Mode mode, String id, String label) { @Override public String toString() { return label; } }
