@@ -34,6 +34,7 @@ class ProxyPipelineHttpClientTest {
         HttpRequest request = request(false, "example.test", 8081, "POST", "/api?q=1",
                 List.of(
                         header("User-Agent", "Corestra"),
+                        header(CorestraTrafficOrigin.HEADER, "stale-internal-marker"),
                         header("Content-Length", "999"),
                         header("Connection", "keep-alive")),
                 "hello");
@@ -48,6 +49,7 @@ class ProxyPipelineHttpClientTest {
         assertTrue(raw.contains("\r\nConnection: close\r\n\r\nhello"));
         assertFalse(raw.contains("Content-Length: 999"));
         assertFalse(raw.contains("Connection: keep-alive"));
+        assertFalse(raw.contains(CorestraTrafficOrigin.HEADER));
     }
 
     @Test
@@ -58,6 +60,38 @@ class ProxyPipelineHttpClientTest {
 
         assertTrue(raw.startsWith("GET /secure HTTP/1.1\r\n"));
         assertTrue(raw.contains("\r\nHost: example.test\r\n"));
+        assertFalse(raw.contains("Content-Length:"));
+    }
+
+    @Test
+    void emptyBodyPreservesAnExplicitZeroLengthAndCollapsesCapturedDuplicates() {
+        var request = request(false, "example.test", 80, "POST", "/login",
+                List.of(header("Content-Length", "999"), header("content-length", "42")), "");
+
+        for (var raw : List.of(ProxyPipelineHttpClient.buildHttpProxyRequest(request),
+                ProxyPipelineHttpClient.buildOriginFormRequest(request))) {
+            assertTrue(raw.contains("\r\nContent-Length: 0\r\n"));
+            assertEquals(1, raw.lines().filter(line -> line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:")).count());
+            assertTrue(raw.endsWith("\r\n\r\n"));
+        }
+    }
+
+    @Test
+    void unicodeAndBinaryBodiesUseActualNativeBytes() {
+        byte[] body = {0, (byte) 0xff, (byte) 0xc3, (byte) 0xa9, 13, 10};
+        var request = ManualTestMessages.proxy(HttpRequest.class, (p, method, args) -> switch (method.getName()) {
+            case "body" -> ManualTestMessages.bytes(body);
+            // Deliberately different text: framing and wire payload must use body(), not this representation.
+            case "bodyToString" -> "lossy";
+            default -> method.invoke(request(false, "example.test", 80, "POST", "/login",
+                    List.of(header("Content-Length", "999")), ""), args);
+        });
+        for (var raw : List.of(ProxyPipelineHttpClient.buildHttpProxyRequest(request),
+                ProxyPipelineHttpClient.buildOriginFormRequest(request))) {
+            assertTrue(raw.contains("\r\nContent-Length: 6\r\n"));
+            org.junit.jupiter.api.Assertions.assertArrayEquals(body,
+                    raw.substring(raw.indexOf("\r\n\r\n") + 4).getBytes(StandardCharsets.ISO_8859_1));
+        }
     }
 
     @Test

@@ -2,6 +2,7 @@ package dev.nquangit.corestra.ui.flowise;
 
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
+import dev.nquangit.corestra.flow.execution.FlowEngine;
 import dev.nquangit.corestra.flow.control.ConditionMatchPolicy;
 import dev.nquangit.corestra.flow.control.ConditionValueSource;
 import dev.nquangit.corestra.flow.control.StepAction;
@@ -11,6 +12,7 @@ import dev.nquangit.corestra.flow.control.StepConditionActionRule;
 import dev.nquangit.corestra.flow.control.StepConditionOperator;
 import dev.nquangit.corestra.flow.control.StepConditionSource;
 import dev.nquangit.corestra.ui.component.StyledButton;
+import dev.nquangit.corestra.ui.component.WrappedText;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -36,6 +38,7 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -215,20 +218,21 @@ public final class ConditionActionPanel extends JPanel {
                 List<FlowDefinition> flows) {
             RuleDialog editor = new RuleDialog(initial, flows);
             JPanel panel = editor.panel();
-            int choice = JOptionPane.showConfirmDialog(
-                    parent,
-                    panel,
-                    initial == null ? "Add Condition & Actions" : "Edit Condition & Actions",
-                    JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.PLAIN_MESSAGE);
-            if (choice != JOptionPane.OK_OPTION) {
-                return Optional.empty();
-            }
-            try {
-                return Optional.of(editor.toRule());
-            } catch (IllegalArgumentException exception) {
-                JOptionPane.showMessageDialog(parent, exception.getMessage(), "Invalid Rule", JOptionPane.ERROR_MESSAGE);
-                return Optional.empty();
+            while (true) {
+                int choice = JOptionPane.showConfirmDialog(
+                        parent,
+                        panel,
+                        initial == null ? "Add Condition & Actions" : "Edit Condition & Actions",
+                        JOptionPane.OK_CANCEL_OPTION,
+                        JOptionPane.PLAIN_MESSAGE);
+                if (choice != JOptionPane.OK_OPTION) {
+                    return Optional.empty();
+                }
+                try {
+                    return Optional.of(editor.toRule());
+                } catch (IllegalArgumentException exception) {
+                    JOptionPane.showMessageDialog(parent, exception.getMessage(), "Invalid Rule", JOptionPane.ERROR_MESSAGE);
+                }
             }
         }
 
@@ -256,6 +260,9 @@ public final class ConditionActionPanel extends JPanel {
             panel.setPreferredSize(new Dimension(860, 560));
             panel.add(top, BorderLayout.NORTH);
             panel.add(tabs, BorderLayout.CENTER);
+            panel.add(new WrappedText("Match: ALL = every enabled condition (AND); ANY = at least one (OR). "
+                    + "For HTTP 403 or 429, use one RESPONSE_STATUS / IN / STATIC / 403,429 condition, "
+                    + "or two EQUALS conditions with ANY."), BorderLayout.SOUTH);
             return panel;
         }
 
@@ -264,12 +271,14 @@ public final class ConditionActionPanel extends JPanel {
             if (trimmedName.isBlank()) {
                 throw new IllegalArgumentException("Rule name must not be blank");
             }
+            List<StepCondition> configuredConditions = conditions.conditions();
+            if (enabled.isSelected()) validateConditions((ConditionMatchPolicy) matchPolicy.getSelectedItem(), configuredConditions);
             return new StepConditionActionRule(
                     id,
                     trimmedName,
                     enabled.isSelected(),
                     (ConditionMatchPolicy) matchPolicy.getSelectedItem(),
-                    conditions.conditions(),
+                    configuredConditions,
                     actions.actions());
         }
 
@@ -309,6 +318,11 @@ public final class ConditionActionPanel extends JPanel {
             table.getColumnModel().getColumn(4).setCellEditor(new DefaultCellEditor(new JComboBox<>(ConditionValueSource.values())));
             hideIdColumn(table, 8);
             setConditions(conditions);
+            add(new WrappedText("EXECUTION_FAILURE / EQUALS / true matches failed execution, not HTTP 403/429. "
+                    + "FAILURE_TYPE can match TIMEOUT, CONNECTION_ERROR, CONNECTION_REFUSED, DNS_ERROR, TLS_ERROR, "
+                    + "NO_RESPONSE or TRANSPORT_ERROR (use IN for a list). ERROR_MESSAGE supports text/regex checks. "
+                    + "RESPONSE_STATUS / NOT_EXISTS means no HTTP response. Use Match = ANY for HTTP status OR execution failure. "
+                    + "Input, session binding and cancellation errors remain terminal."), BorderLayout.NORTH);
             add(new JScrollPane(table), BorderLayout.CENTER);
             add(buttonBar(), BorderLayout.SOUTH);
         }
@@ -402,10 +416,11 @@ public final class ConditionActionPanel extends JPanel {
         }
     }
 
-    private static final class ActionTable extends JPanel {
+    static final class ActionTable extends JPanel {
         private static final String[] COLUMNS = {"Enabled", "Type", "Parameter", "Id"};
 
         private final List<FlowOption> flowOptions;
+        private final Map<String, StepAction> originalActions = new LinkedHashMap<>();
         private final DefaultTableModel model = new DefaultTableModel(COLUMNS, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -419,25 +434,24 @@ public final class ConditionActionPanel extends JPanel {
 
             @Override
             public void setValueAt(Object aValue, int row, int column) {
+                StepActionType before = enumValue(row, 1, StepActionType.class, StepActionType.BREAK_FLOW);
                 super.setValueAt(aValue, row, column);
                 if (column == 1) {
                     StepActionType type = enumValue(row, 1, StepActionType.class, StepActionType.BREAK_FLOW);
-                    if (!parametersEditable(row)) {
-                        super.setValueAt("", row, 2);
-                    } else if (type == StepActionType.TRIGGER_FLOW
-                            && Objects.toString(getValueAt(row, 2), "").isBlank()
-                            && !flowOptions.isEmpty()) {
-                        super.setValueAt(flowOptions.getFirst(), row, 2);
-                    } else if (type == StepActionType.SLEEP
-                            && Objects.toString(getValueAt(row, 2), "").isBlank()) {
-                        super.setValueAt("1", row, 2);
+                    if (type != before) {
+                        super.setValueAt(switch (type) {
+                            case BREAK_FLOW -> "";
+                            case SLEEP -> "1";
+                            case RETRY_CURRENT_STEP, RETRY_FLOW_FROM_START -> Integer.toString(FlowEngine.DEFAULT_RETRY_LIMIT);
+                            case TRIGGER_FLOW -> flowOptions.isEmpty() ? "" : flowOptions.getFirst();
+                        }, row, 2);
                     }
                 }
             }
         };
         private final JTable table;
 
-        private ActionTable(List<StepAction> actions, List<FlowDefinition> flows) {
+        ActionTable(List<StepAction> actions, List<FlowDefinition> flows) {
             super(new BorderLayout());
             this.flowOptions = flowOptions(flows);
             this.table = new ActionJTable(model, flowOptions);
@@ -446,6 +460,10 @@ public final class ConditionActionPanel extends JPanel {
             table.getColumnModel().getColumn(1).setCellEditor(new DefaultCellEditor(new JComboBox<>(StepActionType.values())));
             hideIdColumn(table, 3);
             setActions(actions);
+            add(new WrappedText("Parameter: Sleep = seconds (0–" + FlowEngine.MAX_SLEEP_SECONDS
+                    + "); Retry = additional attempts (0–" + FlowEngine.MAX_RETRY_LIMIT + ", default "
+                    + FlowEngine.DEFAULT_RETRY_LIMIT + "); Trigger flow = selected flow. "
+                    + "Actions run top to bottom: place Sleep before Retry. Exhausted retries stop the flow."), BorderLayout.NORTH);
             add(new JScrollPane(table), BorderLayout.CENTER);
             add(buttonBar(), BorderLayout.SOUTH);
         }
@@ -487,7 +505,9 @@ public final class ConditionActionPanel extends JPanel {
 
         private void setActions(List<StepAction> actions) {
             model.setRowCount(0);
+            originalActions.clear();
             for (StepAction action : actions) {
+                originalActions.put(action.id(), action);
                 model.addRow(new Object[]{
                         action.enabled(),
                         action.type(),
@@ -496,24 +516,29 @@ public final class ConditionActionPanel extends JPanel {
             }
         }
 
-        private List<StepAction> actions() {
+        List<StepAction> actions() {
             stopEditing(table);
             List<StepAction> actions = new ArrayList<>();
             for (int row = 0; row < model.getRowCount(); row++) {
                 StepActionType type = enumValue(row, 1, StepActionType.class, StepActionType.BREAK_FLOW);
+                String id = text(row, 3, UUID.randomUUID().toString());
+                StepAction original = originalActions.get(id);
+                Map<String, String> parameters = new LinkedHashMap<>();
+                if (original != null && original.type() == type) parameters.putAll(original.parameters());
+                parameters.putAll(parametersFor(type, model.getValueAt(row, 2)));
                 actions.add(new StepAction(
-                        text(row, 3, UUID.randomUUID().toString()),
-                        actionName(type),
+                        id,
+                        original != null && original.type() == type ? original.name() : actionName(type),
                         bool(row, 0),
                         type,
-                        parametersFor(type, model.getValueAt(row, 2))));
+                        parameters));
             }
             return actions;
         }
 
         private boolean parametersEditable(int row) {
             StepActionType type = enumValue(row, 1, StepActionType.class, StepActionType.BREAK_FLOW);
-            return type == StepActionType.SLEEP || type == StepActionType.TRIGGER_FLOW;
+            return type != StepActionType.BREAK_FLOW;
         }
 
         private void moveSelected(int direction) {
@@ -624,7 +649,8 @@ public final class ConditionActionPanel extends JPanel {
         return switch (action.type()) {
             case SLEEP -> action.parameters().getOrDefault("seconds", "1");
             case TRIGGER_FLOW -> action.parameters().getOrDefault("flowId", "");
-            case BREAK_FLOW, RETRY_CURRENT_STEP, RETRY_FLOW_FROM_START -> "";
+            case RETRY_CURRENT_STEP, RETRY_FLOW_FROM_START -> action.parameters().getOrDefault("maxAttempts", Integer.toString(FlowEngine.DEFAULT_RETRY_LIMIT));
+            case BREAK_FLOW -> "";
         };
     }
 
@@ -632,14 +658,43 @@ public final class ConditionActionPanel extends JPanel {
         String text = value instanceof FlowOption option
                 ? option.id()
                 : Objects.toString(value, "").strip();
-        if (text.isBlank()) {
-            return Map.of();
-        }
         return switch (type) {
-            case SLEEP -> Map.of("seconds", text);
+            case SLEEP -> Map.of("seconds", boundedInteger(text, FlowEngine.MAX_SLEEP_SECONDS, "Sleep seconds"));
+            case RETRY_CURRENT_STEP, RETRY_FLOW_FROM_START -> Map.of("maxAttempts",
+                    boundedInteger(text, FlowEngine.MAX_RETRY_LIMIT, "Additional retry attempts"));
             case TRIGGER_FLOW -> Map.of("flowId", text);
-            case BREAK_FLOW, RETRY_CURRENT_STEP, RETRY_FLOW_FROM_START -> Map.of();
+            case BREAK_FLOW -> Map.of();
         };
+    }
+
+    private static String boundedInteger(String text, long maximum, String label) {
+        try {
+            long value = Long.parseLong(text);
+            if (value >= 0 && value <= maximum) return Long.toString(value);
+        } catch (NumberFormatException ignored) { }
+        throw new IllegalArgumentException(label + " must be a whole number between 0 and " + maximum);
+    }
+
+    static void validateConditions(ConditionMatchPolicy policy, List<StepCondition> conditions) {
+        var statusEquals = new java.util.LinkedHashSet<String>();
+        for (StepCondition condition : conditions) {
+            if (!condition.enabled() || condition.source() != StepConditionSource.RESPONSE_STATUS
+                    || condition.expectedValueSource() != ConditionValueSource.STATIC) continue;
+            String expected = condition.expectedValue().strip();
+            if (condition.operator() == StepConditionOperator.EQUALS) {
+                if (expected.contains(",") || expected.contains("|")) {
+                    throw new IllegalArgumentException("Response status EQUALS accepts one code. For 403 or 429, use IN with 403,429, or separate EQUALS conditions with Match = ANY.");
+                }
+                if (!condition.negate() && expected.matches("[0-9]{3}")) statusEquals.add(expected);
+            }
+            if (condition.operator() == StepConditionOperator.IN && !expected.matches("[0-9]{3}(\\s*,\\s*[0-9]{3})*")) {
+                throw new IllegalArgumentException("Response status IN uses comma-separated codes, for example 403,429.");
+            }
+        }
+        if (policy == ConditionMatchPolicy.ALL && statusEquals.size() > 1) {
+            throw new IllegalArgumentException("ALL cannot match different response status codes at once (" + String.join(", ", statusEquals)
+                    + "). Choose ANY, or use one IN condition with comma-separated codes.");
+        }
     }
 
     private static List<FlowOption> flowOptions(List<FlowDefinition> flows) {

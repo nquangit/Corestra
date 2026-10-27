@@ -13,6 +13,7 @@ import dev.nquangit.corestra.flow.StoredRequestTemplate;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.integration.HttpClient;
+import dev.nquangit.corestra.integration.ManualTestMessages;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -49,10 +50,17 @@ public final class TestFlowEngineFactory {
                     String requestLine,
                     List<String> headers,
                     String body) {
-                return new StubHttpRequest();
+                return storedRequest(template, requestLine, headers, body);
             }
         };
         return new FlowEngine(testStepExecutor, httpClient);
+    }
+
+    /** Provides a faithful native snapshot for tests that bypass the production Montoya bridge. */
+    static HttpRequest storedRequest(StoredRequestTemplate template, String line, List<String> headers, String body) {
+        return ManualTestMessages.parse(ManualTestMessages.service(template.host(), template.port(),
+                "https".equalsIgnoreCase(template.scheme())), line + "\r\n"
+                + String.join("\r\n", headers) + (headers.isEmpty() ? "\r\n" : "\r\n\r\n") + body);
     }
 
     /** Minimal stub that satisfies the {@link HttpRequest} interface without Burp. */

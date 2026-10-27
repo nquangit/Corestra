@@ -56,6 +56,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private final StepListPanel steps;
     private final JLayer<JPanel> stepLayer;
     private final JCheckBox keepVariables = new JCheckBox("Keep variables when changing session");
+    private final JCheckBox applyInjectRules = new JCheckBox("Apply inject rules for this request", true);
 
     /** Creates the dedicated manual workspace from shared runtime services. */
     public ManualTestingPanel(FlowWorkspaceController controller, FlowWorkspaceController source, ManualTestRunner runner,
@@ -99,8 +100,14 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         details.addTab("Variables", variablePanel());
         JPanel rules = new JPanel(new BorderLayout());
         JPanel ruleControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        ruleControls.add(new JLabel("Retained inject rules run after the editable template."));
-        ruleControls.add(button("Disable injects for this request", this::disableInjects));
+        applyInjectRules.setName("manualApplyInjectRules");
+        applyInjectRules.setToolTipText("Temporarily skip retained inject rules without changing their Enabled flags. Inline templates, extractors and session injection are separate.");
+        applyInjectRules.addActionListener(e -> {
+            try { toggleInjectRules(); }
+            catch (RuntimeException invalid) { refreshInjectionGate(); error(invalid); }
+        });
+        ruleControls.add(applyInjectRules);
+        ruleControls.add(new JLabel("Enabled rules run after the editable template when checked."));
         rules.add(ruleControls, BorderLayout.NORTH);
         rules.add(new RuleSummaryPanel(controller, Optional::empty, access, () -> ResponseExtractionDialog.available(response.getResponse())), BorderLayout.CENTER);
         details.addTab("Extract / Inject Rules", rules);
@@ -212,7 +219,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         var f = controller.activeFlow(); var s = controller.selectedStep(); if (f == null || s == null || !commitDisplayed(true)) return;
         f = controller.activeFlow(); s = controller.selectedStep();
         var clone = new FlowStep(UUID.randomUUID().toString(), s.name() + " (copy)", s.enabled(), s.notes(), s.requestTemplate(), s.extractRules(), s.injectRules(),
-                s.preconditions(), s.errorStrategy(), null, StepTriggerRule.disabled(), s.includeInAggregation(), s.conditionActionRules(), s.sendModeOverride());
+                s.preconditions(), s.errorStrategy(), null, StepTriggerRule.disabled(), s.includeInAggregation(), s.conditionActionRules(), s.sendModeOverride(), s.manualInjectRulesEnabled());
         List<FlowStep> list = new ArrayList<>(f.steps()); list.add(list.indexOf(s) + 1, clone); updateSteps(f, list); controller.setSelectedStep(clone);
     }
     private void removeRequest() {
@@ -323,6 +330,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
                 request.setRequest(HttpRequest.httpRequest(ManualRequestCodec.format(selected.requestTemplate())));
                 displayedTemplate = selected.requestTemplate(); name.setText(selected.name()); target.setText(ManualRequestCodec.origin(displayedTemplate));
             } else if (!name.getText().equals(selected.name())) name.setText(selected.name());
+            refreshInjectionGate();
             drafts.removeAllItems(); for (var f : controller.flows()) { var item = new FlowItem(f.id(), f.name()); drafts.addItem(item); if (f.id().equals(nextFlow)) drafts.setSelectedItem(item); }
             var ids = controller.flows().stream().map(FlowDefinition::id).toList(); states.keySet().retainAll(ids); resetAt.keySet().retainAll(ids); progressByFlow.keySet().retainAll(ids);
             showProgress();
@@ -350,15 +358,27 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
         suggestedVariables.removeAllItems(); keys.forEach(suggestedVariables::addItem); if (keys.contains(old)) suggestedVariables.setSelectedItem(old);
     }
 
-    private void disableInjects() {
-        if (!commitDisplayed(true)) return;
-        var flow = controller.activeFlow(); var step = controller.selectedStep(); if (flow == null || step == null) return;
-        var rules = step.injectRules().stream().map(r -> new dev.nquangit.corestra.flow.rule.InjectRule(r.id(), r.name(), false,
-                r.target(), r.targetSelector(), r.valueSourceType(), r.valueSourceKey(), r.staticValue(), r.writeStrategy(),
-                r.transformChain(), r.ruleType(), r.interactiveInput())).toList();
-        var updated = step.withInjectRules(rules);
+    private void toggleInjectRules() {
+        if (refreshing || closed) return;
+        if (running) { refreshInjectionGate(); return; }
+        boolean apply = applyInjectRules.isSelected();
+        if (!commitDisplayed(true)) { refreshInjectionGate(); return; }
+        var flow = controller.activeFlow(); var step = controller.selectedStep();
+        if (flow == null || step == null || !Objects.equals(displayedFlow, flow.id())
+                || !Objects.equals(displayedStep, step.id()) || !flow.hasStep(step.id())) {
+            refreshInjectionGate(); return;
+        }
+        var updated = step.withManualInjectRulesEnabled(apply);
         updateSteps(flow, flow.steps().stream().map(s -> s.id().equals(step.id()) ? updated : s).toList());
-        status("Inject rules disabled for this manual request; inline templates and extractors remain active. Session injection still follows the selected mode.");
+        status(apply ? "Inject rules restored for this manual request; only individually enabled rules will run."
+                : "Inject rules paused for this manual request; individual Enabled flags are preserved. Inline templates, extractors and session injection remain active.");
+    }
+
+    private void refreshInjectionGate() {
+        var flow = controller.activeFlow(); var step = controller.selectedStep();
+        boolean valid = flow != null && step != null && flow.hasStep(step.id());
+        applyInjectRules.setSelected(!valid || step.manualInjectRulesEnabled());
+        applyInjectRules.setEnabled(valid && !running && !closed);
     }
 
     private void showVariables(Map<String, String> values) { variables.setRowCount(0); values.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> variables.addRow(new String[]{e.getKey(), e.getValue()})); }
@@ -418,6 +438,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private void setRunning(boolean value) {
         running = value; idleButtons.forEach(b -> b.setEnabled(!value)); drafts.setEnabled(!value); session.setEnabled(!value); tool.setEnabled(!value); origins.setEnabled(!value);
         name.setEnabled(!value); target.setEnabled(!value); variableTable.setEnabled(!value); stepLayer.getGlassPane().setVisible(value); keepVariables.setEnabled(!value); stop.setEnabled(value);
+        refreshInjectionGate();
         showProgress();
         // Editing the native template is allowed while a run uses its immutable snapshot; it is saved before the next run.
     }
@@ -437,7 +458,7 @@ public final class ManualTestingPanel extends JPanel implements AutoCloseable {
     private void error(RuntimeException e) { status(e.getMessage()); JOptionPane.showMessageDialog(this, e.getMessage(), "Manual Testing", JOptionPane.ERROR_MESSAGE); }
     @Override public void close() {
         closed = true; cancelled.set(true); Thread active = activeThread.get(); if (active != null) active.interrupt(); executor.shutdownNow();
-        Runnable cleanup = () -> { states.clear(); progressByFlow.clear(); log.clear(); status("Manual Testing closed"); };
+        Runnable cleanup = () -> { states.clear(); progressByFlow.clear(); log.clear(); refreshInjectionGate(); status("Manual Testing closed"); };
         if (SwingUtilities.isEventDispatchThread()) cleanup.run(); else SwingUtilities.invokeLater(cleanup);
     }
     private void showProgress() {

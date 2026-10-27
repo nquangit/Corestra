@@ -20,6 +20,8 @@ import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.integration.HttpClient;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -112,6 +114,41 @@ class FlowEngineConditionActionTest {
 
         assertTrue(result.success());
         assertEquals(List.of(2_000L), sleeps);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = StepActionType.class, names = {"RETRY_CURRENT_STEP", "RETRY_FLOW_FROM_START"})
+    void exhaustedRetryFailsInsteadOfAdvancingWithTheLast403(StepActionType type) {
+        QueueStepExecutor executor = new QueueStepExecutor();
+        for (int i = 0; i < 3; i++) executor.add("first", record("first", 403, Map.of()));
+        var first = step("first").withConditionActionRules(List.of(rule(
+                action(type, Map.of("maxAttempts", "2")), statusCondition("403"))));
+        var result = engine(executor).execute(flow("flow", first, step("target")), context("flow"));
+
+        assertFalse(result.success());
+        assertEquals(List.of("first", "first", "first"), executor.executedSteps());
+        assertTrue(result.failureMessage().contains("limit reached (2)"), result.failureMessage());
+        assertTrue(result.failureMessage().contains("403"));
+        assertEquals(StepActionStatus.FAILED, result.actionRecords().getLast().status());
+        assertEquals(403, result.stepRecords().getLast().responseStatusCode());
+    }
+
+    @Test void interruptDuringBackoffStopsWithoutRetryOrTarget() {
+        QueueStepExecutor executor = new QueueStepExecutor();
+        executor.add("first", record("first", 403, Map.of()));
+        var retry = rule(action(StepActionType.RETRY_FLOW_FROM_START, Map.of("maxAttempts", "2")), statusCondition("403"));
+        var recovery = new StepConditionActionRule("recover", "Recover", true, ConditionMatchPolicy.ALL,
+                retry.conditions(), List.of(action(StepActionType.SLEEP, Map.of("seconds", "10")), retry.actions().getFirst()));
+        try {
+            var result = engine(executor, id -> Optional.empty(), millis -> { throw new InterruptedException(); })
+                    .execute(flow("flow", step("first").withConditionActionRules(List.of(recovery)), step("target")), context("flow"));
+            assertFalse(result.success());
+            assertTrue(result.failureMessage().contains("Sleep interrupted"));
+            assertEquals(List.of("first"), executor.executedSteps());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
     }
 
     @Test

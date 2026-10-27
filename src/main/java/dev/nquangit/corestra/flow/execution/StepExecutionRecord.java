@@ -22,6 +22,7 @@ public final class StepExecutionRecord {
     private final long startedAtEpochMillis;
     private final long completedAtEpochMillis;
     private final Map<String, String> extractedVariables;
+    private final ExecutionFailureType failureType;
 
     /**
      * Creates a step execution record.
@@ -36,7 +37,6 @@ public final class StepExecutionRecord {
      * @param completedAtEpochMillis the step completion timestamp in epoch milliseconds
      * @param extractedVariables the variables extracted during the step execution
      */
-    @JsonCreator
     public StepExecutionRecord(
             @JsonProperty("stepId") String stepId,
             @JsonProperty("renderedRequest") String renderedRequest,
@@ -47,6 +47,23 @@ public final class StepExecutionRecord {
             @JsonProperty("startedAtEpochMillis") long startedAtEpochMillis,
             @JsonProperty("completedAtEpochMillis") long completedAtEpochMillis,
             @JsonProperty("extractedVariables") Map<String, String> extractedVariables) {
+        this(stepId, renderedRequest, receivedResponse, responseStatusCode, success, errorMessage,
+                startedAtEpochMillis, completedAtEpochMillis, extractedVariables, null);
+    }
+
+    /** Restores a step outcome; old records without a category remain UNKNOWN on failure. */
+    @JsonCreator
+    public StepExecutionRecord(
+            @JsonProperty("stepId") String stepId,
+            @JsonProperty("renderedRequest") String renderedRequest,
+            @JsonProperty("receivedResponse") String receivedResponse,
+            @JsonProperty("responseStatusCode") int responseStatusCode,
+            @JsonProperty("success") boolean success,
+            @JsonProperty("errorMessage") String errorMessage,
+            @JsonProperty("startedAtEpochMillis") long startedAtEpochMillis,
+            @JsonProperty("completedAtEpochMillis") long completedAtEpochMillis,
+            @JsonProperty("extractedVariables") Map<String, String> extractedVariables,
+            @JsonProperty("failureType") ExecutionFailureType failureType) {
         this.stepId = normalizeRequiredText(stepId, "stepId");
         this.renderedRequest = renderedRequest == null ? "" : renderedRequest;
         this.receivedResponse = receivedResponse == null ? "" : receivedResponse;
@@ -56,7 +73,12 @@ public final class StepExecutionRecord {
         this.startedAtEpochMillis = validateEpochMillis(startedAtEpochMillis, "startedAtEpochMillis");
         this.completedAtEpochMillis = validateCompletedMillis(completedAtEpochMillis, this.startedAtEpochMillis);
         this.extractedVariables = copyStringMap(extractedVariables);
+        this.failureType = success ? ExecutionFailureType.NONE
+                : failureType == null || failureType == ExecutionFailureType.NONE ? ExecutionFailureType.UNKNOWN : failureType;
     }
+
+    /** Returns the execution failure category; HTTP 403/429 alone are NONE. */
+    public ExecutionFailureType failureType() { return failureType; }
 
     /**
      * Returns the executed step identifier.
@@ -161,6 +183,7 @@ public final class StepExecutionRecord {
                 && Objects.equals(renderedRequest, that.renderedRequest)
                 && Objects.equals(receivedResponse, that.receivedResponse)
                 && Objects.equals(errorMessage, that.errorMessage)
+                && failureType == that.failureType
                 && Objects.equals(extractedVariables, that.extractedVariables);
     }
 
@@ -171,7 +194,7 @@ public final class StepExecutionRecord {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(stepId, renderedRequest, receivedResponse, responseStatusCode, success, errorMessage, startedAtEpochMillis, completedAtEpochMillis, extractedVariables);
+        return Objects.hash(stepId, renderedRequest, receivedResponse, responseStatusCode, success, errorMessage, startedAtEpochMillis, completedAtEpochMillis, extractedVariables, failureType);
     }
 
     /**

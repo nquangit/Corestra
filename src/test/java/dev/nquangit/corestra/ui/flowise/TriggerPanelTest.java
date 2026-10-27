@@ -24,6 +24,31 @@ import static org.junit.jupiter.api.Assertions.*;
 @ResourceLock("MontoyaObjectFactory")
 @ResourceLock("CorestraPromptDialogs")
 class TriggerPanelTest {
+    @Test void extensionsAreExplicitAndClearingEveryToolDoesNotTurnAllToolsBackOn() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            FlowisePerformanceTest.store = new java.util.concurrent.ConcurrentHashMap<>();
+            var controller = new FlowWorkspaceController(new FlowRepository(FlowisePerformanceTest.persistence(), new FlowSerializer(), new PersistenceMigrationService()));
+            var flow = FlowisePerformanceTest.flow("tools");
+            controller.addFlow(flow); controller.setActiveFlow(flow); controller.setSelectedStep(flow.steps().getFirst());
+            var panel = new TriggerPanel(controller);
+            var extensions = findCheckbox(panel, "Extensions / Extender");
+            assertNotNull(extensions); assertFalse(extensions.isSelected());
+            findCheckbox(panel, "Enable auto-trigger for this step").doClick();
+            assertTrue(controller.selectedStep().triggerRule().allowedToolTypes().isEmpty(),
+                    "Editing a legacy all-ordinary-tools filter must preserve its scope");
+            extensions.doClick();
+            assertTrue(controller.selectedStep().triggerRule().allowedToolTypes().contains("EXTENSIONS"));
+            String saved = new FlowSerializer().serialize(controller.flows());
+            assertTrue(new FlowSerializer().deserialize(saved).getFirst().steps().getFirst().triggerRule()
+                    .matches("EXTENSIONS", "host", "/", List.of(), ""));
+            for (String label : List.of("Proxy", "Repeater", "Scanner", "Intruder", "Target", "Logger", "Extensions / Extender")) {
+                var box = findCheckbox(panel, label); if (box.isSelected()) box.doClick();
+            }
+            assertEquals(List.of(StepTriggerRule.NO_TOOLS), controller.selectedStep().triggerRule().allowedToolTypes());
+            assertFalse(controller.selectedStep().triggerRule().matches("SCANNER", "host", "/", List.of(), ""));
+            assertFalse(extensions.isSelected());
+        });
+    }
     @Test void reviewDialogsUsePlainWrappedGuidanceFitTheScreenAndKeepCancelAndApplyWorking() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeFalse(java.awt.GraphicsEnvironment.isHeadless());
         var controllerRef = new java.util.concurrent.atomic.AtomicReference<FlowWorkspaceController>();

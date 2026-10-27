@@ -71,7 +71,7 @@ public final class ManualTestRunner {
                 if (!records.isEmpty()) {
                     var r = records.getLast();
                     compact.put(key, List.of(new StepExecutionRecord(r.stepId(), "", "", r.responseStatusCode(), r.success(),
-                            r.errorMessage(), r.startedAtEpochMillis(), r.completedAtEpochMillis(), Map.of())));
+                            r.errorMessage(), r.startedAtEpochMillis(), r.completedAtEpochMillis(), Map.of(), r.failureType())));
                 }
             });
             return new Outcome(result, new State(finalContext.variables(), compact, active.binding(), options));

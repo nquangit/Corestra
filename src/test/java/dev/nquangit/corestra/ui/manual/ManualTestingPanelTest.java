@@ -122,6 +122,73 @@ class ManualTestingPanelTest {
     @Test void cleanupClearsOnlyManualConfigurationAndRuntime() throws Exception {
         SwingUtilities.invokeAndWait(()->{copy();panel.clearWorkspace();assertTrue(manualRepo.loadAll().isEmpty());assertEquals(1,source.flows().size());assertNull(manual.activeFlow());});
     }
+    @Test void requestInjectionGatePreservesRuleFlagsAndSurvivesSelectionDuplicationAndPersistence() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            var gate = field("applyInjectRules", JCheckBox.class);
+            assertFalse(gate.isEnabled());
+            copy(); installRetainedRules();
+            var rules = manual.selectedStep().injectRules();
+            String firstId = manual.selectedStep().id();
+            assertTrue(gate.isEnabled()); assertTrue(gate.isSelected());
+            edit("saved-before-toggle"); gate.doClick();
+            assertFalse(manual.selectedStep().manualInjectRulesEnabled());
+            assertEquals(rules, manual.selectedStep().injectRules());
+            assertEquals("saved-before-toggle", manual.selectedStep().requestTemplate().body());
+            assertFalse(manualRepo.loadAll().getFirst().steps().getFirst().manualInjectRulesEnabled());
+            manual.setSelectedStep(manual.activeFlow().steps().get(1)); assertTrue(gate.isSelected());
+            manual.setSelectedStep(manual.activeFlow().steps().getFirst()); assertFalse(gate.isSelected());
+            try {
+                Method duplicate = ManualTestingPanel.class.getDeclaredMethod("duplicateRequest"); duplicate.setAccessible(true); duplicate.invoke(panel);
+            } catch (Exception e) { throw new AssertionError(e); }
+            assertFalse(gate.isSelected()); assertFalse(manual.selectedStep().manualInjectRulesEnabled());
+            assertEquals(rules, manual.selectedStep().injectRules());
+            var savedFlow = manual.activeFlow();
+            panel.copyFrom(source.flows().getFirst()); assertTrue(gate.isSelected());
+            manual.setActiveFlow(savedFlow); manual.setSelectedStep(savedFlow.steps().stream().filter(s -> s.id().equals(firstId)).findFirst().orElseThrow());
+            assertFalse(gate.isSelected()); gate.doClick(); assertTrue(gate.isSelected());
+            assertEquals(List.of(true, false), manual.selectedStep().injectRules().stream().map(dev.nquangit.corestra.flow.rule.InjectRule::enabled).toList());
+            assertEquals(rules, manual.selectedStep().injectRules());
+            assertEquals("original", source.flows().getFirst().steps().getFirst().requestTemplate().body());
+            assertEquals(0, sends.get());
+        });
+    }
+
+    @Test void reversibleGateChangesActualRequestsAndCannotBeToggledDuringExecution() throws Exception {
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var last = new AtomicReference<HttpRequest>();
+        responder.set(request -> {
+            last.set(request); entered.countDown();
+            try { assertTrue(release.await(5, TimeUnit.SECONDS)); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
+            return ManualTestMessages.response("ok");
+        });
+        try {
+            SwingUtilities.invokeAndWait(() -> { copy(); installRetainedRules(); field("applyInjectRules", JCheckBox.class).doClick(); invokeRun(0); });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            SwingUtilities.invokeAndWait(() -> {
+                var gate = field("applyInjectRules", JCheckBox.class);
+                assertFalse(gate.isEnabled()); gate.doClick(); assertFalse(gate.isSelected());
+                assertFalse(manual.selectedStep().manualInjectRulesEnabled());
+            });
+            release.countDown(); waitIdle();
+            assertFalse(last.get().hasHeader("X-Active")); assertFalse(last.get().hasHeader("X-Disabled"));
+            SwingUtilities.invokeAndWait(() -> { assertTrue(field("applyInjectRules", JCheckBox.class).isEnabled()); field("applyInjectRules", JCheckBox.class).doClick(); invokeRun(0); });
+            waitIdle(); assertEquals("active-value", last.get().headerValue("X-Active")); assertFalse(last.get().hasHeader("X-Disabled"));
+            assertEquals(2, sends.get());
+        } finally { release.countDown(); }
+    }
+
+    private void installRetainedRules() {
+        var active = new dev.nquangit.corestra.flow.rule.InjectRule("active", "Active", true,
+                dev.nquangit.corestra.flow.rule.InjectRule.Target.REQUEST_HEADER, "X-Active",
+                dev.nquangit.corestra.flow.rule.InjectRule.ValueSourceType.STATIC, "", "active-value", null);
+        var disabled = new dev.nquangit.corestra.flow.rule.InjectRule("disabled", "Disabled", false,
+                dev.nquangit.corestra.flow.rule.InjectRule.Target.REQUEST_HEADER, "X-Disabled",
+                dev.nquangit.corestra.flow.rule.InjectRule.ValueSourceType.STATIC, "", "disabled-value", null);
+        var flow = manual.activeFlow(); var step = manual.selectedStep().withInjectRules(List.of(active, disabled));
+        manual.updateFlow(new FlowDefinition(flow.id(), flow.name(), flow.description(), flow.enabled(),
+                flow.steps().stream().map(s -> s.id().equals(step.id()) ? step : s).toList(), flow.rules(), flow.aggregation(), flow.triggerConfig()));
+    }
     @Test void fullHeightLogSwitchKeepsUnsavedRequestAndReusesNativeEditors() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             copy(); edit("unsaved-test-value");

@@ -1,6 +1,7 @@
 package dev.nquangit.corestra.bootstrap;
 
 import dev.nquangit.corestra.integration.SessionFlowBindingService;
+import dev.nquangit.corestra.integration.CorestraTrafficOrigin;
 import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.session.SessionSelectionService;
 import dev.nquangit.corestra.ui.interaction.SwingPromptService;
@@ -101,9 +102,12 @@ public final class CorestraBootstrap {
                 new SwingPromptService(promptOwner::get);
         InjectionService injectionService = new InjectionService(prompts);
         ProjectSettingsRepository settingsRepo = new ProjectSettingsRepository(api.persistence());
+        var trafficOrigin = new CorestraTrafficOrigin();
+        api.http().registerHttpHandler(trafficOrigin);
+        trafficOrigin.activate();
         HttpClient routingHttpClient = new RoutingHttpClient(
                 settingsRepo::load,
-                new MontoyaHttpClient(api),
+                new MontoyaHttpClient(api, trafficOrigin),
                 new ProxyPipelineHttpClient(settingsRepo::load));
 
         // Break the circular dependency (FlowEngine ↔ SessionManager) via a late-bound ref.
@@ -138,6 +142,7 @@ public final class CorestraBootstrap {
         accessFlowEngine.addExecutionListener(executionLog::record);
 
         ServiceRegistry registry = new ServiceRegistry(api, flowRepository, flowEngine);
+        registry.registerCloseable(trafficOrigin);
 
         // UI
         FlowWorkspaceController controller = new FlowWorkspaceController(flowRepository, flowEngine);
@@ -297,7 +302,7 @@ public final class CorestraBootstrap {
                     if (InteractionAbortedException.isAborted(result.failureMessage())) {
                         throw new InteractionAbortedException("Prerequisite interaction aborted");
                     }
-                }, new SessionHandlingFlowMapper()));
+                }, new SessionHandlingFlowMapper(), trafficOrigin));
 
         // Project-level Session Handler: scoped extraction/injection for live Burp/Corestra traffic.
         CorestraSessionHttpHandler sessionHttpHandler = new CorestraSessionHttpHandler(sessionManager, injectionService,
@@ -305,7 +310,7 @@ public final class CorestraBootstrap {
                         () -> settingsRepo.load().sessionSelection(), prompts), api.logging()::logToError, traffic -> controller.flows().stream().filter(FlowDefinition::enabled)
                         .flatMap(flow -> flow.steps().stream()).filter(FlowStep::enabled).map(FlowStep::triggerRule)
                         .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matches(traffic.toolTypeName(),
-                                traffic.host(), traffic.path(), traffic.headers(), traffic.body())));
+                                traffic.host(), traffic.path(), traffic.headers(), traffic.body())), trafficOrigin);
         registry.registerCloseable(sessionHttpHandler);
         api.http().registerHttpHandler(sessionHttpHandler);
 
@@ -321,7 +326,7 @@ public final class CorestraBootstrap {
         AutoTriggerHttpHandler autoTriggerHttpHandler = new AutoTriggerHttpHandler(
                 controller::flows, flowEngine, extractionService, injectionService, sessionBindings,
                 new dev.nquangit.corestra.integration.TriggerInputService(accessRepository::profileSnapshot, Clock.systemUTC()),
-                api.logging()::logToError);
+                api.logging()::logToError, trafficOrigin);
         registry.registerCloseable(autoTriggerHttpHandler);
         api.http().registerHttpHandler(autoTriggerHttpHandler);
 

@@ -38,9 +38,12 @@ import java.util.function.Consumer;
  * <p>Disabled steps are skipped and not recorded.
  */
 public final class FlowEngine {
-    private static final int DEFAULT_RETRY_LIMIT = 1;
-    private static final int MAX_RETRY_LIMIT = 10;
-    private static final long MAX_SLEEP_SECONDS = 300L;
+    /** Additional retries used when an action has no explicit maxAttempts parameter. */
+    public static final int DEFAULT_RETRY_LIMIT = 1;
+    /** Upper bound on additional retries for either retry action. */
+    public static final int MAX_RETRY_LIMIT = 10;
+    /** Upper bound on one sleep action, in seconds. */
+    public static final long MAX_SLEEP_SECONDS = 300L;
     private static final int MAX_TRIGGER_DEPTH = 5;
     private static final Consumer<StepExecutionProgress> NO_PROGRESS = ignored -> { };
 
@@ -210,12 +213,20 @@ public final class FlowEngine {
                     attempt, record.responseStatusCode(), record.errorMessage()));
             allRecords.add(record);
 
-            if (!record.success() && (InteractionAbortedException.isAborted(record.errorMessage())
+            if (!record.success() && (record.failureType() == ExecutionFailureType.CANCELLED
+                    || record.failureType() == ExecutionFailureType.SESSION_BINDING
+                    || record.failureType() == ExecutionFailureType.INPUT_ERROR
+                    || InteractionAbortedException.isAborted(record.errorMessage())
                     || SessionBindingException.isAborted(record.errorMessage())
                     || ("true".equals(currentContext.metadata().get(FlowInputValidator.REQUIRE_INPUTS))
                     && record.errorMessage().startsWith(FlowInputValidator.FAILURE_PREFIX)))) {
+                String reason = record.errorMessage();
+                if (reason.startsWith(FlowInputValidator.FAILURE_PREFIX)) {
+                    String dependencies = FlowInputDiagnostics.describe(flow, step, currentContext);
+                    if (!dependencies.isBlank()) reason += "; " + dependencies;
+                }
                 return ExecutionResult.failure(flow.id(), flow.name(), List.copyOf(allRecords),
-                        List.copyOf(actionRecords), "Step '" + step.id() + "' failed: " + record.errorMessage(),
+                        List.copyOf(actionRecords), "Step '" + step.name() + "' (" + step.id() + ") failed: " + reason,
                         complete(currentContext.withStepRecord(record)));
             }
 
@@ -405,12 +416,8 @@ public final class FlowEngine {
         String key = flow.id() + ":" + step.id() + ":" + action.id();
         int attempts = controlState.stepRetryCounts.getOrDefault(key, 0);
         if (attempts >= maxAttempts) {
-            return new ActionOutcome(
-                    ActionControl.NONE,
-                    currentContext,
-                    List.of(record(flow, step, rule, action, StepActionStatus.FAILED,
-                            "Retry current step limit reached (" + maxAttempts + ")")),
-                    "");
+            return failed(flow, step, rule, action, currentContext,
+                    "Retry current step limit reached (" + maxAttempts + "); " + latestOutcome(currentContext, step));
         }
         controlState.stepRetryCounts.put(key, attempts + 1);
         return completed(flow, step, rule, action, beforeStepContext, ActionControl.RETRY_CURRENT_STEP,
@@ -429,12 +436,8 @@ public final class FlowEngine {
         String key = flow.id() + ":" + action.id();
         int attempts = controlState.flowRetryCounts.getOrDefault(key, 0);
         if (attempts >= maxAttempts) {
-            return new ActionOutcome(
-                    ActionControl.NONE,
-                    currentContext,
-                    List.of(record(flow, step, rule, action, StepActionStatus.FAILED,
-                            "Retry flow limit reached (" + maxAttempts + ")")),
-                    "");
+            return failed(flow, step, rule, action, currentContext,
+                    "Retry flow limit reached (" + maxAttempts + "); " + latestOutcome(currentContext, step));
         }
         controlState.flowRetryCounts.put(key, attempts + 1);
         return completed(flow, step, rule, action, initialContext, ActionControl.RETRY_FLOW_FROM_START,
@@ -558,6 +561,14 @@ public final class FlowEngine {
             return DEFAULT_RETRY_LIMIT;
         }
         return (int) Math.min(value, MAX_RETRY_LIMIT);
+    }
+
+    private String latestOutcome(ExecutionContext context, FlowStep step) {
+        var history = context.stepHistory().get(step.id());
+        if (history == null || history.isEmpty()) return "no recorded step outcome";
+        var latest = history.getLast();
+        return latest.responseStatusCode() > 0 ? "last response status: " + latest.responseStatusCode()
+                : "no HTTP response; execution failure: " + latest.failureType();
     }
 
     private Optional<Long> longParameter(StepAction action, String key) {

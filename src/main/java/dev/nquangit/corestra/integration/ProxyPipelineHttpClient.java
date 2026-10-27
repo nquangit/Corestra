@@ -87,7 +87,8 @@ public final class ProxyPipelineHttpClient implements HttpClient {
                     ? sendHttps(request, settings)
                     : sendHttp(request, settings);
             if (rawResponse.isBlank()) {
-                throw new IOException("empty response from proxy pipeline");
+                throw new HttpTransportException(dev.nquangit.corestra.flow.execution.ExecutionFailureType.NO_RESPONSE,
+                        "empty response from proxy pipeline", null);
             }
             return responseFactory.apply(rawResponse);
         } catch (Exception exception) {
@@ -96,7 +97,7 @@ public final class ProxyPipelineHttpClient implements HttpClient {
             String detail = exception.getMessage() == null || exception.getMessage().isBlank()
                     ? exception.getClass().getSimpleName()
                     : exception.getMessage();
-            throw new IllegalStateException(
+            throw new HttpTransportException(HttpTransportException.classify(exception),
                     "Proxy pipeline send failed via " + settings.proxyHost() + ":" + settings.proxyPort()
                             + " to " + target + ": " + detail,
                     exception);
@@ -168,14 +169,18 @@ public final class ProxyPipelineHttpClient implements HttpClient {
                 .append(httpVersion(request)).append("\r\n");
         builder.append("Host: ").append(hostHeader(request.httpService())).append("\r\n");
         builder.append(MARKER_HEADER).append(": ").append(UUID.randomUUID()).append("\r\n");
+        boolean hadContentLength = false;
         for (HttpHeader header : safeHeaders(request)) {
             String name = header.name();
+            if ("Content-Length".equalsIgnoreCase(name)) {
+                hadContentLength = true;
+            }
             if (isSkippedHeader(name)) {
                 continue;
             }
             builder.append(name).append(": ").append(header.value()).append("\r\n");
         }
-        if (body.length > 0) {
+        if (body.length > 0 || hadContentLength) {
             builder.append("Content-Length: ").append(body.length).append("\r\n");
         }
         builder.append("Connection: close\r\n\r\n");
@@ -253,6 +258,7 @@ public final class ProxyPipelineHttpClient implements HttpClient {
                 || normalized.equals("connection")
                 || normalized.equals("proxy-connection")
                 || normalized.equals("content-length")
+                || normalized.equals(CorestraTrafficOrigin.HEADER.toLowerCase(Locale.ROOT))
                 || normalized.equals(MARKER_HEADER.toLowerCase(Locale.ROOT));
     }
 

@@ -4,6 +4,12 @@ package dev.nquangit.corestra.flow.control;
  * Identifies the value source inspected by a step condition.
  */
 public enum StepConditionSource {
+    /** True when the step failed to execute, independently of HTTP status codes. */
+    EXECUTION_FAILURE,
+    /** Stable category such as TIMEOUT, NO_RESPONSE, or TRANSPORT_ERROR. */
+    FAILURE_TYPE,
+    /** The diagnostic from a failed step; empty on success. */
+    ERROR_MESSAGE,
     /**
      * Reads the HTTP status code from the step response.
      */

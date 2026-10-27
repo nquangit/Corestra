@@ -60,7 +60,7 @@ class FlowEngineTest {
                     java.util.List<String> headers,
                     String body) {
                 // Return a no-op stub — the fake HttpClient ignores it anyway
-                return new StubHttpRequest();
+                return TestFlowEngineFactory.storedRequest(template, requestLine, headers, body);
             }
         };
         return new FlowEngine(testStepExecutor, client);

@@ -257,7 +257,7 @@ class AuthFlowInputSafetyTest {
                 HttpRequest buildMontoyaRequest(StoredRequestTemplate template, String line, List<String> headers, String body) {
                     sentLines.add(line);
                     sentBodies.add(body);
-                    return proxy(HttpRequest.class, (method, args) -> null);
+                    return TestFlowEngineFactory.storedRequest(template, line, headers, body);
                 }
             };
             FlowEngine engine = new FlowEngine(executor, request -> response(),

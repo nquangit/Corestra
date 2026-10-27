@@ -121,7 +121,7 @@ public final class FlowExportSanitizer {
                 null,
                 step.triggerRule(),
                 step.includeInAggregation(),
-                step.conditionActionRules(), step.sendModeOverride());
+                step.conditionActionRules(), step.sendModeOverride(), step.manualInjectRulesEnabled());
     }
 
     private InjectRule sanitizeInjectRule(InjectRule rule, boolean excludeSecrets) {

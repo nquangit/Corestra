@@ -26,11 +26,14 @@ import java.util.regex.PatternSyntaxException;
  * </ol>
  *
  * <p>An empty {@link #criteria()} list means "match all requests". An empty
- * {@link #allowedToolTypes()} list means "all tools". Each criterion is AND-ed.
+ * {@link #allowedToolTypes()} list means "all ordinary tools"; Extensions requires
+ * an explicit EXTENSIONS/EXTENDER entry. Each criterion is AND-ed.
  */
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 @JsonIgnoreProperties(ignoreUnknown = true)
 public final class StepTriggerRule {
+    /** Explicit empty selection; an absent/empty legacy list still selects all ordinary tools. */
+    public static final String NO_TOOLS = "NONE";
 
     public enum ExecutionScope {
         MATCHED_STEP,
@@ -160,6 +163,9 @@ public final class StepTriggerRule {
     }
 
     private boolean isToolAllowed(String typeName) {
+        if ("EXTENSIONS".equals(typeName)) {
+            return allowedToolTypes.contains("EXTENSIONS") || allowedToolTypes.contains("EXTENDER");
+        }
         return allowedToolTypes.isEmpty() || allowedToolTypes.contains(typeName);
     }
 

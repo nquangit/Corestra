@@ -266,7 +266,7 @@ public final class RuleSummaryPanel extends JPanel {
         FlowStep step = controller.selectedStep();
         if (step == null) return;
 
-        RuleEditorDialog.openForExtract(this, controller, step, null, regexSelectionSupplier.get(), saved -> {
+        RuleEditorDialog.openForExtract(this, controller, step, null, regexSelectionSupplier.get(), responseSupplier, saved -> {
             FlowStep updated = withExtractRules(step, appendRule(step.extractRules(), saved));
             saveStep(updated);
         });
@@ -278,7 +278,7 @@ public final class RuleSummaryPanel extends JPanel {
         if (step == null || row < 0) return;
 
         ExtractRule rule = step.extractRules().get(row);
-        RuleEditorDialog.openForExtract(this, controller, step, rule, regexSelectionSupplier.get(), saved -> {
+        RuleEditorDialog.openForExtract(this, controller, step, rule, regexSelectionSupplier.get(), responseSupplier, saved -> {
             List<ExtractRule> updated = replaceAt(step.extractRules(), row, saved);
             saveStep(withExtractRules(step, updated));
         });

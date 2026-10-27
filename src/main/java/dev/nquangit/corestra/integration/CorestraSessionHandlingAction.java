@@ -36,6 +36,7 @@ public final class CorestraSessionHandlingAction implements SessionHandlingActio
     private final Supplier<List<FlowDefinition>> flowsSupplier;
     private final Consumer<FlowDefinition> flowRunner;
     private final SessionHandlingFlowMapper mapper;
+    private final CorestraTrafficOrigin origin;
 
     /**
      * Creates a session-handling action.
@@ -49,9 +50,17 @@ public final class CorestraSessionHandlingAction implements SessionHandlingActio
             Supplier<List<FlowDefinition>> flowsSupplier,
             Consumer<FlowDefinition> flowRunner,
             SessionHandlingFlowMapper mapper) {
+        this(flowsSupplier, flowRunner, mapper, null);
+    }
+
+    /** Uses the same native-send marker as Auto Trigger, including callbacks on a different thread. */
+    public CorestraSessionHandlingAction(Supplier<List<FlowDefinition>> flowsSupplier,
+                                        Consumer<FlowDefinition> flowRunner, SessionHandlingFlowMapper mapper,
+                                        CorestraTrafficOrigin origin) {
         this.flowsSupplier = Objects.requireNonNull(flowsSupplier, "flowsSupplier");
         this.flowRunner = Objects.requireNonNull(flowRunner, "flowRunner");
         this.mapper = Objects.requireNonNull(mapper, "mapper");
+        this.origin = origin;
     }
 
     @Override
@@ -61,7 +70,8 @@ public final class CorestraSessionHandlingAction implements SessionHandlingActio
 
     @Override
     public ActionResult performAction(SessionHandlingActionData actionData) {
-        if (SessionGuard.isActive() || AutoTriggerHttpHandler.hasProxyPipelineMarker(actionData.request()))
+        if ((origin != null && origin.hasActiveMarker(actionData.request())) || SessionGuard.isActive()
+                || AutoTriggerHttpHandler.hasProxyPipelineMarker(actionData.request()))
             return ActionResult.actionResult(actionData.request());
         try { runApplicableFlows(); }
         catch (InteractionAbortedException exception) {

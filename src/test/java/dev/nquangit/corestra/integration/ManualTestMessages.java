@@ -45,6 +45,7 @@ public final class ManualTestMessages {
             }
             case "withRemovedHeaders" -> request(service,method,path,List.of(),body);
             case "withAddedHeaders" -> { List<HttpHeader> updated=new ArrayList<>(headers);updated.addAll((List<HttpHeader>)a[0]);yield request(service,method,path,updated,body); }
+            case "withAddedHeader" -> { List<HttpHeader> updated=new ArrayList<>(headers);updated.add(a.length == 2 ? header((String)a[0], (String)a[1]) : (HttpHeader)a[0]);yield request(service,method,path,updated,body); }
             case "withRemovedHeader" -> request(service,method,path,headers.stream().filter(h->!h.name().equalsIgnoreCase((String)a[0])).toList(),body);
             case "toString" -> method+" "+path+" HTTP/1.1\r\n"+String.join("\r\n",headers.stream().map(Object::toString).toList())+"\r\n\r\n"+body;
             case "hashCode" -> System.identityHashCode(p);case "equals" -> p==a[0];default -> throw new UnsupportedOperationException(m.getName());

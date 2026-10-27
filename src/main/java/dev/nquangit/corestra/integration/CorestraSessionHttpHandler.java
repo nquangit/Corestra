@@ -47,6 +47,7 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     private final SessionSelectionService sessionSelector;
     private final Consumer<String> diagnostics;
     private final Predicate<SessionTrafficContext> captureSession;
+    private CorestraTrafficOrigin origin;
 
     /**
      * Creates a Session Handler HTTP integration.
@@ -70,6 +71,14 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
                                      Predicate<SessionTrafficContext> captureSession) {
         this(manager, injections, Objects.requireNonNull(selector, "selector"), diagnostics, captureSession,
                 Clock.systemUTC(), 10_000, 600_000);
+    }
+
+    /** Captures explicitly inherited foreign-extension traffic while bypassing Corestra's own native sends. */
+    public CorestraSessionHttpHandler(SessionManager manager, InjectionService injections,
+                                     SessionSelectionService selector, java.util.function.Consumer<String> diagnostics,
+                                     Predicate<SessionTrafficContext> captureSession, CorestraTrafficOrigin origin) {
+        this(manager, injections, selector, diagnostics, captureSession);
+        this.origin = Objects.requireNonNull(origin);
     }
 
     CorestraSessionHttpHandler(SessionManager sessionManager, InjectionService injectionService,
@@ -112,14 +121,14 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
             if (closed) {
                 return RequestToBeSentAction.continueWith(requestToBeSent);
             }
-            if (SessionGuard.isActive() || AutoTriggerHttpHandler.hasProxyPipelineMarker(requestToBeSent)) {
+            if ((origin != null && origin.owns(requestToBeSent)) || SessionGuard.isActive() || AutoTriggerHttpHandler.hasProxyPipelineMarker(requestToBeSent)) {
                 return RequestToBeSentAction.continueWith(requestToBeSent);
             }
-            if (requestToBeSent.toolSource().toolType() == ToolType.EXTENSIONS) {
-                return RequestToBeSentAction.continueWith(requestToBeSent);
-            }
-
             SessionTrafficContext context = requestContext(requestToBeSent);
+            if (requestToBeSent.toolSource().toolType() == ToolType.EXTENSIONS
+                    && (origin == null || !captureSession.test(context))) {
+                return RequestToBeSentAction.continueWith(requestToBeSent);
+            }
             SessionSelectionConfig choiceConfig = sessionSelector == null ? null : sessionSelector.configuration();
             choosingSession = choiceConfig != null && choiceConfig.matches(context);
             SessionInjectionPlan plan;
@@ -186,9 +195,6 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
             // before transmission. Only requests admitted here may update live session state.
             SessionRequestMarker marker = takeGeneration(responseReceived.messageId());
             if (closed || marker == null) {
-                return ResponseReceivedAction.continueWith(responseReceived);
-            }
-            if (responseReceived.toolSource().toolType() == ToolType.EXTENSIONS) {
                 return ResponseReceivedAction.continueWith(responseReceived);
             }
             HttpRequest initiating = responseReceived.initiatingRequest();

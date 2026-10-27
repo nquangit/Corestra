@@ -91,7 +91,7 @@ public final class AuthFlowVariableMigrator {
             migratedSteps.add(new FlowStep(
                     step.id(), step.name(), step.enabled(), step.notes(), step.requestTemplate(),
                     extractRules, injectRules, step.preconditions(), step.errorStrategy(), step.lastResponseRaw(),
-                    step.triggerRule(), step.includeInAggregation(), step.conditionActionRules(), step.sendModeOverride()));
+                    step.triggerRule(), step.includeInAggregation(), step.conditionActionRules(), step.sendModeOverride(), step.manualInjectRulesEnabled()));
         }
 
         FlowDefinition migrated = new FlowDefinition(
@@ -103,7 +103,7 @@ public final class AuthFlowVariableMigrator {
     private static ExtractRule copyWithTarget(ExtractRule rule, String target) {
         return new ExtractRule(
                 rule.id(), rule.name(), rule.enabled(), rule.sourceSide(), rule.extractorType(),
-                rule.sourceSelector(), target, rule.transformChain(), rule.regexSource(), rule.regexGroupIndex());
+                rule.sourceSelector(), target, rule.transformChain(), rule.regexSource(), rule.regexGroupIndex(), rule.ruleType(), rule.jsonResultMode());
     }
 
     private static InjectRule copyWithVariable(InjectRule rule, String key) {

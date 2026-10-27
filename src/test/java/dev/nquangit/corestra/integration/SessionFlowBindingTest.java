@@ -111,6 +111,44 @@ class SessionFlowBindingTest {
         assertEquals(List.of(HttpSendMode.PROXY_PIPELINE, HttpSendMode.STANDARD), modes);
     }
 
+    @Test void explicitlySelectedExtensionTrafficCanInheritItsScopedSession() {
+        try (var origin = new CorestraTrafficOrigin()) {
+            origin.activate();
+            var original = profile("x", "x");
+            repository.saveProfile(new SessionProfile(original.id(), original.name(), original.enabled(), original.systemProfile(),
+                    original.scope(), original.linkedAuthProfileId(), original.authConfig(), original.scheduler(), original.state(), List.of(
+                    new SessionInjectionRule("header", true, InjectRule.Target.REQUEST_HEADER, "Authorization", "Bearer {{session.token}}",
+                            InjectRule.WriteStrategy.OVERWRITE, List.of("EXTENSIONS")),
+                    new SessionInjectionRule("cookie", true, InjectRule.Target.REQUEST_COOKIE, "token", "{{session.token}}",
+                            InjectRule.WriteStrategy.OVERWRITE, List.of("EXTENSIONS"))), original.extractionRules()));
+            var target = live().withTriggerRule(new StepTriggerRule(true, List.of("EXTENSIONS"), List.of(),
+                    StepTriggerRule.ExecutionScope.MATCHED_STEP, "", true, List.of()));
+            flows.add(flow(step("before", "api.test"), target));
+            sessions.close(); trigger.close();
+            sessions = new CorestraSessionHttpHandler(manager, injections,
+                    new SessionSelectionService(manager, SessionSelectionConfig::disabled, (traffic, choices, timeout) -> Optional.empty()),
+                    message -> fail(message), traffic -> true, origin);
+            bindings = new SessionFlowBindingService(manager, injections, sessions::takeSessionForRequest);
+            trigger = new AutoTriggerHttpHandler(() -> flows, engine, extractions, injections, bindings,
+                    new TriggerInputService(dev.nquangit.corestra.access.workspace.AccessWorkspace::empty, CLOCK),
+                    message -> fail(message), origin);
+            var base = request(47, "api.test", 443, true, "/live", List.of(header("X-User", "x")), "payload");
+            var source = asExtension(base);
+            var prepared = sessions.handleHttpRequestToBeSent(source);
+            assertEquals(RequestAction.CONTINUE, prepared.action());
+            var triggered = trigger.handleHttpRequestToBeSent(asExtension((HttpRequestToBeSent) prepared.request()));
+            assertEquals(RequestAction.CONTINUE, triggered.action());
+            assertAuth(triggered.request(), "x");
+            assertEquals(1, sent.size()); assertAuth(sent.getFirst(), "x");
+        }
+    }
+
+    private static HttpRequestToBeSent asExtension(HttpRequestToBeSent request) {
+        return proxy(HttpRequestToBeSent.class, (p,m,a) -> m.getName().equals("toolSource")
+                ? proxy(ToolSource.class, (q,n,b) -> n.getName().equals("toolType") ? ToolType.EXTENSIONS : null)
+                : m.invoke(request, a));
+    }
+
     @Test void concurrentActorsRemainIsolatedEvenWhenResponsesArriveInReverseOrder() throws Exception {
         flows.add(flow(step("before", "api.test"), live(), step("after", "api.test")));
         CountDownLatch before = new CountDownLatch(2), release = new CountDownLatch(1), after = new CountDownLatch(2);

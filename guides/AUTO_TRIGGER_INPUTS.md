@@ -67,6 +67,54 @@ không thể thu hồi target đã gửi. Không tự retry các action nghiệp
 Lỗi hiển thị trong log lỗi của extension ở Burp, có tên flow, step và key cần kiểm tra.
 Không popup lỗi cho từng payload scan.
 
+### Scanner chạy song song và prerequisite trả 403
+
+Nếu một prerequisite có condition/action rule đang bật với **Retry current step**
+hoặc **Retry flow from start**, Auto Trigger chạy các chuỗi prerequisite của cùng
+flow lần lượt. Lượt hiện tại giữ quyền thực thi suốt **Sleep** và retry; payload scan
+khác chờ, không gửi thêm prerequisite trong khoảng chờ đó. Flow khác vẫn chạy độc lập.
+Mỗi payload vẫn có context và chạy prerequisite riêng; không dùng chung response,
+token hoặc kết quả prerequisite giữa các payload. Flow không có retry ở prerequisite
+tiếp tục chạy đồng thời như trước.
+
+Ví dụ ở bước 1: condition **Source = RESPONSE_STATUS**, **Operator = IN**,
+**Value Source = STATIC**, **Expected = 403,429**. Với một condition này có thể để
+**Match = ALL**. Nếu tạo hai condition `EQUALS 403` và `EQUALS 429`, phải chọn
+**Match = ANY** (OR). **ALL** là AND: một response không thể vừa có status 403 vừa
+có status 429. `EQUALS 403,429` hoặc `EQUALS 403|429` cũng không phải phép OR;
+chọn `IN` với danh sách phân cách bằng dấu phẩy. Editor giải thích và kiểm tra các
+cách nhập nhầm này khi lưu rule đang bật; không tự thay đổi rule đã lưu.
+
+Thêm actions theo thứ tự **Sleep**, Parameter `10` **seconds**, rồi
+**Retry flow from start**, Parameter `2` (số lần retry bổ sung).
+Cả hai retry action cho chỉnh Parameter trong khoảng **0–10**, mặc định **1** nếu
+rule cũ chưa khai báo. Giới hạn được giữ khi mở/sửa/lưu rule và export/import.
+`0` nghĩa là không gửi lại. Không có chế độ retry vô hạn. Lưu ý những bản trước
+không hiển thị Parameter của retry và có thể làm mất `maxAttempts` khi sửa rule;
+kiểm tra lại ô này sau khi nâng cấp, công cụ không tự tăng số lần retry đã lưu.
+
+Parameter `2` là tối đa 2 lượt gửi lại ngoài lần đầu. Khi một lượt retry thành công, flow tiếp
+tục với dữ liệu của lượt đó. Nếu lần cuối vẫn 403, flow thất bại và không chạy bước
+tiếp theo; request scan bị drop. **Extensions → Corestra → Errors** ghi tên flow,
+bước trigger, lý do hết retry và status cuối. Burp có thể biểu diễn request bị drop
+thành lỗi/response rỗng; extension không tạo response thành công giả để Scanner chạy tiếp.
+Nhiều lỗi liên tiếp có thể làm Scanner dừng insertion point. Số item trong Logger
+không thể dùng làm số retry của một lượt: mỗi request scan có một lượt trigger riêng.
+
+Nếu thiếu `cifId`/`otpId`, log có **messageId**, tên/id bước tạo biến và HTTP status
+gần nhất của bước đó. Kiểm tra response và extractor của producer, không chỉ bước
+inject báo thiếu biến. Nếu producer trả **200** nhưng thiếu dữ liệu, rule chỉ kiểm tra
+403/429 sẽ không khớp; cấu hình thêm điều kiện phù hợp với response thực tế nếu muốn
+retry trường hợp này. Flow vẫn dừng khi biến bắt buộc chưa có. Sau retry cả flow,
+chỉ context của lượt cuối được dùng; dữ liệu từ lượt đã bị bỏ không được ghép trở lại.
+
+Sleep được cấu hình bằng **giây**: `10` là 10.000 ms. Chờ prerequisite và retry làm
+tăng thời gian hoàn thành một request scan, nhất là khi có nhiều payload đang chờ.
+Giới hạn retry vẫn được áp dụng; tính năng này không đảm bảo server sẽ hết rate limit.
+Chỉ chuỗi prerequisite được tuần tự hoá, không khoá target live hoặc toàn bộ traffic
+đến host đó. Rule trên chính target live không được engine tự replay; downstream chỉ
+chạy sau response live như trước.
+
 Hướng dẫn trong **Check inputs…** và **Target inject rules…** là văn bản thuần,
 tự xuống dòng theo chiều rộng. Dialog giới hạn kích thước theo màn hình và có vùng
 cuộn cho nội dung dài; các nút xác nhận/huỷ nằm ngoài vùng cuộn.
@@ -144,3 +192,38 @@ Cấu hình chỉ lưu ID của profile và inject rule, không copy credentials
 Flow export riêng không mang theo các profile; khi import sang project khác cần import
 profile tương ứng hoặc chọn lại chúng. Project cũ không có bindings mở ra với **None**
 và không có rule exclusion; các trigger thiếu biến nay dừng thay vì âm thầm bỏ injection.
+
+## 6. Auto Trigger từ extension khác, ví dụ Active Scan++
+
+1. Chọn request target trong Flowise, mở **Auto Trigger Flow**.
+2. Trong **Source tools**, bật **Extensions / Extender**. Có thể bật cả Scanner nếu
+   Burp báo request của công cụ đó là Scanner thay vì Extensions.
+3. Giữ criteria host/path/header/body đủ cụ thể và chọn Auth/Data Profile nếu cần.
+4. Chọn phạm vi bước rồi bật trigger như với Repeater/Scanner.
+
+Burp cung cấp loại tool `EXTENSIONS`, không cung cấp tên extension qua trường này;
+checkbox không chỉ chọn riêng Active Scan++. Dùng criteria để giới hạn request.
+Giá trị cấu hình cũ `EXTENDER` được chấp nhận như alias của `EXTENSIONS`.
+
+Nguồn Extensions là **opt-in**. Filter cũ rỗng vẫn giữ phạm vi “all ordinary tools”
+trước đây, không tự kích hoạt các extension khác sau nâng cấp. Bỏ chọn hết checkbox
+nghĩa là không có tool được trigger, không tự đổi thành all tools.
+
+Corestra gắn nonce tạm cho mỗi lần gửi Standard và theo dõi message ID khi Burp xử
+lý callback, nên request nội bộ vẫn được nhận ra trên thread khác. Handler gỡ header
+`X-Corestra-Internal-Send` trước khi ra server. Chỉ nonce đang được Corestra đăng ký
+mới được xem là nội bộ; header trùng tên với giá trị bất kỳ không tạo quyền bỏ qua.
+Trạng thái nhận diện chỉ ở RAM trong thời gian gửi và được dọn cả khi lỗi; không dùng
+so khớp host/body để đoán nguồn, không làm lẫn request giống nhau của extension khác.
+Proxy Pipeline tiếp tục dùng marker và cơ chế gỡ marker sẵn có. Login/refresh,
+prerequisite/downstream, Access Testing và Manual Testing qua các transport này
+không tự kích hoạt lại Auto Trigger.
+
+Nếu bật **Use session from triggering request**, Session Handler phải chuẩn bị được
+session cho traffic đó và injection rules phải cho phép `EXTENSIONS`. Chỉ trigger đã
+opt-in Extensions và bật kế thừa session mới yêu cầu capture traffic Extensions;
+checkbox này không tự bật Session Handler cho toàn bộ extension traffic. Session
+binding vẫn kiểm tra generation, nguồn và destination như các tool khác.
+
+Lỗi kết nối của target live vẫn do bên gửi/Burp xử lý; condition/action phục hồi của
+engine áp dụng cho prerequisite và downstream. Xem [Lỗi thực thi và retry](EXECUTION_FAILURES.md).

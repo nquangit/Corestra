@@ -77,7 +77,7 @@ public final class ExtractionService {
             extracted = switch (rule.extractorType()) {
                 case HEADER -> extractHeader(rule, snapshot);
                 case COOKIE -> extractCookie(rule, snapshot);
-                case JSON_PATH -> jsonBodyExtractor.extract(snapshot.body(), rule.sourceSelector(), rule.targetVariableName());
+                case JSON_PATH -> jsonBodyExtractor.extract(snapshot.body(), rule.sourceSelector(), rule.targetVariableName(), rule.jsonResultMode());
                 case BODY_TEXT -> ExtractionResult.success(rule.targetVariableName(), snapshot.body());
                 case STATUS_CODE -> extractStatusCode(rule, snapshot);
                 default -> throw new IllegalStateException("Unhandled extractor type: " + rule.extractorType());

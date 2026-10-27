@@ -13,8 +13,17 @@ import java.util.Objects;
  */
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 public final class ExtractRule {
+    /** Controls selection from JSONPath matches, independently of the value's JSON type. */
+    public enum JsonResultMode {
+        SINGLE("Require one match"), FIRST("First match"), ALL("All matches (JSON array)");
+        private final String label;
+        JsonResultMode(String label) { this.label = label; }
+        /** Returns the readable editor label. */
+        @Override public String toString() { return label; }
+    }
     private final RuleType ruleType;
     private final String id;
+    private final JsonResultMode jsonResultMode;
     private final String name;
     private final boolean enabled;
     private final SourceSide sourceSide;
@@ -49,7 +58,9 @@ public final class ExtractRule {
             @JsonProperty("transformChain") List<String> transformChain,
             @JsonProperty("regexSource") RegexSource regexSource,
             @JsonProperty("regexGroupIndex") Integer regexGroupIndex,
-            @JsonProperty("ruleType") RuleType ruleType) {
+            @JsonProperty("ruleType") RuleType ruleType,
+            @JsonProperty("jsonResultMode") JsonResultMode jsonResultMode) {
+        this.jsonResultMode = Objects.requireNonNullElse(jsonResultMode, JsonResultMode.SINGLE);
         this.ruleType = validateRuleType(ruleType, RuleType.EXTRACT);
         this.id = normalizeRequiredText(id, "id");
         this.name = normalizeRequiredText(name, "name");
@@ -68,6 +79,23 @@ public final class ExtractRule {
         if (this.regexGroupIndex != null && this.regexGroupIndex < 0) {
             throw new IllegalArgumentException("regexGroupIndex must not be negative");
         }
+    }
+
+    /** Creates a rule with strict single-match JSONPath behavior, compatible with older callers. */
+    public ExtractRule(String id, String name, boolean enabled, SourceSide sourceSide, ExtractorType extractorType,
+                       String sourceSelector, String targetVariableName, List<String> transformChain,
+                       RegexSource regexSource, Integer regexGroupIndex, RuleType ruleType) {
+        this(id, name, enabled, sourceSide, extractorType, sourceSelector, targetVariableName, transformChain,
+                regexSource, regexGroupIndex, ruleType, JsonResultMode.SINGLE);
+    }
+
+    /** Returns JSONPath match handling; dot paths and JSON Pointers retain their legacy behavior. */
+    public JsonResultMode jsonResultMode() { return jsonResultMode; }
+
+    /** Returns a rule with explicit JSONPath match handling, preserving all other fields. */
+    public ExtractRule withJsonResultMode(JsonResultMode mode) {
+        return new ExtractRule(id, name, enabled, sourceSide, extractorType, sourceSelector, targetVariableName,
+                transformChain, regexSource, regexGroupIndex, ruleType, mode);
     }
 
     /**
@@ -238,6 +266,7 @@ public final class ExtractRule {
             return false;
         }
         return enabled == that.enabled
+                && jsonResultMode == that.jsonResultMode
                 && ruleType == that.ruleType
                 && Objects.equals(id, that.id)
                 && Objects.equals(name, that.name)
@@ -258,7 +287,7 @@ public final class ExtractRule {
     @Override
     public int hashCode() {
         return Objects.hash(ruleType, id, name, enabled, sourceSide, extractorType, sourceSelector,
-                targetVariableName, transformChain, regexSource, regexGroupIndex);
+                targetVariableName, transformChain, regexSource, regexGroupIndex, jsonResultMode);
     }
 
     /**
@@ -313,7 +342,7 @@ public final class ExtractRule {
         COOKIE,
 
         /**
-         * Extracts a value from a JSON body via a dot-path selector.
+         * Extracts JSON using a legacy dot path, pointer: selector, or rooted JSONPath query.
          */
         JSON_PATH,
 

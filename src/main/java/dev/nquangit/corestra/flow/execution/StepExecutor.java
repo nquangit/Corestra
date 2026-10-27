@@ -1,6 +1,5 @@
 package dev.nquangit.corestra.flow.execution;
 
-import dev.nquangit.corestra.session.SessionExecutionBinding;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -17,6 +16,7 @@ import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
 import dev.nquangit.corestra.http.inject.RequestMutationResult;
 import dev.nquangit.corestra.integration.HttpClient;
+import dev.nquangit.corestra.integration.HttpTransportException;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -77,6 +77,11 @@ public class StepExecutor {
         Objects.requireNonNull(httpClient, "httpClient");
 
         long startedAt = System.currentTimeMillis();
+        // This gate is local to Manual Testing, including child flows. Keep the saved rules intact.
+        if ("true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))
+                && !step.manualInjectRulesEnabled()) {
+            step = step.withInjectRules(List.of());
+        }
         if ("true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED)) && Thread.currentThread().isInterrupted())
             return injectionFailure(step, startedAt, new dev.nquangit.corestra.interaction.InteractionAbortedException("Manual run cancelled").getMessage());
         boolean requireInputs = "true".equals(context.metadata().get(FlowInputValidator.REQUIRE_INPUTS));
@@ -124,34 +129,41 @@ public class StepExecutor {
         HttpRequest montoyaRequest;
         String receivedResponse;
         int statusCode;
+        boolean sending = false;
 
         try {
             montoyaRequest = buildMontoyaRequest(template, renderedRequestLine, renderedHeaders, renderedBody);
-            if ("true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))) {
-                montoyaRequest = montoyaRequest.withBody(renderedBody);
-            }
             montoyaRequest = httpClient.prepareForExecution(montoyaRequest, context);
-            if (SessionExecutionBinding.isBound(context) || "true".equals(context.metadata().get(dev.nquangit.corestra.manual.ManualRequestTemplate.ENABLED))) {
-                renderedRequest = montoyaRequest.toString();
-                renderedRequestLine = montoyaRequest.method() + " " + montoyaRequest.path() + " " + montoyaRequest.httpVersion();
-                renderedHeaders = montoyaRequest.headers().stream().map(h -> h.name() + ": " + h.value()).toList();
-                renderedBody = montoyaRequest.bodyToString();
-            }
+            // Record and extract from the prepared native message, including its updated framing.
+            renderedRequest = montoyaRequest.toString();
+            renderedRequestLine = montoyaRequest.method() + " " + montoyaRequest.path() + " " + montoyaRequest.httpVersion();
+            renderedHeaders = montoyaRequest.headers().stream().map(h -> h.name() + ": " + h.value()).toList();
+            renderedBody = montoyaRequest.bodyToString();
+            sending = true;
             response = httpClient.send(montoyaRequest, step.sendModeOverride(), context);
+            if (response == null) throw new HttpTransportException(ExecutionFailureType.NO_RESPONSE, "No HTTP response received", null);
             receivedResponse = response.toString();
             statusCode = response.statusCode();
+            if (statusCode <= 0) throw new HttpTransportException(ExecutionFailureType.NO_RESPONSE, "No valid HTTP response status received", null);
         } catch (Exception e) {
             long completedAt = System.currentTimeMillis();
+            boolean interrupted = Thread.currentThread().isInterrupted() || HttpTransportException.wasInterrupted(e);
+            ExecutionFailureType type = interrupted || InteractionAbortedException.isAborted(e.getMessage())
+                    ? ExecutionFailureType.CANCELLED
+                    : dev.nquangit.corestra.session.SessionBindingException.isAborted(e.getMessage())
+                    ? ExecutionFailureType.SESSION_BINDING
+                    : sending ? HttpTransportException.classify(e) : ExecutionFailureType.REQUEST_PREPARATION;
+            if (interrupted) Thread.currentThread().interrupt();
             return new StepExecutionRecord(
                     step.id(),
                     renderedRequest,
                     "",
                     0,
                     false,
-                    "Request failed: " + e.getMessage(),
+                    "Request failed: [" + type + "] " + e.getMessage(),
                     startedAt,
                     Math.max(completedAt, startedAt),
-                    Map.of());
+                    Map.of(), type);
         }
 
         // 4. Build request snapshot for extraction
@@ -197,6 +209,8 @@ public class StepExecutor {
     /**
      * Builds a Montoya {@link HttpRequest} from the mutated request parts and the original
      * stored template (which supplies the host and port for the HTTP service).
+     * Captured Content-Length headers are replaced using Montoya's body API so the
+     * length reflects the final encoded bytes after injection or template rendering.
      *
      * @param template        the original stored request template supplying connection details
      * @param requestLine     the mutated request line
@@ -210,7 +224,7 @@ public class StepExecutor {
             List<String> headers,
             String body) {
 
-        // Reconstruct raw HTTP/1.1 wire bytes and create the request using HttpService for routing.
+        // Reconstruct HTTP/1.1 headers and create the request using HttpService for routing.
         // Host is stored separately in StoredRequestTemplate and stripped at capture time, so it
         // must be explicitly added here as the first header before the stored header lines.
         StringBuilder rawBuilder = new StringBuilder();
@@ -221,17 +235,24 @@ public class StepExecutor {
         if (!defaultPort) hostValue += ":" + template.port();
         if (headers.stream().noneMatch(h -> h.regionMatches(true, 0, "Host:", 0, 5)))
             rawBuilder.append("Host: ").append(hostValue).append("\r\n");
+        boolean hadContentLength = false;
         for (String header : headers) {
-            rawBuilder.append(header).append("\r\n");
+            int colon = header.indexOf(':');
+            if (colon >= 0 && "Content-Length".equalsIgnoreCase(header.substring(0, colon).trim())) {
+                hadContentLength = true;
+            } else {
+                rawBuilder.append(header).append("\r\n");
+            }
         }
         rawBuilder.append("\r\n");
-        if (body != null && !body.isEmpty()) {
-            rawBuilder.append(body);
-        }
 
         boolean secure = "https".equalsIgnoreCase(template.scheme());
         HttpService service = HttpService.httpService(template.host(), template.port(), secure);
-        return HttpRequest.httpRequest(service, rawBuilder.toString());
+        HttpRequest request = HttpRequest.httpRequest(service, rawBuilder.toString());
+        // Let Burp apply its configured string encoding and calculate the byte length.
+        // Preserve the absence of Content-Length on originally unframed empty requests.
+        return hadContentLength || (body != null && !body.isEmpty())
+                ? request.withBody(Objects.requireNonNullElse(body, "")) : request;
     }
 
     // -----------------------------------------------------------------------
@@ -241,7 +262,8 @@ public class StepExecutor {
     private StepExecutionRecord injectionFailure(FlowStep step, long startedAt, String reason) {
         return new StepExecutionRecord(step.id(), "", "", 0, false,
                 FlowInputValidator.FAILURE_PREFIX + reason, startedAt,
-                Math.max(startedAt, System.currentTimeMillis()), Map.of());
+                Math.max(startedAt, System.currentTimeMillis()), Map.of(),
+                InteractionAbortedException.isAborted(reason) ? ExecutionFailureType.CANCELLED : ExecutionFailureType.INPUT_ERROR);
     }
 
     private String buildRenderedRequest(String requestLine, List<String> headers, String body) {

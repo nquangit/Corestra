@@ -57,6 +57,7 @@ public final class TriggerPanel extends JPanel {
             {"Intruder", "INTRUDER"},
             {"Target",   "TARGET"},
             {"Logger",   "LOGGER"},
+            {"Extensions / Extender", "EXTENSIONS"},
     };
 
     private final FlowWorkspaceController controller;
@@ -104,6 +105,7 @@ public final class TriggerPanel extends JPanel {
             cb.setOpaque(false); cb.setFocusPainted(false);
             toolBoxes.put(e[1], cb);
         }
+        toolBoxes.get("EXTENSIONS").setToolTipText("Requests reported by Burp as Extensions; Corestra's own sends are excluded. Enable explicitly and keep host/path criteria specific.");
 
         criteriaTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         criteriaTable.setFillsViewportHeight(true);
@@ -140,7 +142,7 @@ public final class TriggerPanel extends JPanel {
         p.add(enabledBox);
         p.add(Box.createVerticalStrut(10));
 
-        p.add(dimLabel("Source filter (empty selection = all tools):"));
+        p.add(dimLabel("Source tools (no selection = no trigger; Extensions requires opt-in):"));
         p.add(Box.createVerticalStrut(3));
         JPanel toolRow = new JPanel();
         toolRow.setLayout(new BoxLayout(toolRow, BoxLayout.X_AXIS));
@@ -396,7 +398,9 @@ public final class TriggerPanel extends JPanel {
 
             List<String> allowed = rule.allowedToolTypes();
             toolBoxes.forEach((type, cb) ->
-                    cb.setSelected(allowed.isEmpty() || allowed.contains(type)));
+                    cb.setSelected("EXTENSIONS".equals(type)
+                            ? allowed.contains(type) || allowed.contains("EXTENDER")
+                            : allowed.isEmpty() || allowed.contains(type)));
 
             // Re-enable scope controls for a valid step.
             scopeMatchedBtn.setEnabled(true);
@@ -466,7 +470,9 @@ public final class TriggerPanel extends JPanel {
 
         List<String> selectedTools = new ArrayList<>();
         toolBoxes.forEach((type, cb) -> { if (cb.isSelected()) selectedTools.add(type); });
-        List<String> allowedTools = selectedTools.size() == TOOL_ENTRIES.length
+        // Empty legacy filters retain "all ordinary tools"; Extensions requires an explicit opt-in.
+        List<String> allowedTools = selectedTools.isEmpty() ? List.of(StepTriggerRule.NO_TOOLS)
+                : selectedTools.size() == TOOL_ENTRIES.length - 1 && !selectedTools.contains("EXTENSIONS")
                 ? List.of() : List.copyOf(selectedTools);
 
         StepTriggerRule.ExecutionScope scope = scopeMatchedBtn.isSelected()

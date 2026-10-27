@@ -33,10 +33,14 @@ import dev.nquangit.corestra.flow.AggregationPlan;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.StepTriggerRule;
+import dev.nquangit.corestra.flow.control.StepActionStatus;
+import dev.nquangit.corestra.flow.control.StepActionType;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.execution.ExecutionContext;
 import dev.nquangit.corestra.flow.execution.ExecutionResult;
 import dev.nquangit.corestra.flow.execution.FlowEngine;
+import dev.nquangit.corestra.flow.execution.FlowInputDiagnostics;
+import dev.nquangit.corestra.flow.execution.FlowInputValidator;
 import dev.nquangit.corestra.flow.execution.StepExecutionRecord;
 import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
@@ -88,6 +92,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
     private java.util.function.Consumer<String> errors = message -> System.err.println("[Corestra] " + message);
     private final long pendingTtlMillis;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AutoTriggerPrerequisiteGate prerequisiteGate = new AutoTriggerPrerequisiteGate();
+    private CorestraTrafficOrigin origin;
 
     /**
      * Holds the Phase-1 execution context for an in-flight triggered request so that
@@ -133,6 +139,15 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         this.errors = Objects.requireNonNull(errors, "errors");
     }
 
+    /** Enables foreign-extension triggers while excluding native sends recognized by the shared origin guard. */
+    public AutoTriggerHttpHandler(Supplier<List<FlowDefinition>> flows, FlowEngine engine,
+                                  ExtractionService extraction, InjectionService injection,
+                                  SessionFlowBindingService bindings, TriggerInputService inputs,
+                                  java.util.function.Consumer<String> errors, CorestraTrafficOrigin origin) {
+        this(flows, engine, extraction, injection, bindings, inputs, errors);
+        this.origin = Objects.requireNonNull(origin);
+    }
+
     AutoTriggerHttpHandler(
             Supplier<List<FlowDefinition>> flowsSupplier,
             FlowEngine flowEngine,
@@ -164,10 +179,11 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             return RequestToBeSentAction.continueWith(req);
         }
         cleanupExpired();
+        if (origin != null && origin.owns(req)) return RequestToBeSentAction.continueWith(req);
         if (hasProxyPipelineMarker(req)) {
             return RequestToBeSentAction.continueWith(req.withRemovedHeader(ProxyPipelineHttpClient.MARKER_HEADER));
         }
-        if (req.toolSource().toolType() == ToolType.EXTENSIONS) {
+        if (req.toolSource().toolType() == ToolType.EXTENSIONS && origin == null) {
             return RequestToBeSentAction.continueWith(req);
         }
 
@@ -202,7 +218,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body, initiatingSession);
                     return RequestToBeSentAction.continueWith(modified);
                 } catch (TriggerInputException invalid) {
-                    reportInputFailure(flow, step, invalid.getMessage());
+                    reportInputFailure(flow, step, req.messageId(), invalid.getMessage());
                     return RequestToBeSentAction.drop();
                 } catch (SessionBindingException aborted) {
                     System.err.println("[Corestra] Trigger stopped: " + aborted.getMessage());
@@ -211,7 +227,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     return RequestToBeSentAction.drop();
                 } catch (RuntimeException ignored) {
                     if (rule.inputBindings().hasProfiles() || !rule.inputBindings().excludedTargetRuleIds().isEmpty()) {
-                        reportInputFailure(flow, step, "Profile-bound execution failed; request was stopped");
+                        reportInputFailure(flow, step, req.messageId(), "Profile-bound execution failed; request was stopped");
                         return RequestToBeSentAction.drop();
                     }
                     if (rule.inheritSession()) {
@@ -234,10 +250,6 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 return ResponseReceivedAction.continueWith(responseReceived);
             }
             cleanupExpired();
-            if (responseReceived.toolSource().toolType() == ToolType.EXTENSIONS) {
-                return ResponseReceivedAction.continueWith(responseReceived);
-            }
-
             burp.api.montoya.http.message.requests.HttpRequest initiating = responseReceived.initiatingRequest();
             if (hasProxyPipelineMarker(initiating)) {
                 return ResponseReceivedAction.continueWith(responseReceived);
@@ -267,7 +279,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     try {
                         runStepRange(flow, steps, pending.matchedStepIndex + 1, pending.stopIdx, updatedCtx);
                     } catch (Exception e) {
-                        reportInputFailure(flow, triggeredStep, "Downstream execution failed: " + e.getMessage());
+                        reportInputFailure(flow, triggeredStep, responseReceived.messageId(), "Downstream execution failed: " + e.getMessage());
                     }
                     });
                 } catch (RejectedExecutionException ignored) {
@@ -347,7 +359,10 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                         template.scheme(), template.port()));
             }
         }
-        ctx = runStepRange(flow, steps, 0, matchedIndex - 1, ctx);
+        ctx = runPrerequisites(flow, steps, matchedIndex, ctx);
+        if (closed.get() || Thread.currentThread().isInterrupted()) {
+            throw new TriggerInputException("Trigger preparation was cancelled; live request was stopped");
+        }
 
         // Build the request snapshot before storing the pending trigger — it is needed later
         // by handleHttpResponseReceived to apply the trigger step's response-side extract rules.
@@ -362,6 +377,11 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         ctx = applyExtractRulesToContext(matchedStep, requestSnapshot, emptyResponse, ctx, ExtractRule.SourceSide.REQUEST);
 
         MutableHttpRequest mutable = new MutableHttpRequest(requestLine, allHeaders, body);
+        List<String> missing = FlowInputValidator.missingStepVariables(matchedStep, ctx.variables());
+        if (!missing.isEmpty()) {
+            throw new TriggerInputException("Target injection failed: missing variables: " + String.join(", ", missing)
+                    + "; " + FlowInputDiagnostics.describe(flow, matchedStep, ctx));
+        }
         RequestMutationResult mutated;
         try {
             mutated = injectionService.applyRequired(matchedStep.injectRules(), ctx.variables(), mutable);
@@ -386,8 +406,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         return modified;
     }
 
-    private void reportInputFailure(FlowDefinition flow, FlowStep step, String reason) {
-        try { errors.accept("Auto-trigger stopped [" + flow.name() + " / " + step.name() + "]: " + reason); }
+    private void reportInputFailure(FlowDefinition flow, FlowStep step, int messageId, String reason) {
+        try { errors.accept("Auto-trigger stopped [" + flow.name() + " / " + step.name() + "] [messageId=" + messageId + "]: " + reason); }
         catch (RuntimeException ignored) { /* Logging must not allow an unsafe request through. */ }
     }
 
@@ -395,11 +415,31 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
      * Clears in-flight state and interrupts queued downstream execution during extension unload.
      */
     @Override
-    public void close() {
+    public synchronized void close() {
         if (closed.compareAndSet(false, true)) {
+            prerequisiteGate.close();
             pendingTriggers.clear();
             phase3Executor.shutdownNow();
         }
+    }
+
+    private ExecutionContext runPrerequisites(FlowDefinition flow, List<FlowStep> steps,
+                                              int matchedIndex, ExecutionContext context) {
+        boolean hasRetry = steps.subList(0, matchedIndex).stream().filter(FlowStep::enabled)
+                .flatMap(step -> step.conditionActionRules().stream()).filter(rule -> rule.enabled())
+                .flatMap(rule -> rule.actions().stream()).anyMatch(action -> action.enabled()
+                        && (action.type() == StepActionType.RETRY_CURRENT_STEP
+                        || action.type() == StepActionType.RETRY_FLOW_FROM_START));
+        if (!hasRetry) return runStepRange(flow, steps, 0, matchedIndex - 1, context);
+        return prerequisiteGate.run(flow.id(), () -> {
+            try {
+                return runStepRange(flow, steps, 0, matchedIndex - 1, context);
+            } catch (TriggerInputException | SessionBindingException | InteractionAbortedException failure) {
+                throw failure;
+            } catch (RuntimeException failure) {
+                throw new TriggerInputException("Prerequisite recovery failed: " + failure.getMessage());
+            }
+        });
     }
 
     int pendingTriggerCount() {
@@ -408,6 +448,9 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
     }
 
     private synchronized void storePending(int messageId, PendingTrigger pending) {
+        if (closed.get() || Thread.currentThread().isInterrupted()) {
+            throw new TriggerInputException("Trigger preparation was cancelled; live request was stopped");
+        }
         cleanupExpired();
         while (pendingTriggers.size() >= maxPendingTriggers) {
             Map.Entry<Integer, PendingTrigger> oldest = pendingTriggers.entrySet().stream()
@@ -472,6 +515,11 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 slice, flow.rules(), AggregationPlan.disabled(), flow.triggerConfig());
         ExecutionResult result = flowEngine.execute(sliceFlow, ctx);
         if (!result.success()) {
+            if (result.actionRecords().stream().anyMatch(action -> action.status() == StepActionStatus.FAILED
+                    && (action.actionType() == StepActionType.RETRY_CURRENT_STEP
+                    || action.actionType() == StepActionType.RETRY_FLOW_FROM_START))) {
+                throw new TriggerInputException("Prerequisite retry exhausted: " + result.failureMessage());
+            }
             if (result.failureMessage() != null && result.failureMessage().contains(
                     dev.nquangit.corestra.flow.execution.FlowInputValidator.FAILURE_PREFIX)) {
                 throw new TriggerInputException(result.failureMessage());
@@ -487,17 +535,9 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             }
             throw new IllegalStateException("Auto-trigger prerequisite execution failed: " + result.failureMessage());
         }
-        ctx = result.finalContext().orElse(ctx);
-        for (StepExecutionRecord rec : result.stepRecords()) {
-            for (Map.Entry<String, String> e : rec.extractedVariables().entrySet()) {
-                ctx = ctx.withVariable(e.getKey(), e.getValue());
-            }
-            List<StepExecutionRecord> history = ctx.stepHistory().get(rec.stepId());
-            if (history == null || !history.contains(rec)) {
-                ctx = ctx.withStepRecord(rec);
-            }
-        }
-        return ctx;
+        // The engine's final context is authoritative. Replaying all attempt records here
+        // would resurrect variables deliberately discarded by Retry flow from start.
+        return result.finalContext().orElse(ctx);
     }
 
     /**

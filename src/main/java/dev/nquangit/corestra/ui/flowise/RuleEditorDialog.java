@@ -11,9 +11,13 @@ import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
+import dev.nquangit.corestra.http.extract.JsonBodyExtractor;
+import dev.nquangit.corestra.integration.HttpBodyBytes;
+import burp.api.montoya.http.message.responses.HttpResponse;
 import dev.nquangit.corestra.http.extract.RegexSuggestionService;
 import dev.nquangit.corestra.http.transform.ValueTransformService;
 import dev.nquangit.corestra.ui.access.AccessUiController;
+import dev.nquangit.corestra.ui.component.WrappedText;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -33,6 +37,7 @@ import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.SwingWorker;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.BorderLayout;
@@ -52,6 +57,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A modal dialog for creating or editing an {@link ExtractRule} or {@link InjectRule}.
@@ -103,11 +111,18 @@ public final class RuleEditorDialog extends JDialog {
             ExtractRule rule,
             Optional<RequestResponsePanel.ResponseRegexSelection> selection,
             Consumer<ExtractRule> onSave) {
+        openForExtract(parent, controller, step, rule, selection, Optional::empty, onSave);
+    }
+
+    /** Opens an extract editor whose previews prefer the currently displayed immutable response. */
+    public static void openForExtract(Component parent, FlowWorkspaceController controller, FlowStep step,
+                                      ExtractRule rule, Optional<RequestResponsePanel.ResponseRegexSelection> selection,
+                                      Supplier<Optional<HttpResponse>> response, Consumer<ExtractRule> onSave) {
         Objects.requireNonNull(step, "step");
         Objects.requireNonNull(onSave, "onSave");
         Window window = findWindow(parent);
         RuleEditorDialog dialog = new RuleEditorDialog(window, "Extract Rule",
-                buildExtractForm(step, rule, Objects.requireNonNullElse(selection, Optional.empty()), onSave));
+                buildExtractForm(step, rule, Objects.requireNonNullElse(selection, Optional.empty()), response, onSave));
         dialog.setVisible(true);
     }
 
@@ -155,9 +170,19 @@ public final class RuleEditorDialog extends JDialog {
 
     private RuleEditorDialog(Window owner, String title, JPanel formContent) {
         super(owner, title, ModalityType.APPLICATION_MODAL);
+        setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         setLayout(new BorderLayout());
         add(formContent, BorderLayout.CENTER);
         pack();
+        java.awt.Rectangle screen = getGraphicsConfiguration().getBounds();
+        Insets screenInsets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(getGraphicsConfiguration());
+        setSize(Math.min(getWidth(), Math.max(1, screen.width - screenInsets.left - screenInsets.right - 80)),
+                Math.min(getHeight(), Math.max(1, screen.height - screenInsets.top - screenInsets.bottom - 80)));
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosed(java.awt.event.WindowEvent event) {
+                if (formContent.getClientProperty("cancelExtractionPreview") instanceof Runnable cancel) cancel.run();
+            }
+        });
         setLocationRelativeTo(owner);
         setResizable(true);
     }
@@ -166,11 +191,17 @@ public final class RuleEditorDialog extends JDialog {
     // Form builders
     // -------------------------------------------------------------------------
 
-    private static JPanel buildExtractForm(
+    static JPanel buildExtractForm(
             FlowStep step,
             ExtractRule existing,
             Optional<RequestResponsePanel.ResponseRegexSelection> selection,
             Consumer<ExtractRule> onSave) {
+        return buildExtractForm(step, existing, selection, Optional::empty, onSave);
+    }
+
+    static JPanel buildExtractForm(FlowStep step, ExtractRule existing,
+                                   Optional<RequestResponsePanel.ResponseRegexSelection> selection,
+                                   Supplier<Optional<HttpResponse>> response, Consumer<ExtractRule> onSave) {
         JTextField nameField = new JTextField(existing != null ? existing.name() : "New Extract Rule", 24);
         JCheckBox enabledBox = new JCheckBox("Enabled", existing == null || existing.enabled());
         JComboBox<ExtractRule.SourceSide> sourceSideCombo =
@@ -178,7 +209,17 @@ public final class RuleEditorDialog extends JDialog {
         JComboBox<ExtractRule.ExtractorType> extractorTypeCombo =
                 new JComboBox<>(ExtractRule.ExtractorType.selectableValues());
         JTextField selectorField = new JTextField(existing != null ? existing.sourceSelector() : "", 24);
-        selectorField.setToolTipText("JSON: data.token or pointer:/data/items/0/id; pointer: selects the whole JSON value. Other types use their normal selector.");
+        selectorField.setName("extractSelector");
+        selectorField.setToolTipText("Dot path: data.token (no $); JSON Pointer: pointer:/data/token; JSONPath: $.data.token, $[..], $..token.");
+        extractorTypeCombo.setName("extractType");
+        WrappedText jsonHelp = new WrappedText("Dot path: data.token (no $). JSON Pointer: pointer:/data/token.\n"
+                + "JSONPath query: $.data.token — starts with $; also supports $[...] and $..token.", 440);
+        jsonHelp.setName("jsonSelectorHelp");
+        JLabel jsonModeLabel = new JLabel("JSONPath results:");
+        JComboBox<ExtractRule.JsonResultMode> jsonMode = new JComboBox<>(ExtractRule.JsonResultMode.values());
+        jsonMode.setName("jsonResultMode");
+        jsonMode.setSelectedItem(existing == null ? ExtractRule.JsonResultMode.SINGLE : existing.jsonResultMode());
+        jsonMode.setToolTipText("Require one match stops on ambiguity. First deliberately picks the first match. All returns a JSON array. Applies only to rooted JSONPath queries.");
         JTextField variableField = new JTextField(existing != null ? existing.targetVariableName() : "", 24);
         JComboBox<ExtractRule.RegexSource> regexSourceCombo =
                 new JComboBox<>(ExtractRule.RegexSource.values());
@@ -196,8 +237,14 @@ public final class RuleEditorDialog extends JDialog {
         suggestRegexButton.setToolTipText(selection.isPresent()
                 ? "Build and verify a regex from the text selected in the response editor"
                 : "Select a value in the response editor before opening this dialog");
-        JLabel testResultLabel = new JLabel(" ");
+        JTextArea testResultLabel = new JTextArea("", 4, 44);
+        testResultLabel.setName("extractionPreview");
+        testResultLabel.setEditable(false); testResultLabel.setLineWrap(true); testResultLabel.setWrapStyleWord(true);
+        AtomicInteger previewVersion = new AtomicInteger();
+        AtomicReference<SwingWorker<ExtractionResult, Void>> previewWorker = new AtomicReference<>();
+        Runnable invalidatePreview = () -> { previewVersion.incrementAndGet(); testResultLabel.setText(""); };
         JLabel errorLabel = new JLabel(" ");
+        errorLabel.setName("extractRuleError");
 
         if (existing != null) {
             sourceSideCombo.setSelectedItem(existing.sourceSide());
@@ -214,6 +261,9 @@ public final class RuleEditorDialog extends JDialog {
             ExtractRule.ExtractorType type = (ExtractRule.ExtractorType) extractorTypeCombo.getSelectedItem();
             boolean regex = type == ExtractRule.ExtractorType.REGEX;
             boolean binary = type == ExtractRule.ExtractorType.BODY_RAW;
+            boolean json = type == ExtractRule.ExtractorType.JSON_PATH;
+            jsonHelp.setVisible(json); jsonModeLabel.setVisible(json); jsonMode.setVisible(json);
+            jsonMode.setEnabled(json && JsonBodyExtractor.isJsonPath(selectorField.getText().strip()));
             selectorField.setEnabled(type != ExtractRule.ExtractorType.BODY_TEXT
                     && type != ExtractRule.ExtractorType.BODY_RAW && type != ExtractRule.ExtractorType.STATUS_CODE);
             regexSourceLabel.setVisible(regex);
@@ -224,12 +274,32 @@ public final class RuleEditorDialog extends JDialog {
                     ? "Raw body bytes. Convert explicitly: base64Encode, hexEncode, or decodeText[:CHARSET]."
                     : "Java regex; first match. Group 0 = full match.");
             regexHelpLabel.setVisible(regex || binary);
-            testRegexButton.setText(regex ? "Test regex" : "Test extraction");
-            testRegexButton.setToolTipText("Test against the saved request/response; sends no network request");
+            testRegexButton.setText(regex ? "Test regex" : json ? "Test / Preview JSON" : "Test extraction");
+            testRegexButton.setToolTipText("Preview the displayed response or saved snapshot, and the stored request. No network request is sent.");
             suggestRegexButton.setVisible(regex);
-            testResultLabel.setText(" ");
+            invalidatePreview.run();
         };
         extractorTypeCombo.addActionListener(event -> updateRegexFields.run());
+        selectorField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent event) { changed(); }
+            @Override public void removeUpdate(DocumentEvent event) { changed(); }
+            @Override public void changedUpdate(DocumentEvent event) { changed(); }
+            private void changed() {
+                jsonMode.setEnabled(extractorTypeCombo.getSelectedItem() == ExtractRule.ExtractorType.JSON_PATH
+                        && JsonBodyExtractor.isJsonPath(selectorField.getText().strip()));
+                invalidatePreview.run();
+            }
+        });
+        sourceSideCombo.addActionListener(event -> invalidatePreview.run());
+        enabledBox.addActionListener(event -> invalidatePreview.run());
+        jsonMode.addActionListener(event -> invalidatePreview.run());
+        regexSourceCombo.addActionListener(event -> invalidatePreview.run());
+        regexGroupSpinner.addChangeListener(event -> invalidatePreview.run());
+        transformsArea.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent event) { invalidatePreview.run(); }
+            @Override public void removeUpdate(DocumentEvent event) { invalidatePreview.run(); }
+            @Override public void changedUpdate(DocumentEvent event) { invalidatePreview.run(); }
+        });
 
         JPanel form = buildGridForm(new Object[][]{
                 {"Name:", nameField},
@@ -237,12 +307,14 @@ public final class RuleEditorDialog extends JDialog {
                 {"Source side:", sourceSideCombo},
                 {"Extractor type:", extractorTypeCombo},
                 {"Selector:", selectorField},
+                {"", jsonHelp},
+                {jsonModeLabel, jsonMode},
                 {regexSourceLabel, regexSourceCombo},
                 {regexGroupLabel, regexGroupSpinner},
                 {"", regexHelpLabel},
                 {"", testRegexButton},
                 {"", suggestRegexButton},
-                {"Test result:", testResultLabel},
+                {"Test result:", new JScrollPane(testResultLabel)},
                 {"Target variable:", variableField},
                 {"Transforms (one per line):", new JScrollPane(transformsArea)},
                 {"", ValueTransformHelp.controls(transformsArea)},
@@ -252,7 +324,11 @@ public final class RuleEditorDialog extends JDialog {
 
         JPanel wrapper = new JPanel(new BorderLayout());
         wrapper.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
-        wrapper.add(form, BorderLayout.CENTER);
+        wrapper.add(new JScrollPane(form), BorderLayout.CENTER);
+        wrapper.putClientProperty("cancelExtractionPreview", (Runnable) () -> {
+            previewVersion.incrementAndGet();
+            var worker = previewWorker.get(); if (worker != null) worker.cancel(true);
+        });
 
         JButton okButton = new JButton("OK");
         JButton cancelButton = new JButton("Cancel");
@@ -269,11 +345,27 @@ public final class RuleEditorDialog extends JDialog {
                         variableField.getText().isBlank() ? "preview" : variableField.getText(),
                         transformLines(transformsArea.getText()),
                         (ExtractRule.RegexSource) regexSourceCombo.getSelectedItem(),
-                        (Integer) regexGroupSpinner.getValue());
-                ExtractionResult result = testExtraction(step, candidate);
-                testResultLabel.setText(result.isSuccess()
-                        ? "Extracted (" + result.value().length() + " chars): " + abbreviate(result.value())
-                        : "Extraction failed: " + result.failureReason());
+                        (Integer) regexGroupSpinner.getValue()).withJsonResultMode((ExtractRule.JsonResultMode) jsonMode.getSelectedItem());
+                int version = previewVersion.incrementAndGet();
+                HttpResponse previewResponse = response.get().orElse(null);
+                Window previewWindow = javax.swing.SwingUtilities.getWindowAncestor(wrapper);
+                testRegexButton.setEnabled(false); testResultLabel.setText("Testing the message snapshot… No request is sent.");
+                SwingWorker<ExtractionResult, Void> worker = new SwingWorker<>() {
+                    @Override protected ExtractionResult doInBackground() { return testExtraction(step, candidate, previewResponse); }
+                    @Override protected void done() {
+                        if (previewWindow != null && !previewWindow.isDisplayable()) return;
+                        testRegexButton.setEnabled(true);
+                        if (isCancelled() || version != previewVersion.get()) return;
+                        try {
+                            ExtractionResult result = get();
+                            testResultLabel.setText(result.isSuccess()
+                                    ? "Extracted (" + result.value().length() + " chars):\n" + result.value()
+                                    : "Extraction failed: " + result.failureReason());
+                            testResultLabel.setCaretPosition(0);
+                        } catch (Exception failed) { testResultLabel.setText("Could not preview extraction: " + failed.getClass().getSimpleName()); }
+                    }
+                };
+                previewWorker.set(worker); worker.execute();
             } catch (IllegalArgumentException exception) {
                 testResultLabel.setText("Invalid rule: " + exception.getMessage());
             }
@@ -321,6 +413,10 @@ public final class RuleEditorDialog extends JDialog {
             }
 
             List<String> transforms = transformLines(transformsArea.getText());
+            if (type == ExtractRule.ExtractorType.JSON_PATH) {
+                Optional<String> syntaxError = JsonBodyExtractor.validateSelector(selector);
+                if (syntaxError.isPresent()) { errorLabel.setText(syntaxError.get()); return; }
+            }
             if (type == ExtractRule.ExtractorType.BODY_RAW) {
                 Optional<String> typeError = new ValueTransformService().validateBytesChain(transforms);
                 if (typeError.isPresent()) {
@@ -339,7 +435,7 @@ public final class RuleEditorDialog extends JDialog {
                     variable,
                     transforms,
                     (ExtractRule.RegexSource) regexSourceCombo.getSelectedItem(),
-                    (Integer) regexGroupSpinner.getValue());
+                    (Integer) regexGroupSpinner.getValue()).withJsonResultMode((ExtractRule.JsonResultMode) jsonMode.getSelectedItem());
             onSave.accept(saved);
             closeDialog(okButton);
         });
@@ -487,7 +583,7 @@ public final class RuleEditorDialog extends JDialog {
 
         JPanel wrapper = new JPanel(new BorderLayout());
         wrapper.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
-        wrapper.add(form, BorderLayout.CENTER);
+        wrapper.add(new JScrollPane(form), BorderLayout.CENTER);
 
         JButton okButton = new JButton("OK");
         JButton cancelButton = new JButton("Cancel");
@@ -880,11 +976,18 @@ public final class RuleEditorDialog extends JDialog {
     }
 
     static ExtractionResult testExtraction(FlowStep step, ExtractRule rule) {
+        return testExtraction(step, rule, null);
+    }
+
+    static ExtractionResult testExtraction(FlowStep step, ExtractRule rule, HttpResponse displayedResponse) {
         HttpMessageSnapshot request = new HttpMessageSnapshot(
                 step.requestTemplate().method() + " " + step.requestTemplate().pathAndQuery() + " HTTP/1.1",
                 step.requestTemplate().headerLines(),
                 step.requestTemplate().body());
-        HttpMessageSnapshot response = decodeResponseSnapshot(step.lastResponseRaw());
+        HttpMessageSnapshot response = displayedResponse == null ? decodeResponseSnapshot(step.lastResponseRaw())
+                : new HttpMessageSnapshot(displayedResponse.httpVersion() + " " + displayedResponse.statusCode(),
+                        displayedResponse.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), displayedResponse.bodyToString(),
+                        HttpBodyBytes.readForExtraction(displayedResponse, List.of(rule), ExtractRule.SourceSide.RESPONSE));
         return new ExtractionService().extract(rule, request, response);
     }
 
@@ -966,11 +1069,6 @@ public final class RuleEditorDialog extends JDialog {
         } catch (NumberFormatException exception) {
             return 0;
         }
-    }
-
-    private static String abbreviate(String value) {
-        String normalized = value == null ? "" : value.replace("\r", "\\r").replace("\n", "\\n");
-        return normalized.length() <= 120 ? normalized : normalized.substring(0, 117) + "...";
     }
 
     private static void closeDialog(Component c) {

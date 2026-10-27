@@ -68,9 +68,71 @@ class ManualFlowExecutionTest {
         var edited=flow(f.steps().getFirst(),step("two","/two","tampered"));sent.clear();assertTrue(run(edited,Map.of(),new ManualRunOptions(ManualRunOptions.Mode.NONE,"","REPEATER",List.of())).result().success());
         assertEquals("tampered",sent.get(1).bodyToString());
     }
+    @Test void filteredJsonPathExtractionFeedsTheNextRequestWithoutPickingAnotherActor() {
+        respond.set(request -> response("{\"tokens\":[{\"role\":\"guest\",\"value\":\"guest-token\"},{\"role\":\"admin\",\"value\":\"admin-token\"}]}"));
+        var extract = new ExtractRule("json", "Admin token", true, ExtractRule.SourceSide.RESPONSE, ExtractRule.ExtractorType.JSON_PATH,
+                "$.tokens[?(@.role == 'admin')].value", "selectedToken", List.of());
+        var outcome = run(flow(step("one", "/one", "").withExtractRules(List.of(extract)),
+                step("two", "/two", "{{selectedToken}}")), Map.of(), fixed("x"));
+        assertTrue(outcome.result().success(), outcome.result().failureMessage());
+        assertEquals("admin-token", sent.getLast().bodyToString());
+        assertEquals("token=x", sent.getLast().headerValue("Cookie"));
+    }
     @Test void missingInlineVariableStopsEvenWhenContinueOnErrorIsConfigured(){
         var out=run(flow(step("bad","/bad","{{missing}}"),step("next","/next","")),Map.of(),ManualRunOptions.defaults());
         assertFalse(out.result().success());assertTrue(sent.isEmpty());assertTrue(out.result().failureMessage().contains("Missing manual variable"));
+    }
+    @Test void injectionGateSkipsMissingAndInteractiveInputsButKeepsTemplatesExtractionAndSessionActive() {
+        var missing = new InjectRule("input", "Input", true, InjectRule.Target.REQUEST_HEADER, "X-Input",
+                InjectRule.ValueSourceType.VARIABLE, "absent", "", null);
+        var interactive = new InjectRule("otp", "OTP", true, InjectRule.Target.REQUEST_HEADER, "X-OTP",
+                InjectRule.ValueSourceType.INTERACTIVE, "", "", null);
+        var extract = new ExtractRule("token", "Token", true, ExtractRule.SourceSide.RESPONSE,
+                ExtractRule.ExtractorType.JSON_PATH, "token", "extracted", List.of());
+        var step = step("one", "/one", "{{body}}").withInjectRules(List.of(missing, interactive))
+                .withExtractRules(List.of(extract)).withManualInjectRulesEnabled(false);
+        var outcome = run(flow(step), Map.of("body", "edited"), fixed("x"));
+        assertTrue(outcome.result().success(), outcome.result().failureMessage());
+        assertEquals("edited", sent.getFirst().bodyToString());
+        assertEquals("token=x", sent.getFirst().headerValue("Cookie"));
+        assertFalse(sent.getFirst().hasHeader("X-Input")); assertFalse(sent.getFirst().hasHeader("X-OTP"));
+        assertEquals("from-response", outcome.state().variables().get("extracted"));
+        assertTrue(step.injectRules().stream().allMatch(InjectRule::enabled));
+        sent.clear();
+        assertFalse(run(flow(step.withManualInjectRulesEnabled(true)), Map.of("body", "edited"), fixed("x")).result().success());
+        assertTrue(sent.isEmpty());
+        assertFalse(run(flow(step), Map.of(), fixed("x")).result().success(), "Pausing injections must not bypass missing inline variables");
+        assertTrue(sent.isEmpty());
+    }
+
+    @Test void restoringInjectionGateRunsOnlyOriginallyEnabledRulesAndDoesNotAffectOrdinaryFlowExecution() {
+        var active = new InjectRule("active", "Active", true, InjectRule.Target.REQUEST_HEADER, "X-Active",
+                InjectRule.ValueSourceType.VARIABLE, "value", "", null);
+        var disabled = new InjectRule("disabled", "Disabled", false, InjectRule.Target.REQUEST_HEADER, "X-Disabled",
+                InjectRule.ValueSourceType.STATIC, "", "disabled", null);
+        var step = step("one", "/one", "").withInjectRules(List.of(active, disabled));
+        var paused = step.withManualInjectRulesEnabled(false);
+        assertTrue(run(flow(paused), Map.of(), fixed("x")).result().success());
+        assertFalse(sent.getLast().hasHeader("X-Active"));
+        assertTrue(run(flow(paused.withManualInjectRulesEnabled(true)), Map.of("value", "restored"), fixed("x")).result().success());
+        assertEquals("restored", sent.getLast().headerValue("X-Active")); assertFalse(sent.getLast().hasHeader("X-Disabled"));
+        assertEquals(List.of(active, disabled), paused.injectRules());
+        var ordinary = new FlowEngine(new ExtractionService(), new InjectionService(), request -> { sent.add(request); return response("ok"); });
+        assertTrue(ordinary.execute(flow(paused), ExecutionContext.start("ordinary", "flow", Map.of(), 1).withVariable("value", "ordinary")).success());
+        assertEquals("ordinary", sent.getLast().headerValue("X-Active"));
+    }
+
+    @Test void childFlowsHonorTheirOwnManualInjectionGate() {
+        var action = new StepAction("a", "Child", true, StepActionType.TRIGGER_FLOW, Map.of("flowId", "child"));
+        var parent = step("one", "/one", "").withConditionActionRules(List.of(new StepConditionActionRule("r", "r", true,
+                ConditionMatchPolicy.ALL, List.of(), List.of(action))));
+        var missing = new InjectRule("missing", "Missing", true, InjectRule.Target.REQUEST_HEADER, "X-Missing",
+                InjectRule.ValueSourceType.VARIABLE, "not-provided", "", null);
+        catalog.add(new FlowDefinition("child", "Child", "", true, List.of(step("child-step", "/child", "{{value}}")
+                .withInjectRules(List.of(missing)).withManualInjectRulesEnabled(false)), null, null, null));
+        assertTrue(run(flow(parent), Map.of("value", "child-body"), fixed("x")).result().success());
+        assertEquals(2, sent.size()); assertEquals("child-body", sent.getLast().bodyToString());
+        assertFalse(sent.getLast().hasHeader("X-Missing")); assertEquals("token=x", sent.getLast().headerValue("Cookie"));
     }
     @Test void stepModeRetainsEditableVariablesAndSuppressesActionsUntilRangeRun(){
         var extract=new ExtractRule("e","Token",true,ExtractRule.SourceSide.RESPONSE,ExtractRule.ExtractorType.JSON_PATH,"token","token",List.of());

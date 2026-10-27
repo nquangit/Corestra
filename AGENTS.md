@@ -99,9 +99,18 @@ large controllers/runners with unrelated responsibilities.
    extracts from the live response before running downstream steps and aggregation.
 
 Global HTTP handlers are already part of the implementation. Preserve scope matching,
-recursion guards, extension-origin traffic exclusion in auto-trigger, execution stop bounds,
+recursion guards, Corestra-origin traffic exclusion in auto-trigger, execution stop bounds,
 and pending request/response context. In particular, do not move downstream execution ahead
 of trigger-response extraction: later steps can depend on those extracted variables.
+
+Other extensions can explicitly opt into Auto Trigger through `EXTENSIONS` (`EXTENDER`
+alias); legacy empty tool lists exclude this source. `CorestraTrafficOrigin` uses per-send
+nonces and live message IDs across callback threads and strips its private header before
+transmission. Bootstrap shares it with the native sender, trigger and session boundaries.
+Preserve this guard; a thread-local alone is insufficient, and blanket EXTENSIONS exclusion
+would disable foreign-extension triggers. Network failures have `ExecutionFailureType` in
+`StepExecutionRecord`; cancellation/input/session-binding safeguards precede retry actions.
+The live Burp target does not execute through the engine's send/retry loop.
 
 Use `api.http().sendRequest(...)` through the transport for execution.
 `sendToRepeater(...)` opens a prepared request; it does not automatically send it.

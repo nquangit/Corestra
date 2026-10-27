@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 
 import java.util.Objects;
+import dev.nquangit.corestra.flow.execution.ExecutionFailureType;
 
 /**
  * {@link HttpClient} implementation that delegates to the Montoya HTTP API.
@@ -14,6 +15,7 @@ import java.util.Objects;
 public final class MontoyaHttpClient implements HttpClient {
 
     private final MontoyaApi api;
+    private final CorestraTrafficOrigin origin;
 
     /**
      * Constructs a {@code MontoyaHttpClient} backed by the supplied Montoya API.
@@ -22,7 +24,13 @@ public final class MontoyaHttpClient implements HttpClient {
      * @throws NullPointerException if {@code api} is {@code null}
      */
     public MontoyaHttpClient(MontoyaApi api) {
+        this(api, null);
+    }
+
+    /** Creates a native sender with a shared, registered cross-thread origin boundary. */
+    public MontoyaHttpClient(MontoyaApi api, CorestraTrafficOrigin origin) {
         this.api = Objects.requireNonNull(api, "api must not be null");
+        this.origin = origin;
     }
 
     /**
@@ -33,33 +41,37 @@ public final class MontoyaHttpClient implements HttpClient {
      */
     @Override
     public HttpResponse send(HttpRequest request) {
+        return origin == null ? sendNative(request) : origin.send(request, this::sendNative);
+    }
+
+    private HttpResponse sendNative(HttpRequest request) {
         Http http;
         try {
             http = api.http();
         } catch (RuntimeException exception) {
-            throw new IllegalStateException("Montoya HTTP API is unavailable; Burp may still be starting, "
+            throw new HttpTransportException(ExecutionFailureType.API_UNAVAILABLE, "Montoya HTTP API is unavailable; Burp may still be starting, "
                     + "closing the project, or unloading the extension.", exception);
         }
         if (http == null) {
-            throw new IllegalStateException("Montoya HTTP API is unavailable; Burp may still be starting, "
-                    + "closing the project, or unloading the extension.");
+            throw new HttpTransportException(ExecutionFailureType.API_UNAVAILABLE, "Montoya HTTP API is unavailable; Burp may still be starting, "
+                    + "closing the project, or unloading the extension.", null);
         }
         HttpRequestResponse reqRes;
         try {
             reqRes = http.sendRequest(request);
         } catch (RuntimeException exception) {
-            throw new IllegalStateException("Montoya HTTP send failed; Burp HTTP API may be unavailable during "
+            throw new HttpTransportException(HttpTransportException.classify(exception), "Montoya HTTP send failed; Burp HTTP API may be unavailable during "
                     + "startup, project close, or extension unload.", exception);
         }
 
         if (reqRes == null) {
-            throw new IllegalStateException("sendRequest returned null for request: " + request);
+            throw new HttpTransportException(ExecutionFailureType.NO_RESPONSE, "sendRequest returned no request/response", null);
         }
 
         HttpResponse response = reqRes.response();
 
         if (response == null) {
-            throw new IllegalStateException("No response received for request: " + request);
+            throw new HttpTransportException(ExecutionFailureType.NO_RESPONSE, "No response received from Montoya HTTP send", null);
         }
 
         return response;

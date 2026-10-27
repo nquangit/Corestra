@@ -116,6 +116,9 @@ public final class StepConditionEvaluator {
         MessageParts request = null;
         MessageParts response = null;
         return switch (condition.source()) {
+            case EXECUTION_FAILURE -> Optional.of(Boolean.toString(!record.success()));
+            case FAILURE_TYPE -> Optional.of(record.failureType().name());
+            case ERROR_MESSAGE -> record.errorMessage().isBlank() ? Optional.empty() : Optional.of(record.errorMessage());
             case RESPONSE_STATUS -> record.responseStatusCode() > 0
                     ? Optional.of(Integer.toString(record.responseStatusCode()))
                     : Optional.empty();

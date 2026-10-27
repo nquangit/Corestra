@@ -36,6 +36,7 @@ public final class FlowStep {
     private final List<StepConditionActionRule> conditionActionRules;
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private final HttpSendMode sendModeOverride;
+    private final boolean manualInjectRulesEnabled;
 
     /** Convenience constructor used by most internal code (no stored response, no trigger rule). */
     public FlowStep(
@@ -92,7 +93,16 @@ public final class FlowStep {
                 errorStrategy, lastResponseRaw, triggerRule, includeInAggregation, conditionActionRules, null);
     }
 
-    /** Creates a step with an optional request transport override; null inherits Project settings. */
+    /** Creates a step with its manual injection gate enabled, compatible with existing callers. */
+    public FlowStep(String id, String name, boolean enabled, String notes, StoredRequestTemplate requestTemplate,
+                    List<ExtractRule> extractRules, List<InjectRule> injectRules, List<StepPrecondition> preconditions,
+                    StepErrorStrategy errorStrategy, String lastResponseRaw, StepTriggerRule triggerRule,
+                    boolean includeInAggregation, List<StepConditionActionRule> conditionActionRules, HttpSendMode sendModeOverride) {
+        this(id, name, enabled, notes, requestTemplate, extractRules, injectRules, preconditions, errorStrategy,
+                lastResponseRaw, triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, null);
+    }
+
+    /** Creates a step; absent manual injection gates default to enabled for older project documents. */
     @JsonCreator
     public FlowStep(
             @JsonProperty("id") String id,
@@ -108,7 +118,8 @@ public final class FlowStep {
             @JsonProperty("triggerRule") StepTriggerRule triggerRule,
             @JsonProperty("includeInAggregation") boolean includeInAggregation,
             @JsonProperty("conditionActionRules") List<StepConditionActionRule> conditionActionRules,
-            @JsonProperty("sendModeOverride") HttpSendMode sendModeOverride) {
+            @JsonProperty("sendModeOverride") HttpSendMode sendModeOverride,
+            @JsonProperty("manualInjectRulesEnabled") Boolean manualInjectRulesEnabled) {
         this.id = normalizeRequiredText(id, "id");
         this.name = normalizeRequiredText(name, "name");
         this.enabled = enabled;
@@ -123,13 +134,14 @@ public final class FlowStep {
         this.includeInAggregation = includeInAggregation;
         this.conditionActionRules = copyList(conditionActionRules, "conditionActionRules");
         this.sendModeOverride = sendModeOverride;
+        this.manualInjectRulesEnabled = manualInjectRulesEnabled == null || manualInjectRulesEnabled;
     }
 
     /** Returns a copy of this step with the given Base64-encoded raw response stored. */
     public FlowStep withLastResponseRaw(String raw) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, raw, triggerRule,
-                            includeInAggregation, conditionActionRules, sendModeOverride);
+                            includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the given trigger rule. */
@@ -137,70 +149,79 @@ public final class FlowStep {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
                             rule != null ? rule : StepTriggerRule.disabled(), includeInAggregation,
-                            conditionActionRules, sendModeOverride);
+                            conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the display name changed. */
     public FlowStep withName(String name) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride);
+                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the enabled flag changed. */
     public FlowStep withEnabled(boolean enabled) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride);
+                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the notes text changed. */
     public FlowStep withNotes(String notes) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride);
+                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the request template changed. */
     public FlowStep withRequestTemplate(StoredRequestTemplate template) {
         return new FlowStep(id, name, enabled, notes, template,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride);
+                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the extract rules replaced. */
     public FlowStep withExtractRules(List<ExtractRule> rules) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             rules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride);
+                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the inject rules replaced. */
     public FlowStep withInjectRules(List<InjectRule> rules) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, rules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride);
+                            triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with the includeInAggregation flag changed. */
     public FlowStep withIncludeInAggregation(boolean include) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, include, conditionActionRules, sendModeOverride);
+                            triggerRule, include, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy of this step with condition/action rules replaced. */
     public FlowStep withConditionActionRules(List<StepConditionActionRule> rules) {
         return new FlowStep(id, name, enabled, notes, requestTemplate,
                             extractRules, injectRules, preconditions, errorStrategy, lastResponseRaw,
-                            triggerRule, includeInAggregation, rules, sendModeOverride);
+                            triggerRule, includeInAggregation, rules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /** Returns a copy with a request sending mode, or null to restore project inheritance. */
     public FlowStep withSendModeOverride(HttpSendMode mode) {
         return new FlowStep(id, name, enabled, notes, requestTemplate, extractRules, injectRules,
                 preconditions, errorStrategy, lastResponseRaw, triggerRule, includeInAggregation,
-                conditionActionRules, mode);
+                conditionActionRules, mode, manualInjectRulesEnabled);
+    }
+
+    /** Returns whether retained inject rules apply when this step runs in Manual Testing. */
+    public boolean manualInjectRulesEnabled() { return manualInjectRulesEnabled; }
+
+    /** Toggles the Manual Testing gate without changing any individual inject rule's enabled flag. */
+    public FlowStep withManualInjectRulesEnabled(boolean apply) {
+        return new FlowStep(id, name, enabled, notes, requestTemplate, extractRules, injectRules, preconditions,
+                errorStrategy, lastResponseRaw, triggerRule, includeInAggregation, conditionActionRules, sendModeOverride, apply);
     }
 
     /** Returns the request sending override, or null when inheriting current Project settings. */
@@ -343,6 +364,7 @@ public final class FlowStep {
             return false;
         }
         return enabled == that.enabled
+                && manualInjectRulesEnabled == that.manualInjectRulesEnabled
                 && includeInAggregation == that.includeInAggregation
                 && Objects.equals(id, that.id)
                 && Objects.equals(name, that.name)
@@ -364,7 +386,7 @@ public final class FlowStep {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(id, name, enabled, includeInAggregation, notes, requestTemplate, extractRules, injectRules, preconditions, errorStrategy, triggerRule, conditionActionRules, sendModeOverride);
+        return Objects.hash(id, name, enabled, includeInAggregation, notes, requestTemplate, extractRules, injectRules, preconditions, errorStrategy, triggerRule, conditionActionRules, sendModeOverride, manualInjectRulesEnabled);
     }
 
     /**

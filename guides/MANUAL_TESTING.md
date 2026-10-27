@@ -42,7 +42,24 @@ Transform của VARIABLE được giữ trong placeholder khi biểu diễn đư
 
 **Regex replacement, interactive input, template có transform phức tạp, hoặc mutation không chuyển an toàn được** sẽ ở lại tab **Extract / Inject Rules**. Để giữ đúng thứ tự, các inject rule phía sau rule chưa chuyển cũng được giữ lại. Thông báo sau khi copy liệt kê chúng. Các rule còn bật này chạy **sau** template và có thể ghi đè nội dung bạn sửa.
 
-Nếu muốn sửa hoàn toàn bằng tay, vào **Extract / Inject Rules → Disable injects for this request**. Nút chỉ tắt inject rule của request trong manual flow; extractor vẫn giữ nguyên. Sau đó dùng placeholder hoặc giá trị literal ngay trong editor. Session injection là lớp riêng, tuân theo lựa chọn Session ở toolbar.
+Nếu muốn tạm ngưng retained inject rules, vào **Extract / Inject Rules** và bỏ chọn
+**Apply inject rules for this request**. Chọn lại để áp dụng các rule có **Enabled**
+đang bật. Checkbox không đổi Enabled của từng rule, vì vậy những rule vốn tắt vẫn
+tắt sau khi bật lại checkbox. Trong lúc tạm ngưng, rule còn thiếu biến hoặc có
+interactive input cũng không được thực thi.
+
+Lựa chọn được lưu theo request trong manual flow, giữ khi đổi request/flow, duplicate,
+export/import và mở lại project. Không đổi cấu hình Flowise gốc. Checkbox tạm khoá
+trong lúc Run; mỗi lượt chạy dùng snapshot cấu hình lúc bắt đầu, kể cả child flow.
+Request mới và project cũ chưa có lựa chọn này mặc định áp dụng inject rules.
+
+Inline placeholder như `{{token}}`, extractor và Conditions & Actions vẫn hoạt động.
+Session injection là lớp riêng, tuân theo lựa chọn Session ở toolbar. Muốn sửa token/
+cookie hoàn toàn bằng tay, cần chọn **No session injection** khi phù hợp.
+
+Nếu đã dùng nút **Disable injects for this request** của bản cũ, các rule đó đã được
+lưu với Enabled tắt. Bản mới giữ nguyên trạng thái; cần Edit và bật Enabled cho các
+rule muốn khôi phục một lần, sau đó dùng checkbox để tạm ngưng/bật lại.
 
 ### Tự gợi ý extractor từ response
 
@@ -55,6 +72,12 @@ Tính năng này có trong cả **Flowise → Rules → Extract Rules** và **Ma
 5. **Apply selected** tạo các Extract Rule thông thường cho đúng request đó. Sau đó vẫn có thể Edit để thêm transforms, đổi tên, tắt hoặc xoá. Cancel không tạo rule.
 
 JSON gợi ý dùng selector `pointer:/data/items/0/id` để đọc mảng/nested key. `/` trong tên key được escape thành `~1`, `~` thành `~0`; dấu chấm trong key được giữ nguyên. `pointer:` lấy toàn bộ JSON; object/array được trả dưới dạng JSON text. Selector dot-path cũ như `data.token` vẫn hoạt động theo cách cũ. JSON `null` không được gợi ý vì extractor không trả giá trị cho null.
+
+Khi Edit/Add extractor **JSON_PATH**, có thể dùng JSONPath query như
+`$.items[?(@.enabled == true)].id`. Ghi chú trên UI phân biệt dot path không `$`,
+`pointer:` và JSONPath có `$`. Chọn Require one / First / All matches khi cần;
+**Test / Preview JSON** dùng response đang hiển thị, chạy background và không gửi
+request. Xem [JSON extraction và ví dụ filter/regex](JSON_EXTRACTION.md).
 
 Rule đã có cùng nguồn sẽ được bỏ qua, kể cả khi tên variable khác. Không tạo hai extractor trong cùng request ghi đè vào một variable qua bảng Auto. Với nhiều header/cookie cùng tên, preview phản ánh **giá trị đầu tiên**, đúng logic runtime; không tự đoán Path/Domain. Phân tích giới hạn 500 gợi ý, 2.000 JSON node, 32 tầng và JSON body tối đa 1 Mi ký tự, có thông báo khi chạm giới hạn. Response binary vẫn dùng Raw body thủ công như mục 6.
 
