@@ -199,6 +199,9 @@ và không có rule exclusion; các trigger thiếu biến nay dừng thay vì �
 2. Trong **Source tools**, bật **Extensions / Extender**. Có thể bật cả Scanner nếu
    Burp báo request của công cụ đó là Scanner thay vì Extensions.
 3. Giữ criteria host/path/header/body đủ cụ thể và chọn Auth/Data Profile nếu cần.
+   Khi target là JSON `POST`, thêm **Method / `^POST$`**. Param Miner có thể gửi
+   request phụ đổi sang `GET`; không nên chạy prerequisite rồi ép inject JSON lên
+   request đó.
 4. Chọn phạm vi bước rồi bật trigger như với Repeater/Scanner.
 
 Burp cung cấp loại tool `EXTENSIONS`, không cung cấp tên extension qua trường này;
@@ -224,6 +227,27 @@ session cho traffic đó và injection rules phải cho phép `EXTENSIONS`. Ch�
 opt-in Extensions và bật kế thừa session mới yêu cầu capture traffic Extensions;
 checkbox này không tự bật Session Handler cho toàn bộ extension traffic. Session
 binding vẫn kiểm tra generation, nguồn và destination như các tool khác.
+
+Một số extension legacy, gồm các phiên bản Param Miner dùng API cũ, biểu diễn request
+bị `drop` bằng một đối tượng có **response rỗng** và có thể tự lỗi khi đọc response đó.
+Corestra vẫn dừng nếu thiếu input hoặc inject bắt buộc thất bại, kể cả không chọn
+profile. Gửi lại snapshot chưa inject có thể dùng nhầm token/cifId cũ và làm sai kết
+quả scan. Bản thử nghiệm trước từng cho Extensions bypass khi chuẩn bị thất bại;
+hành vi đó đã được bỏ.
+
+Nếu Logger chỉ có prerequisite #1/#2 mà không có target #3, xem **Corestra > Errors**:
+target có thể đã bị chặn trước khi Burp gửi. Lỗi inject nay kèm method, Content-Type,
+số ký tự body và dạng body (empty/object-like/array-like/other), không in giá trị body.
+`Invalid JSON body` kèm vị trí lỗi, `Empty JSON body`, `JSON root is not an object`
+và lỗi không duyệt được path là các trường hợp khác nhau. `object-like` chỉ nói body
+bắt đầu bằng `{`, không đảm bảo JSON hợp lệ.
+
+Với JSON injection, `OVERWRITE` thay giá trị. `APPEND`/`SKIP_IF_PRESENT` giữ nguyên
+field đã có theo cấu hình và không làm fail request; nếu cần cifId/token mới từ
+prerequisite, dùng `OVERWRITE`. Khi Param Miner cố tình đổi body thành dạng khác,
+criterion Method/Content-Type có thể giới hạn những request mà bộ rule JSON hỗ trợ;
+các probe ngoài criterion không chạy flow. Đây là giới hạn phạm vi test, không tự
+chuyển rule JSON sang form/query hay sửa payload không hợp lệ.
 
 Lỗi kết nối của target live vẫn do bên gửi/Burp xử lý; condition/action phục hồi của
 engine áp dụng cho prerequisite và downstream. Xem [Lỗi thực thi và retry](EXECUTION_FAILURES.md).

@@ -212,7 +212,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 if (rule.inheritSession() && sessionBindings != null) {
                     matchHeaders = initiatingSession.map(source -> SessionRequestSession.matchHeaders(source.originalTraffic().headers(), allHeaders)).orElse(allHeaders);
                 }
-                if (!rule.matches(toolTypeName, host, path, matchHeaders, body)) continue;
+                if (!rule.matchesRequest(toolTypeName, req.method(), host, path, matchHeaders, body)) continue;
 
                 try {
                     HttpRequest modified = processMatch(flow, steps, i, req, allHeaders, body, initiatingSession);
@@ -386,7 +386,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         try {
             mutated = injectionService.applyRequired(matchedStep.injectRules(), ctx.variables(), mutable);
         } catch (IllegalArgumentException invalid) {
-            throw new TriggerInputException("Target injection failed: " + invalid.getMessage());
+            throw new TriggerInputException("Target injection failed: " + invalid.getMessage()
+                    + "; " + targetShape(req, body));
         }
 
         // Phase 3 is deferred to handleHttpResponseReceived so that response-extracted variables
@@ -404,6 +405,25 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         storePending(req.messageId(), new PendingTrigger(
                 flow, matchedIndex, stopIdx, ctx, requestSnapshot, clock.millis()));
         return modified;
+    }
+
+    // Report enough information about a request dropped before Logger sees it, without
+    // including URLs, body contents, authentication headers or parser source excerpts.
+    private static String targetShape(HttpRequest request, String body) {
+        String method = Objects.requireNonNullElse(request.method(), "");
+        if (!method.matches("[A-Z]{1,20}")) method = "OTHER";
+        String type = Objects.requireNonNullElse(request.headerValue("Content-Type"), "");
+        type = type.split(";", 2)[0].strip().toLowerCase(java.util.Locale.ROOT);
+        if (type.isEmpty()) type = "absent";
+        else if (!type.matches("[a-z0-9.+-]{1,64}/[a-z0-9.+-]{1,64}")) type = "other";
+        String shape = body == null || body.isBlank() ? "empty"
+                : switch (body.stripLeading().charAt(0)) {
+                    case '{' -> "object-like";
+                    case '[' -> "array-like";
+                    default -> "other";
+                };
+        return "live target [method=" + method + ", contentType=" + type + ", bodyChars="
+                + (body == null ? 0 : body.length()) + ", bodyShape=" + shape + "]";
     }
 
     private void reportInputFailure(FlowDefinition flow, FlowStep step, int messageId, String reason) {

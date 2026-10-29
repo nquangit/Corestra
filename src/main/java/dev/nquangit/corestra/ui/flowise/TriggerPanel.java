@@ -303,7 +303,7 @@ public final class TriggerPanel extends JPanel {
         JLabel selectorLabel = new JLabel("Header name:");
         JLabel patternLabel  = new JLabel("Pattern (regex):");
 
-        MatchType[] types = {MatchType.HOST, MatchType.PATH, MatchType.HEADER, MatchType.BODY};
+        MatchType[] types = {MatchType.HOST, MatchType.PATH, MatchType.METHOD, MatchType.HEADER, MatchType.BODY};
 
         JTextField selectorField = new JTextField(20);
         JTextField patternField  = new JTextField(20);
@@ -319,15 +319,15 @@ public final class TriggerPanel extends JPanel {
 
         // Re-implement as JComboBox for simplicity
         javax.swing.JComboBox<String> typeCombo = new javax.swing.JComboBox<>(
-                new String[]{"Host", "Path", "Header", "Body"});
+                new String[]{"Host", "Path", "Method", "Header", "Body"});
         typeCombo.setSelectedIndex(selectedIdx);
         typeCombo.addActionListener(e -> {
-            boolean isHeader = typeCombo.getSelectedIndex() == 2;
+            boolean isHeader = types[typeCombo.getSelectedIndex()] == MatchType.HEADER;
             selectorLabel.setEnabled(isHeader);
             selectorField.setEnabled(isHeader);
         });
         // Trigger initial state
-        boolean isHeader = typeCombo.getSelectedIndex() == 2;
+        boolean isHeader = types[typeCombo.getSelectedIndex()] == MatchType.HEADER;
         selectorLabel.setEnabled(isHeader);
         selectorField.setEnabled(isHeader);
 

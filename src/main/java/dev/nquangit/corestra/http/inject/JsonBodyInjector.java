@@ -1,7 +1,9 @@
 package dev.nquangit.corestra.http.inject;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.nquangit.corestra.flow.rule.InjectRule.WriteStrategy;
 
@@ -29,7 +31,7 @@ public final class JsonBodyInjector {
      * Creates a {@code JsonBodyInjector} with a default {@link ObjectMapper}.
      */
     public JsonBodyInjector() {
-        this.mapper = new ObjectMapper();
+        this.mapper = new ObjectMapper().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     }
 
     /**
@@ -49,11 +51,16 @@ public final class JsonBodyInjector {
         Objects.requireNonNull(value, "value");
         Objects.requireNonNull(strategy, "strategy");
 
+        if (body.isBlank()) return InjectionOutcome.failure("Empty JSON body");
         JsonNode root;
         try {
             root = mapper.readTree(body);
-        } catch (Exception e) {
-            return InjectionOutcome.failure("Invalid JSON body: " + e.getMessage());
+        } catch (JsonProcessingException e) {
+            // Parser messages can include excerpts of credentials or scan payloads. Locations
+            // are sufficient to diagnose malformed JSON without copying request data to logs.
+            var location = e.getLocation();
+            return InjectionOutcome.failure("Invalid JSON body" + (location == null ? ""
+                    : " at line " + location.getLineNr() + ", column " + location.getColumnNr()));
         }
 
         if (!(root instanceof ObjectNode)) {
@@ -108,11 +115,13 @@ public final class JsonBodyInjector {
         private final String body;
         private final String message;
         private final boolean succeeded;
+        private final boolean skipped;
 
-        private InjectionOutcome(String body, String message, boolean succeeded) {
+        private InjectionOutcome(String body, String message, boolean succeeded, boolean skipped) {
             this.body = body;
             this.message = message;
             this.succeeded = succeeded;
+            this.skipped = skipped;
         }
 
         /**
@@ -122,7 +131,7 @@ public final class JsonBodyInjector {
          * @return a successful {@code InjectionOutcome}
          */
         public static InjectionOutcome success(String mutatedBody) {
-            return new InjectionOutcome(mutatedBody, null, true);
+            return new InjectionOutcome(mutatedBody, null, true, false);
         }
 
         /**
@@ -132,7 +141,7 @@ public final class JsonBodyInjector {
          * @return a skipped {@code InjectionOutcome} (treated as success for the body value)
          */
         public static InjectionOutcome skipped(String reason) {
-            return new InjectionOutcome(null, reason, false);
+            return new InjectionOutcome(null, reason, false, true);
         }
 
         /**
@@ -142,7 +151,7 @@ public final class JsonBodyInjector {
          * @return a failed {@code InjectionOutcome}
          */
         public static InjectionOutcome failure(String reason) {
-            return new InjectionOutcome(null, reason, false);
+            return new InjectionOutcome(null, reason, false, false);
         }
 
         /**
@@ -152,6 +161,11 @@ public final class JsonBodyInjector {
          */
         public boolean succeeded() {
             return succeeded;
+        }
+
+        /** Returns whether the configured write strategy deliberately preserved an existing value. */
+        public boolean skipped() {
+            return skipped;
         }
 
         /**

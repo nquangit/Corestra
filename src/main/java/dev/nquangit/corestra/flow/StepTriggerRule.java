@@ -155,10 +155,19 @@ public final class StepTriggerRule {
      */
     public boolean matches(String toolTypeName, String host, String path,
                            List<String> headers, String body) {
+        return matchesRequest(toolTypeName, "", host, path, headers, body);
+    }
+
+    /**
+     * Returns whether this rule matches a complete live request, including its HTTP method.
+     * The older overload remains for source compatibility; a METHOD criterion deliberately
+     * does not match when that overload has no method available.
+     */
+    public boolean matchesRequest(String toolTypeName, String method, String host, String path,
+                                  List<String> headers, String body) {
         if (!isToolAllowed(toolTypeName)) return false;
-        for (MatchCriterion c : criteria) {
-            if (!c.matches(host, path, headers, body)) return false;
-        }
+        for (MatchCriterion c : criteria)
+            if (!c.matchesRequest(method, host, path, headers, body)) return false;
         return true;
     }
 
@@ -210,6 +219,8 @@ public final class StepTriggerRule {
 
         /** The part of the request this criterion inspects. */
         public enum MatchType {
+            /** Matches the request HTTP method, for example {@code ^POST$}. */
+            METHOD,
             /** Matches against the request host. */
             HOST,
             /** Matches against the request path (no query string). */
@@ -243,7 +254,14 @@ public final class StepTriggerRule {
          * An empty pattern always matches.
          */
         public boolean matches(String host, String path, List<String> headers, String body) {
+            return matchesRequest("", host, path, headers, body);
+        }
+
+        /** Matches this criterion against a complete request, including its HTTP method. */
+        public boolean matchesRequest(String method, String host, String path, List<String> headers, String body) {
+            if (type == MatchType.METHOD && (method == null || method.isBlank())) return false;
             String target = switch (type) {
+                case METHOD -> method;
                 case HOST   -> host;
                 case PATH   -> path;
                 case HEADER -> findHeaderValue(headers, selector);
@@ -274,6 +292,7 @@ public final class StepTriggerRule {
         // Displayed in the JTable cell
         public String displayType() {
             return switch (type) {
+                case METHOD -> "Method";
                 case HOST   -> "Host";
                 case PATH   -> "Path";
                 case HEADER -> "Header: " + selector;

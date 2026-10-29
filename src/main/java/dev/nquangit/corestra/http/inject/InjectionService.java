@@ -162,9 +162,12 @@ public final class InjectionService {
                         if (outcome.succeeded()) {
                             body = outcome.body();
                             diagnostics.add("Rule '" + rule.name() + "': injected JSON path '" + rule.targetSelector() + "'");
+                        } else if (outcome.skipped()) {
+                            diagnostics.add("Rule '" + rule.name() + "': " + outcome.message());
                         } else {
                             if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) throw new InteractionAbortedException("JSON injection failed for rule '" + rule.name() + "'");
-                            if (required) throw new IllegalArgumentException("Rule '" + rule.name() + "': JSON injection failed");
+                            if (required) throw new IllegalArgumentException("Rule '" + rule.name()
+                                    + "': JSON injection failed: " + outcome.message());
                             diagnostics.add("Rule '" + rule.name() + "': " + outcome.message());
                         }
                     }

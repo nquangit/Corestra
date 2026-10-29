@@ -309,8 +309,8 @@ public final class CorestraBootstrap {
                 new SessionSelectionService(sessionManager,
                         () -> settingsRepo.load().sessionSelection(), prompts), api.logging()::logToError, traffic -> controller.flows().stream().filter(FlowDefinition::enabled)
                         .flatMap(flow -> flow.steps().stream()).filter(FlowStep::enabled).map(FlowStep::triggerRule)
-                        .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matches(traffic.toolTypeName(),
-                                traffic.host(), traffic.path(), traffic.headers(), traffic.body())), trafficOrigin);
+                        .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matchesRequest(traffic.toolTypeName(),
+                                traffic.method(), traffic.host(), traffic.path(), traffic.headers(), traffic.body())), trafficOrigin);
         registry.registerCloseable(sessionHttpHandler);
         api.http().registerHttpHandler(sessionHttpHandler);
 

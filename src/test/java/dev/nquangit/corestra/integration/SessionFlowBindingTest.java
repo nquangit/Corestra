@@ -75,8 +75,8 @@ class SessionFlowBindingTest {
         sessions = new CorestraSessionHttpHandler(manager, injections,
                 new SessionSelectionService(manager, () -> config, (traffic, choices, timeout) -> Optional.of(choice)),
                 message -> {}, traffic -> flows.stream().flatMap(flow -> flow.steps().stream()).map(FlowStep::triggerRule)
-                        .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matches(traffic.toolTypeName(),
-                                traffic.host(), traffic.path(), traffic.headers(), traffic.body())));
+                        .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matchesRequest(traffic.toolTypeName(),
+                                traffic.method(), traffic.host(), traffic.path(), traffic.headers(), traffic.body())));
         bindings = new SessionFlowBindingService(manager, injections, sessions::takeSessionForRequest);
         HttpClient delegate = new HttpClient() {
             @Override public HttpResponse send(HttpRequest r) { return send(r, null); }
@@ -199,6 +199,19 @@ class SessionFlowBindingTest {
         flows.add(flow(step("before", "api.test"), live()));
         var action = trigger.handleHttpRequestToBeSent(request(4, "api.test", 443, true, "/live", List.of(), ""));
         assertEquals(RequestAction.DROP, action.action()); assertTrue(sent.isEmpty()); assertEquals(0, trigger.pendingTriggerCount());
+    }
+
+    @Test void methodScopedTriggerCapturesAndInheritsTheSelectedSession() {
+        var original = live().triggerRule();
+        var criteria = new ArrayList<>(original.criteria());
+        criteria.add(new StepTriggerRule.MatchCriterion(StepTriggerRule.MatchCriterion.MatchType.METHOD, "", "^GET$"));
+        var target = live().withTriggerRule(new StepTriggerRule(true, original.allowedToolTypes(), criteria,
+                original.scope(), "", true, List.of()));
+        flows.add(flow(step("before", "api.test"), target));
+        var action = dispatch(91, "x");
+        assertEquals(RequestAction.CONTINUE, action.action());
+        assertAuth(action.request(), "x");
+        assertAuth(sent.getFirst(), "x");
     }
 
     @Test void foreignDestinationIsRejectedBeforePrerequisitesButExplicitOriginAllowsIt() {

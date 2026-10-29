@@ -147,6 +147,71 @@ class ExtensionAutoTriggerTest {
         assertFalse(new StepTriggerRule(true, List.of(StepTriggerRule.NO_TOOLS), List.of()).matches("SCANNER", "host", "/", List.of(), ""));
     }
 
+    @Test void foreignExtensionCannotBypassRequiredInputsEvenWithoutProfileBindings() {
+        var errors = new CopyOnWriteArrayList<String>();
+        var target = step("target").withInjectRules(List.of(inject("missing"))).withTriggerRule(
+                new StepTriggerRule(true, List.of("EXTENSIONS", "SCANNER"), List.of()));
+        var flow = new FlowDefinition("f", "Flow", "", true, List.of(target), null, null, null);
+        handler = new AutoTriggerHttpHandler(() -> List.of(flow),
+                new FlowEngine(new ExtractionService(), new InjectionService(), request -> response("HTTP/1.1 200 OK\r\n\r\n")),
+                new ExtractionService(), new InjectionService(), null,
+                new TriggerInputService(dev.nquangit.corestra.access.workspace.AccessWorkspace::empty, Clock.systemUTC()),
+                errors::add, origin);
+
+        var extensionRequest = live(41, request(service("api.test", 443, true), "POST", "/target", List.of(), "payload"), ToolType.EXTENSIONS);
+        var extensionAction = handler.handleHttpRequestToBeSent(extensionRequest);
+        assertEquals(RequestAction.DROP, extensionAction.action());
+        assertEquals(0, handler.pendingTriggerCount());
+        assertTrue(errors.getFirst().contains("missing"), errors.toString());
+
+        var scannerRequest = live(42, request(service("api.test", 443, true), "POST", "/target", List.of(), "payload"), ToolType.SCANNER);
+        assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(scannerRequest).action());
+    }
+
+    @Test void fourStepFlowPreparesPostTargetsButLeavesMethodFlipRequestsOutsideItsScope() {
+        var errors = new CopyOnWriteArrayList<String>();
+        var sends = new CopyOnWriteArrayList<String>();
+        var extraction = new ExtractionService(); var injection = new InjectionService();
+        var first = step("first").withExtractRules(List.of(extract("cifId")));
+        var second = step("second").withInjectRules(List.of(inject("cifId")));
+        var jsonRule = new InjectRule("cif", "Inject cifId into cifId", true, InjectRule.Target.REQUEST_JSON_PATH,
+                "cifId", InjectRule.ValueSourceType.VARIABLE, "cifId", "", InjectRule.WriteStrategy.OVERWRITE);
+        var target = step("target").withInjectRules(List.of(jsonRule)).withTriggerRule(new StepTriggerRule(true,
+                List.of("EXTENSIONS"), List.of(new StepTriggerRule.MatchCriterion(
+                StepTriggerRule.MatchCriterion.MatchType.METHOD, "", "^POST$"))));
+        var flow = new FlowDefinition("f", "Flow", "", true, List.of(first, second, target, step("after")), null, null, null);
+        handler = new AutoTriggerHttpHandler(() -> List.of(flow), new FlowEngine(extraction, injection, request -> {
+            sends.add(request.path());
+            return response("HTTP/1.1 200 OK\r\nX-Value: fresh-cif\r\n\r\n");
+        }), extraction, injection, null,
+                new TriggerInputService(dev.nquangit.corestra.access.workspace.AccessWorkspace::empty, Clock.systemUTC()),
+                errors::add, origin);
+
+        var get = live(50, request(service("api.test", 443, true), "GET", "/target", List.of(), ""), ToolType.EXTENSIONS);
+        assertSame(get, handler.handleHttpRequestToBeSent(get).request());
+        assertTrue(sends.isEmpty(), "Method-filtered requests must not run prerequisites");
+
+        for (int id : List.of(51, 52)) {
+            var post = live(id, request(service("api.test", 443, true), "POST", "/target",
+                    List.of(header("Content-Type", "application/json")), "{\"cifId\":\"old\",\"probe\":\"payload\"}"), ToolType.EXTENSIONS);
+            var action = handler.handleHttpRequestToBeSent(post);
+            assertEquals(RequestAction.CONTINUE, action.action());
+            assertEquals("{\"cifId\":\"fresh-cif\",\"probe\":\"payload\"}", action.request().bodyToString());
+            handler.handleHttpResponseReceived(received(id, action.request(), response("HTTP/1.1 200 OK\r\n\r\n")));
+        }
+        assertEquals(List.of("/first", "/second", "/first", "/second"), sends);
+        assertTrue(errors.isEmpty(), errors.toString());
+        assertEquals(0, handler.pendingTriggerCount());
+
+        var malformed = live(53, request(service("api.test", 443, true), "POST", "/target",
+                List.of(header("Content-Type", "application/json")), "SENSITIVE_CREDENTIAL"), ToolType.EXTENSIONS);
+        assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(malformed).action());
+        assertEquals(0, handler.pendingTriggerCount());
+        assertTrue(errors.getLast().contains("Invalid JSON body"), errors.toString());
+        assertTrue(errors.getLast().contains("method=POST, contentType=application/json"), errors.toString());
+        assertFalse(errors.getLast().contains("SENSITIVE_CREDENTIAL"), errors.toString());
+    }
+
     @Test void nativeSessionActionIgnoresOwnSendEvenOnAnotherThread() throws Exception {
         var runs = new AtomicInteger();
         var flow = new FlowDefinition("login", "Login", "", true, List.of(), null, null,

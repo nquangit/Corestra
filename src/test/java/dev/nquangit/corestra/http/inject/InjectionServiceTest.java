@@ -501,6 +501,17 @@ class InjectionServiceTest {
         }
 
         @Test
+        void requiredJsonInjectionExplainsWhyTheBodyCannotBeMutated() {
+            InjectRule r = staticRule("r1", Target.REQUEST_JSON_PATH, "token", "val", WriteStrategy.OVERWRITE);
+            InjectionService.MutableHttpRequest req = request("POST /api HTTP/1.1", List.of(), "not-json");
+
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> service.applyRequired(List.of(r), Map.of(), req));
+
+            assertTrue(failure.getMessage().contains("Invalid JSON body"), failure::getMessage);
+        }
+
+        @Test
         void appendStrategySkipsWhenFieldAlreadyPresent() {
             InjectRule r = staticRule("r1", Target.REQUEST_JSON_PATH, "token", "new", WriteStrategy.APPEND);
             InjectionService.MutableHttpRequest req = request("POST /api HTTP/1.1", List.of(), "{\"token\":\"existing\"}");
@@ -509,6 +520,39 @@ class InjectionServiceTest {
 
             assertTrue(result.body().contains("\"token\":\"existing\""),
                     "APPEND should not overwrite existing JSON value");
+        }
+
+        @Test
+        void requiredJsonRulesTreatIntentionalSkipsAsSuccessAndContinueOtherRules() {
+            for (WriteStrategy strategy : List.of(WriteStrategy.APPEND, WriteStrategy.SKIP_IF_PRESENT)) {
+                var rule = staticRule("keep", Target.REQUEST_JSON_PATH, "cifId", "new", strategy);
+                var next = staticRule("next", Target.REQUEST_HEADER, "X-Next", "applied", WriteStrategy.OVERWRITE);
+                String body = "{ \"cifId\" : \"existing\", \"payload\":\"probe\" }";
+                var result = service.applyRequired(List.of(rule, next), Map.of(),
+                        request("POST /api HTTP/1.1", List.of(), body));
+                assertEquals(body, result.body(), strategy.toString());
+                assertEquals(List.of("X-Next: applied"), result.headers());
+                assertTrue(result.diagnostics().stream().anyMatch(d -> d.contains("skipped")));
+            }
+        }
+
+        @Test
+        void requiredOverwriteRejectsMalformedAndUnsupportedBodiesWithoutLeakingTheirValues() {
+            var rule = staticRule("overwrite", Target.REQUEST_JSON_PATH, "cifId", "fresh", WriteStrategy.OVERWRITE);
+            for (String body : List.of("", "[]", "null", "SENSITIVE_CREDENTIAL", "{\"secret\": SENSITIVE_CREDENTIAL}",
+                    "{\"cifId\":\"old\"} SENSITIVE_CREDENTIAL")) {
+                var error = assertThrows(IllegalArgumentException.class, () -> service.applyRequired(List.of(rule), Map.of(),
+                        request("POST /api HTTP/1.1", List.of(), body)));
+                assertFalse(error.getMessage().contains("SENSITIVE_CREDENTIAL"), error::getMessage);
+            }
+        }
+
+        @Test
+        void requiredOverwriteReplacesCifIdAndRetainsOtherPayloadFields() {
+            var rule = staticRule("overwrite", Target.REQUEST_JSON_PATH, "cifId", "fresh", WriteStrategy.OVERWRITE);
+            var result = service.applyRequired(List.of(rule), Map.of(), request("POST /api HTTP/1.1", List.of(),
+                    "{\"cifId\":\"old\",\"probe\":\"' OR 1=1 --\"}"));
+            assertEquals("{\"cifId\":\"fresh\",\"probe\":\"' OR 1=1 --\"}", result.body());
         }
     }
 

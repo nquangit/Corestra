@@ -52,6 +52,20 @@ class StepTriggerRuleTest {
     }
 
     @Test
+    void methodCriterionSeparatesPostTargetsFromMethodFlipRequests() throws Exception {
+        MatchCriterion c = new MatchCriterion(MatchType.METHOD, "", "^POST$");
+        assertTrue(c.matchesRequest("POST", "h", "/", List.of(), ""));
+        assertFalse(c.matchesRequest("GET", "h", "/", List.of(), ""));
+
+        StepTriggerRule rule = new StepTriggerRule(true, List.of("EXTENSIONS"), List.of(c));
+        assertTrue(rule.matchesRequest("EXTENSIONS", "POST", "h", "/", List.of(), ""));
+        assertFalse(rule.matchesRequest("EXTENSIONS", "GET", "h", "/", List.of(), ""));
+        assertFalse(new MatchCriterion(MatchType.METHOD, "", ".*").matches("h", "/", List.of(), ""));
+        ObjectMapper mapper = new ObjectMapper();
+        assertEquals(rule, mapper.readValue(mapper.writeValueAsString(rule), StepTriggerRule.class));
+    }
+
+    @Test
     void headerCriterionMatchesNamedHeaderValue() {
         MatchCriterion c = new MatchCriterion(MatchType.HEADER, "Authorization", "Bearer .*");
         assertTrue(c.matches("h", "/", List.of("Authorization: Bearer abc123"), ""));
