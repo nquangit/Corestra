@@ -51,3 +51,26 @@ Key workspace documents:
 - `AGENTS.md`
 - `docs/plans/corestra-flowise-implementation-plan.md`
 - `docs/research/montoya-reference.md`
+
+
+## License
+
+Copyright (c) 2026 nquangit. All rights reserved.
+
+Corestra is distributed under the **Restricted Source Contribution License (RSCL-1.0)**.
+
+This is a source-available project, not an open-source project under the Open Source Initiative definition.
+
+Viewing, studying, and modifying the source code for authorized contribution purposes is permitted.
+
+Independent releases, unauthorized redistribution, commercial exploitation, and reuse of the project's protected code in other products are prohibited unless expressly authorized.
+
+See [LICENSE](LICENSE) for the complete terms.
+
+## Contributing
+
+Community contributions are welcome.
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [CLA.md](CLA.md) before submitting a pull request.
+
+For additional licensing permissions, contact nquangit@duck.com.
