@@ -1,0 +1,96 @@
+# Restricted Source Contribution License (RSCL)
+Version 1.0
+
+Copyright (c) 2026 nquangit. All rights reserved.
+
+## 1. Definitions
+
+"Software" means the source code, documentation, assets, configurations, and other copyrightable materials of Corestra made available under this License.
+
+"Licensor" means nquangit or its authorized legal successor.
+
+"Official Repository" means the repository maintained or expressly authorized by the Licensor at https://github.com/nquangit/Corestra.
+
+## 2. Limited License Grant
+
+Subject to compliance with this License, the Licensor grants you a limited, non-exclusive, non-transferable, and non-sublicensable license to:
+
+- Access, inspect, and study the Software.
+- Clone or fork the Official Repository for contribution purposes.
+- Modify, build, and execute the Software solely for development, testing, debugging, and evaluation related to contributions.
+- Submit modifications, bug fixes, documentation, and improvements to the Official Repository.
+
+No other rights are granted except as expressly stated in this License.
+
+## 3. Restrictions
+
+Except with prior written authorization from the Licensor, you may not:
+
+- Publish, release, distribute, or redistribute the Software or derivative works as an independent project or product.
+- Incorporate the Software or substantial portions of its code into another project.
+- Sell, sublicense, rent, or commercially exploit the Software or derivative works.
+- Deploy or provide the Software or derivative works as an operational product or service.
+- Use the Software's protected materials to develop or distribute competing products.
+- Rebrand the Software or represent it as your original work.
+- Remove, alter, or conceal copyright notices, attribution notices, or licensing information.
+- Circumvent or assist others in circumventing the restrictions of this License.
+
+Forks and copies necessary for authorized contribution activities are permitted.
+
+Nothing in this License limits rights expressly granted by applicable hosting platform terms or mandatory provisions of applicable law.
+
+## 4. Contributions
+
+Contributions submitted to the Official Repository are subject to the Contributor License Agreement (CLA.md).
+
+The Licensor retains discretion over whether to accept, modify, merge, release, or reject any contribution.
+
+## 5. Official Releases
+
+Only the Licensor and parties expressly authorized by the Licensor may publish official releases or distribute derivative versions outside the permitted contribution scope.
+
+No permission to publish an independent release is granted by this License.
+
+## 6. Intellectual Property
+
+All intellectual property rights in the Software remain with their respective lawful owners.
+
+This License does not grant any rights to the Licensor's trademarks, logos, branding, or product names, except as necessary to identify the Software accurately.
+
+All rights not expressly granted are reserved.
+
+## 7. Third-Party Materials
+
+Third-party components included in or used by the Software remain subject to their respective licenses.
+
+Nothing in this License overrides rights granted under applicable third-party licenses.
+
+## 8. Termination
+
+The rights granted under this License terminate automatically upon material violation of its terms.
+
+Upon termination, you must cease unauthorized use, modification, and distribution of the Software.
+
+Termination does not affect rights or obligations that survive under applicable law or separate agreements.
+
+## 9. Disclaimer of Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, WHETHER EXPRESS OR IMPLIED.
+
+THE LICENSOR DOES NOT WARRANT THAT THE SOFTWARE IS ERROR-FREE, SECURE, OR SUITABLE FOR ANY PARTICULAR PURPOSE.
+
+## 10. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY DAMAGES ARISING FROM THE USE OF OR INABILITY TO USE THE SOFTWARE.
+
+## 11. Severability
+
+If any provision of this License is held unenforceable, the remaining provisions shall remain effective to the extent permitted by applicable law.
+
+## 12. Additional Permissions
+
+Requests for permissions beyond the scope of this License must be submitted to:
+
+nquangit@duck.com
+
+This License is a proprietary source-available license. It is not an OSI-approved open-source license.
