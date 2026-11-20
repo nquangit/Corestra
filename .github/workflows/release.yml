@@ -1,0 +1,67 @@
+name: Draft release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and create draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Validate tag and set Maven version
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected a stable vMAJOR.MINOR.PATCH tag; got '$tag'."
+            exit 1
+          fi
+
+          mvn --batch-mode --no-transfer-progress \
+            org.codehaus.mojo:versions-maven-plugin:2.19.1:set \
+            -DnewVersion="${tag#v}" \
+            -DgenerateBackupPoms=false
+
+      - name: Build and run tests
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      - name: Generate checksums
+        working-directory: target
+        run: sha256sum corestra-*.jar > SHA256SUMS.txt
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          tag_name: ${{ github.ref_name }}
+          name: Corestra ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            target/corestra-*.jar
+            target/SHA256SUMS.txt
