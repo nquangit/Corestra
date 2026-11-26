@@ -5,6 +5,10 @@ import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.http.inject.InjectionSuggestionService;
+import dev.nquangit.corestra.intel.SuggestionConfidence;
+import dev.nquangit.corestra.intel.flow.CorrelationApplier;
+import dev.nquangit.corestra.intel.flow.CorrelationSuggestion;
+import dev.nquangit.corestra.intel.flow.ValueCorrelationService;
 
 import dev.nquangit.corestra.ui.component.StyledButton;
 import dev.nquangit.corestra.ui.access.AccessUiController;
@@ -203,7 +207,7 @@ public final class RuleSummaryPanel extends JPanel {
             boolean extract = title.equals("Extract Rules");
             StyledButton suggestBtn = StyledButton.neutral(extract ? "Auto…" : "Suggest");
             suggestBtn.setToolTipText(extract ? "Analyze the displayed response and choose fields to extract; no request is sent"
-                    : "Suggest injection rules from extractors in earlier steps");
+                    : "Suggest extract/inject rules by matching values captured from earlier steps, and by extractor names");
             suggestBtn.addActionListener(event -> onSuggest.run());
             buttonBar.add(suggestBtn);
         }
@@ -332,32 +336,128 @@ public final class RuleSummaryPanel extends JPanel {
         FlowDefinition flow = controller.activeFlow();
         FlowStep step = controller.selectedStep();
         if (flow == null || step == null) return;
-        List<InjectionSuggestionService.Suggestion> suggestions =
-                new InjectionSuggestionService().suggest(flow, step);
-        if (suggestions.isEmpty()) {
+        // Analysis parses captured responses of every earlier step; keep it off the EDT.
+        new javax.swing.SwingWorker<List<SuggestionEntry>, Void>() {
+            @Override
+            protected List<SuggestionEntry> doInBackground() {
+                return suggestionEntries(flow, step);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    showSuggestions(flow.id(), step.id(), get());
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                } catch (java.util.concurrent.ExecutionException exception) {
+                    JOptionPane.showMessageDialog(RuleSummaryPanel.this,
+                            "Suggestion analysis failed: " + exception.getCause().getMessage(),
+                            "Injection suggestions", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void showSuggestions(String flowId, String stepId, List<SuggestionEntry> entries) {
+        if (entries.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "No new matching request fields were found. Suggestions require a header, cookie, query, form, or JSON field whose name matches an enabled extractor variable from an earlier step.",
+                    "No new correlations were found. Suggestions need an earlier enabled step whose captured "
+                            + "response (or extractor) produces a value that this request sends literally, "
+                            + "or a request field named like an earlier extractor variable.",
                     "Injection suggestions", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
 
-        JList<InjectionSuggestionService.Suggestion> list = new JList<>(
-                suggestions.toArray(InjectionSuggestionService.Suggestion[]::new));
+        JList<SuggestionEntry> list = new JList<>(entries.toArray(SuggestionEntry[]::new));
         list.setCellRenderer((values, value, index, selected, focus) -> {
-            JLabel label = new JLabel(value.displayLabel());
+            JLabel label = new JLabel(value.label());
+            label.setToolTipText(value.tooltip());
             label.setOpaque(true);
             label.setBackground(selected ? values.getSelectionBackground() : values.getBackground());
             label.setForeground(selected ? values.getSelectionForeground() : values.getForeground());
             return label;
         });
-        list.setSelectionInterval(0, suggestions.size() - 1);
-        int choice = JOptionPane.showConfirmDialog(this, new JScrollPane(list),
+        List<Integer> preselected = new ArrayList<>();
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).preselected()) preselected.add(i);
+        }
+        list.setSelectedIndices(preselected.stream().mapToInt(Integer::intValue).toArray());
+        JPanel content = new JPanel(new BorderLayout(0, 6));
+        content.add(new JLabel("<html>Matched by value against earlier steps' captured responses and by name. "
+                + "LOW items (values that also appear in an earlier request) are not pre-selected.<br>"
+                + "New extractors are added to their producer step.</html>"), BorderLayout.NORTH);
+        JScrollPane scroll = new JScrollPane(list);
+        scroll.setPreferredSize(new Dimension(820, Math.min(420, 40 + entries.size() * 22)));
+        content.add(scroll, BorderLayout.CENTER);
+        int choice = JOptionPane.showConfirmDialog(this, content,
                 "Review injection suggestions", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (choice != JOptionPane.OK_OPTION || list.getSelectedValuesList().isEmpty()) return;
 
-        List<InjectRule> rules = new ArrayList<>(step.injectRules());
-        list.getSelectedValuesList().forEach(suggestion -> rules.add(suggestion.rule()));
-        saveStep(step.withInjectRules(rules));
+        // Apply to the flow as it is now: the user may have edited it while the analysis ran.
+        FlowDefinition flow = controller.activeFlow();
+        FlowStep step = flow == null ? null : flow.steps().stream()
+                .filter(candidate -> candidate.id().equals(stepId)).findFirst().orElse(null);
+        if (flow == null || step == null || !flow.id().equals(flowId)) {
+            JOptionPane.showMessageDialog(this, "The flow or step changed; run Suggest again.",
+                    "Injection suggestions", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        List<InjectRule> byName = new ArrayList<>(step.injectRules());
+        List<CorrelationSuggestion> byValue = new ArrayList<>();
+        for (SuggestionEntry entry : list.getSelectedValuesList()) {
+            if (entry.byName() != null) byName.add(entry.byName().rule());
+            if (entry.byValue() != null) byValue.add(entry.byValue());
+        }
+        FlowStep withNameRules = step.withInjectRules(byName);
+        List<FlowStep> steps = new ArrayList<>(flow.steps());
+        steps.replaceAll(candidate -> candidate.id().equals(step.id()) ? withNameRules : candidate);
+        FlowDefinition base = new FlowDefinition(flow.id(), flow.name(), flow.description(), flow.enabled(),
+                steps, flow.rules(), flow.aggregation(), flow.triggerConfig());
+        try {
+            FlowDefinition updated = new CorrelationApplier().apply(base, step.id(), byValue);
+            controller.updateFlow(updated);
+            updated.steps().stream().filter(candidate -> candidate.id().equals(step.id())).findFirst()
+                    .ifPresent(controller::setSelectedStep);
+        } catch (IllegalArgumentException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(), "Injection suggestions",
+                    JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    /**
+     * Combines value-based correlations with name-based suggestions; a name match wins when both
+     * target the same request slot, so no slot is injected twice.
+     */
+    static List<SuggestionEntry> suggestionEntries(FlowDefinition flow, FlowStep step) {
+        List<SuggestionEntry> entries = new ArrayList<>();
+        java.util.Set<String> slots = new java.util.HashSet<>();
+        for (InjectionSuggestionService.Suggestion suggestion : new InjectionSuggestionService().suggest(flow, step)) {
+            slots.add(slot(suggestion.rule()));
+            entries.add(new SuggestionEntry("[NAME] " + suggestion.displayLabel(),
+                    "Request field name equals an earlier extractor variable", true, suggestion, null));
+        }
+        for (CorrelationSuggestion suggestion : new ValueCorrelationService().suggest(flow, step)) {
+            if (!slots.add(slot(suggestion.injectRule()))) continue;
+            entries.add(new SuggestionEntry(suggestion.displayLabel(), suggestion.reason(),
+                    suggestion.confidence() != SuggestionConfidence.LOW, null, suggestion));
+        }
+        return entries;
+    }
+
+    private static String slot(InjectRule rule) {
+        String selector = rule.target() == InjectRule.Target.REQUEST_HEADER
+                ? rule.targetSelector().toLowerCase(java.util.Locale.ROOT)
+                : rule.targetSelector();
+        return rule.target() + "\u0000" + selector;
+    }
+
+    /** One reviewable suggestion row: either a name-based rule or a value correlation. */
+    record SuggestionEntry(
+            String label,
+            String tooltip,
+            boolean preselected,
+            InjectionSuggestionService.Suggestion byName,
+            CorrelationSuggestion byValue) {
     }
 
     // -------------------------------------------------------------------------

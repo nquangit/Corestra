@@ -23,6 +23,7 @@ import java.util.Set;
  */
 public final class MatrixGenerator {
     private final AccessIdGenerator idGenerator;
+    private final RoleClassifier roleClassifier = new RoleClassifier();
 
     /**
      * Creates a matrix generator.
@@ -50,6 +51,17 @@ public final class MatrixGenerator {
         List<AuthProfile> authProfiles = selectedAuthProfiles(request, workspace);
         List<String> warnings = new ArrayList<>();
 
+        // Explicitly selected disabled templates are always reported; with no explicit selection the
+        // hint only matters when nothing enabled is left (e.g. captured templates saved disabled).
+        boolean explicitSelection = !request.templateIds().isEmpty();
+        long disabledSelected = workspace.templates().values().stream()
+                .filter(template -> !template.enabled())
+                .filter(template -> !explicitSelection || request.templateIds().contains(template.id()))
+                .count();
+        if (disabledSelected > 0 && (explicitSelection || templates.isEmpty())) {
+            warnings.add(disabledSelected + (explicitSelection ? " selected" : "")
+                    + " template(s) are disabled and were skipped; enable them in Access Testing > Templates.");
+        }
         if (templates.isEmpty()) {
             warnings.add("No enabled access request template was selected.");
         }
@@ -709,23 +721,11 @@ public final class MatrixGenerator {
     }
 
     private boolean isAdmin(AuthProfile authProfile) {
-        String text = searchableProfileText(authProfile);
-        return text.contains("admin")
-                || text.contains("superuser")
-                || text.contains("root");
+        return roleClassifier.isAdmin(authProfile);
     }
 
     private boolean isAnonymous(AuthProfile authProfile) {
-        String text = searchableProfileText(authProfile);
-        return text.contains("anonymous")
-                || text.contains("anon")
-                || text.contains("unauthenticated")
-                || text.contains("guest");
-    }
-
-    private String searchableProfileText(AuthProfile authProfile) {
-        return (authProfile.id() + " " + authProfile.name() + " " + authProfile.role())
-                .toLowerCase(Locale.ROOT);
+        return roleClassifier.isAnonymous(authProfile);
     }
 
     private record ProfileMetadata(String tenantId, String branchId) {

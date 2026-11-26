@@ -491,7 +491,10 @@ public final class TeardownFlowRunner {
                     step.id(), "", "", 0, false, reason, Math.max(clock.millis(), startedAt));
             return new DirectStepExecution(false, reason, evidence, Map.of(), List.of());
         }
-        StoredRequestTemplate template = step.requestTemplate();
+        StoredRequestTemplate template = teardownAuth == null
+                ? step.requestTemplate()
+                : dev.nquangit.corestra.access.runner.CapturedIdentityScrubber.forActor(teardownAuth, null)
+                        .scrub(step.requestTemplate());
         MutableHttpRequest mutableRequest = new MutableHttpRequest(
                 template.method() + " " + template.pathAndQuery() + " HTTP/1.1",
                 template.headerLines(),
@@ -684,8 +687,11 @@ public final class TeardownFlowRunner {
             Map<String, String> legacy,
             RenderMode renderMode,
             Map<String, String> variables) {
-        StoredRequestTemplate template = step.requestTemplate();
-        String requestLine = template.method() + " " + template.pathAndQuery() + " HTTP/1.1";
+        StoredRequestTemplate template = teardownAuth == null
+                ? step.requestTemplate()
+                : dev.nquangit.corestra.access.runner.CapturedIdentityScrubber.forActor(teardownAuth, null)
+                        .scrub(step.requestTemplate());
+        String requestLine =template.method() + " " + template.pathAndQuery() + " HTTP/1.1";
         RequestMutationResult mutation = injectionService.apply(
                 step.injectRules(),
                 variables,

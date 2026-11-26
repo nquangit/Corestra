@@ -285,6 +285,53 @@ class AccessUiControllerTest {
     }
 
     @Test
+    void capturedTemplatesCanBeEnabledSoMatrixGenerationProducesRows() {
+        InMemoryAccessRepository repository = new InMemoryAccessRepository();
+        AccessUiController controller = controller(repository);
+        AccessRequestTemplate captured = controller.saveCapturedRequestTemplate(
+                "Captured",
+                new StoredRequestTemplate("GET", "https", "example.test", 443, "/a", List.of(), ""),
+                OperationMetadata.unknown());
+        assertFalse(captured.enabled());
+
+        assertEquals(1, controller.setTemplatesEnabled(List.of(captured.id(), "missing"), true));
+        assertTrue(repository.template(captured.id()).orElseThrow().enabled());
+        assertEquals(0, controller.setTemplatesEnabled(List.of(captured.id()), true));
+        assertEquals(1, controller.setTemplatesEnabled(List.of(captured.id()), false));
+        assertFalse(repository.template(captured.id()).orElseThrow().enabled());
+    }
+
+    @Test
+    void capturedTemplateCanBeParameterizedAndClassifiedFromInsights() {
+        InMemoryAccessRepository repository = new InMemoryAccessRepository();
+        AccessUiController controller = controller(repository);
+        repository.saveAuthProfile(new AuthProfile("auth-owner", "Owner", "user", AuthProfile.MANUAL_PROVIDER_ID,
+                Map.of(), dev.nquangit.corestra.access.auth.AuthState.empty(), true));
+        AccessRequestTemplate captured = controller.saveCapturedRequestTemplate(
+                "Delete order",
+                new StoredRequestTemplate("DELETE", "https", "example.test", 443, "/api/orders/4821", List.of(), ""),
+                OperationMetadata.unknown());
+
+        var insight = controller.templateInsights().getFirst();
+        assertEquals(captured.id(), insight.templateId());
+        assertTrue(insight.operationDiffers());
+        assertEquals(1, insight.literalIdentifiers().size());
+
+        AccessRequestTemplate classified = controller.applyInferredOperation(captured.id());
+        assertEquals(OperationType.STATE_CHANGING, classified.operationMetadata().operationType());
+
+        AccessUiController.TemplateParameterization result =
+                controller.parameterizeTemplate(captured.id(), "auth-owner", "");
+        assertEquals("/api/orders/{{data.orderId}}", result.template().baseRequest().pathAndQuery());
+        assertEquals(Map.of("orderId", "4821"), result.dataProfile().values());
+        assertEquals("auth-owner", result.dataProfile().ownerAuthProfileId());
+        assertTrue(result.template().placeholders().contains(new ScopedVariableRef(VariableScope.DATA, "orderId")));
+        assertEquals(OperationType.STATE_CHANGING, result.template().operationMetadata().operationType());
+        assertThrows(IllegalArgumentException.class,
+                () -> controller.parameterizeTemplate(captured.id(), "auth-owner", ""));
+    }
+
+    @Test
     void authProviderDropdownOptionsIncludeManualAndConfiguredProviders() {
         InMemoryAccessRepository repository = new InMemoryAccessRepository();
         AccessUiController controller = controller(repository);

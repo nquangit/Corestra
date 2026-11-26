@@ -676,6 +676,149 @@ public final class AccessUiController {
     }
 
     /**
+     * Scores every template for access-control risk and recommends strategies, highest risk first.
+     * Captured responses of the template's source flow step are used for sensitive-field hints.
+     *
+     * @return template insights
+     */
+    public List<dev.nquangit.corestra.intel.access.AccessInsight> templateInsights() {
+        return new dev.nquangit.corestra.intel.access.AccessInsightService()
+                .analyzeAll(repository.snapshot(), this::capturedResponse);
+    }
+
+    /**
+     * Replaces a template's operation metadata with the inferred one.
+     *
+     * @param templateId template id
+     * @return updated template
+     */
+    public AccessRequestTemplate applyInferredOperation(String templateId) {
+        ensureEditable();
+        AccessRequestTemplate original = repository.template(templateId)
+                .orElseThrow(() -> new IllegalArgumentException("Template not found: " + templateId));
+        OperationMetadata inferred = new dev.nquangit.corestra.intel.access.OperationClassifier()
+                .classify(original.baseRequest()).metadata();
+        AccessRequestTemplate updated = new AccessRequestTemplate(
+                original.id(), original.name(), original.baseRequest(), original.placeholders(), inferred,
+                original.sourceFlowId(), original.sourceStepId(), original.sourceRequestHash(), original.enabled());
+        repository.saveTemplate(updated);
+        return updated;
+    }
+
+    /**
+     * Replaces literal object identifiers in a template with {@code {{data.*}}} placeholders and stores
+     * the original values in a Data Profile owned by the given actor.
+     *
+     * @param templateId template id
+     * @param ownerAuthProfileId actor that owns the captured object
+     * @param existingDataProfileId Data Profile to add values to, or blank to create a new one
+     * @return updated template, data profile and identifiers that could not be replaced
+     */
+    public TemplateParameterization parameterizeTemplate(
+            String templateId,
+            String ownerAuthProfileId,
+            String existingDataProfileId) {
+        ensureEditable();
+        AccessRequestTemplate original = repository.template(templateId)
+                .orElseThrow(() -> new IllegalArgumentException("Template not found: " + templateId));
+        var identifiers = new dev.nquangit.corestra.intel.access.ObjectIdentifierDetector()
+                .detect(original.baseRequest());
+        String targetDataId = existingDataProfileId == null ? "" : existingDataProfileId.strip();
+        Map<String, String> existingValues = targetDataId.isEmpty() ? Map.of() : repository.dataProfile(targetDataId)
+                .orElseThrow(() -> new IllegalArgumentException("Data profile not found: " + targetDataId))
+                .values();
+        var result = new dev.nquangit.corestra.intel.access.TemplateParameterizer()
+                .parameterize(original.baseRequest(), identifiers, existingValues);
+        if (result.dataValues().isEmpty()) {
+            throw new IllegalArgumentException("No literal object identifiers to parameterize in " + original.name());
+        }
+        java.util.LinkedHashSet<dev.nquangit.corestra.access.variable.ScopedVariableRef> placeholders =
+                new java.util.LinkedHashSet<>(original.placeholders());
+        placeholders.addAll(result.addedPlaceholders());
+        DataProfile data = null;
+        String dataId = targetDataId;
+        for (Map.Entry<String, String> value : result.dataValues().entrySet()) {
+            data = saveDataValue(dataId, "Data: " + original.name(), ownerAuthProfileId,
+                    "data." + value.getKey(), value.getValue());
+            dataId = data.id();
+        }
+        AccessRequestTemplate updated = new AccessRequestTemplate(
+                original.id(), original.name(), result.request(), placeholders, original.operationMetadata(),
+                original.sourceFlowId(), original.sourceStepId(), original.sourceRequestHash(), original.enabled());
+        repository.saveTemplate(updated);
+        return new TemplateParameterization(updated, data, result.skipped());
+    }
+
+    /**
+     * Result of {@link #parameterizeTemplate(String, String, String)}.
+     *
+     * @param template updated template
+     * @param dataProfile data profile holding the original values
+     * @param skipped identifiers that could not be replaced
+     */
+    public record TemplateParameterization(AccessRequestTemplate template, DataProfile dataProfile, List<String> skipped) {
+    }
+
+    private Optional<dev.nquangit.corestra.http.extract.HttpMessageSnapshot> capturedResponse(
+            AccessRequestTemplate template) {
+        if (template.sourceFlowId().isBlank() || template.sourceStepId().isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            for (FlowDefinition flow : flowSupplier.get()) {
+                if (!flow.id().equals(template.sourceFlowId())) {
+                    continue;
+                }
+                for (FlowStep step : flow.steps()) {
+                    if (step.id().equals(template.sourceStepId())) {
+                        return dev.nquangit.corestra.intel.RawHttpMessages.responseFromBase64(step.lastResponseRaw());
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Insights are advisory; a failing flow lookup only removes the sensitive-field hints.
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Enables or disables templates, for example captured templates that are saved disabled for review.
+     *
+     * @param ids template ids to update; unknown ids are ignored
+     * @param enabled new enabled state
+     * @return number of templates whose state changed
+     */
+    public int setTemplatesEnabled(java.util.Collection<String> ids, boolean enabled) {
+        ensureEditable();
+        if (ids == null || ids.isEmpty()) {
+            return 0;
+        }
+        int changed = 0;
+        for (String id : new java.util.LinkedHashSet<>(ids)) {
+            if (id == null || id.isBlank()) {
+                continue;
+            }
+            Optional<AccessRequestTemplate> current = repository.template(id);
+            if (current.isEmpty() || current.get().enabled() == enabled) {
+                continue;
+            }
+            AccessRequestTemplate original = current.get();
+            repository.saveTemplate(new AccessRequestTemplate(
+                    original.id(),
+                    original.name(),
+                    original.baseRequest(),
+                    original.placeholders(),
+                    original.operationMetadata(),
+                    original.sourceFlowId(),
+                    original.sourceStepId(),
+                    original.sourceRequestHash(),
+                    enabled));
+            changed++;
+        }
+        return changed;
+    }
+
+    /**
      * Imports templates for preview without saving them.
      *
      * @param source import source

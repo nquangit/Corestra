@@ -7,7 +7,10 @@ import dev.nquangit.corestra.access.result.AccessTestResult;
 import dev.nquangit.corestra.access.result.Verdict;
 import dev.nquangit.corestra.access.workspace.AccessWorkspace;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -19,6 +22,7 @@ public final class AccessPlanRunner {
     private final SingleAccessTestRunner singleRunner;
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final BaselineVerdictReconciler baselineReconciler = new BaselineVerdictReconciler();
 
     /**
      * Creates a sequential access plan runner.
@@ -51,8 +55,11 @@ public final class AccessPlanRunner {
             AccessPlanSummary.Builder summary = new AccessPlanSummary.Builder(selectedRows.size(), startedAt);
             safeListener.onPlanStarted(selectedRows.size());
             int index = 0;
+            List<AccessTestCase> ranRows = new ArrayList<>();
+            Map<String, AccessRunResult> runResults = new LinkedHashMap<>();
             for (AccessTestCase row : selectedRows) {
                 if (stopRequested.get()) {
+                    reconcileBaselines(ranRows, runResults, summary, runConfig.dryRun());
                     AccessPlanSummary stopped = summary.build(true, System.currentTimeMillis());
                     safeListener.onPlanStopped(stopped);
                     return stopped;
@@ -67,14 +74,18 @@ public final class AccessPlanRunner {
                         runConfig.legacy(), runConfig.renderMode());
                 saveResult(row, result);
                 summary.record(result);
+                ranRows.add(row);
+                runResults.put(row.id(), result);
                 safeListener.onRowFinished(row.id(), result, index, selectedRows.size());
                 if (runConfig.stopOnFirstError() && shouldStopOnResult(result)) {
+                    reconcileBaselines(ranRows, runResults, summary, runConfig.dryRun());
                     AccessPlanSummary stopped = summary.build(true, System.currentTimeMillis());
                     safeListener.onPlanStopped(stopped);
                     return stopped;
                 }
             }
 
+            reconcileBaselines(ranRows, runResults, summary, runConfig.dryRun());
             boolean stopped = stopRequested.get();
             AccessPlanSummary planSummary = summary.build(stopped, System.currentTimeMillis());
             if (stopped) {
@@ -118,6 +129,29 @@ public final class AccessPlanRunner {
         return snapshot.testCases().values().stream()
                 .filter(row -> config.includeDisabledRows() || row.enabled())
                 .toList();
+    }
+
+    /**
+     * Downgrades DENY rows whose ALLOW baseline failed in this run. Dry runs never send, so their
+     * verdicts are left untouched.
+     */
+    private void reconcileBaselines(
+            List<AccessTestCase> ranRows,
+            Map<String, AccessRunResult> runResults,
+            AccessPlanSummary.Builder summary,
+            boolean dryRun) {
+        if (dryRun || ranRows.isEmpty()) {
+            return;
+        }
+        Map<String, AccessTestResult> latest = new LinkedHashMap<>();
+        runResults.forEach((rowId, runResult) -> latest.put(rowId, runResult.result()));
+        Map<String, AccessTestResult> adjusted = baselineReconciler.reconcile(ranRows, latest);
+        adjusted.forEach((rowId, result) -> {
+            AccessRunResult original = runResults.get(rowId);
+            repository.saveResult(result);
+            original.evidence().ifPresent(repository::saveEvidence);
+            summary.replaceVerdict(original.result().verdict(), result.verdict());
+        });
     }
 
     private void saveResult(AccessTestCase original, AccessRunResult result) {

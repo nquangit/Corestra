@@ -122,11 +122,10 @@ public final class BasicResultEvaluator {
             case HEADER_VALUE_CONTAINS -> snapshot.header(indicator.selector())
                     .map(value -> value.contains(indicator.expectedValue()))
                     .orElse(false);
-            case JSON_PATH_EQUALS -> jsonValue(snapshot, indicator.selector())
-                    .map(node -> jsonComparableValue(node).equals(indicator.expectedValue()))
-                    .orElse(false);
-            case JSON_PATH_EXISTS -> jsonValue(snapshot, indicator.selector()).isPresent();
-            case JSON_PATH_NOT_EXISTS -> jsonValue(snapshot, indicator.selector()).isEmpty();
+            case JSON_PATH_EQUALS -> jsonValues(snapshot, indicator.selector()).stream()
+                    .anyMatch(node -> jsonComparableValue(node).equals(indicator.expectedValue()));
+            case JSON_PATH_EXISTS -> !jsonValues(snapshot, indicator.selector()).isEmpty();
+            case JSON_PATH_NOT_EXISTS -> jsonValues(snapshot, indicator.selector()).isEmpty();
         };
     }
 
@@ -173,13 +172,13 @@ public final class BasicResultEvaluator {
             if (!rule.enabled()) {
                 continue;
             }
-            Optional<JsonNode> value = jsonValue(snapshot, rule.jsonPath());
-            if (value.isEmpty()) {
-                continue;
-            }
-            String text = jsonComparableValue(value.get());
-            if (!isMasked(rule.jsonPath(), text, profile.maskedFieldRules(), warnings)) {
-                return Optional.of("Sensitive field leaked: " + rule.jsonPath());
+            List<JsonNode> values = jsonValues(snapshot, rule.jsonPath());
+            for (int index = 0; index < values.size(); index++) {
+                String text = jsonComparableValue(values.get(index));
+                if (!isMasked(rule.jsonPath(), text, profile.maskedFieldRules(), warnings)) {
+                    return Optional.of("Sensitive field leaked: " + rule.jsonPath()
+                            + (values.size() > 1 ? " (match " + (index + 1) + " of " + values.size() + ")" : ""));
+                }
             }
         }
         return Optional.empty();
@@ -205,34 +204,15 @@ public final class BasicResultEvaluator {
         return false;
     }
 
-    private Optional<JsonNode> jsonValue(ResponseSnapshot snapshot, String dotPath) {
-        if (dotPath == null || dotPath.isBlank()) {
-            return Optional.empty();
+    private List<JsonNode> jsonValues(ResponseSnapshot snapshot, String path) {
+        if (path == null || path.isBlank()) {
+            return List.of();
         }
-        JsonNode node = snapshot.jsonBody(objectMapper).orElse(null);
-        if (node == null) {
-            return Optional.empty();
-        }
-        for (String segment : dotPath.split("\\.")) {
-            if (segment.isBlank() || node == null || node.isMissingNode() || node.isNull()) {
-                return Optional.empty();
-            }
-            node = node.get(segment.strip());
-        }
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return Optional.empty();
-        }
-        return Optional.of(node);
+        return JsonPathSelector.select(snapshot.jsonBody(objectMapper).orElse(null), path);
     }
 
     private String jsonComparableValue(JsonNode node) {
-        if (node.isTextual()) {
-            return node.asText();
-        }
-        if (node.isNumber() || node.isBoolean()) {
-            return node.asText();
-        }
-        return node.toString();
+        return JsonPathSelector.comparableText(node);
     }
 
     private EvaluationResult evaluateDeny(int statusCode) {

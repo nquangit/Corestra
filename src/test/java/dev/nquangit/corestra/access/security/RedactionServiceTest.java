@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -66,6 +67,41 @@ class RedactionServiceTest {
                 "Authorization: <redacted>",
                 "X-Display-Name: Alice",
                 "Set-Cookie: <redacted>"), redacted);
+    }
+
+    @Test
+    void commonTokenAndKeyNamesAreSensitive() {
+        DefaultSensitiveKeyMatcher matcher = new DefaultSensitiveKeyMatcher();
+
+        for (String key : List.of("X-API-Key", "x-auth-token", "api_key", "apikey", "client_secret",
+                "access_token", "refresh_token", "id_token", "auth_token", "Proxy-Authorization", "private_key")) {
+            assertTrue(matcher.isSensitive(key), key);
+        }
+        assertFalse(matcher.isSensitive("page"));
+        assertFalse(matcher.isSensitive("tokenizer"));
+    }
+
+    @Test
+    void redactHttpMessageRedactsQueryStringSecretsSnakeCaseBodyFieldsAndBareJwts() {
+        RedactionService service = new RedactionService();
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXZhbHVl";
+
+        String redacted = service.redactHttpMessage("GET /cb?page=2&access_token=qtok&api_key=qkey HTTP/1.1\n"
+                + "X-API-Key: hkey\n"
+                + "X-Debug: trace " + jwt + "\n"
+                + "\n"
+                + "{\"access_token\":\"btok\",\"client_secret\":\"bsec\",\"note\":\"" + jwt + "\"}\n"
+                + "refresh_token=ftok&name=alice");
+
+        assertTrue(redacted.startsWith("GET /cb?page=2&access_token=<redacted>&api_key=<redacted> HTTP/1.1"), redacted);
+        assertTrue(redacted.contains("X-API-Key: <redacted>"));
+        assertTrue(redacted.contains("X-Debug: trace <redacted>"));
+        assertFalse(redacted.contains("qtok"));
+        assertFalse(redacted.contains("btok"));
+        assertFalse(redacted.contains("bsec"));
+        assertFalse(redacted.contains("ftok"));
+        assertFalse(redacted.contains(jwt));
+        assertTrue(redacted.contains("name=alice"));
     }
 
     @Test

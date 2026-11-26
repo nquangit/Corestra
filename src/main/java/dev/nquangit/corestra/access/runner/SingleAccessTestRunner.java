@@ -14,6 +14,7 @@ import dev.nquangit.corestra.access.data.DataProfile;
 import dev.nquangit.corestra.access.evaluate.BasicResultEvaluator;
 import dev.nquangit.corestra.access.evaluate.EvaluationProfile;
 import dev.nquangit.corestra.access.evaluate.EvaluationResult;
+import dev.nquangit.corestra.access.evaluate.JsonPathSelector;
 import dev.nquangit.corestra.access.flow.AccessFlowTarget;
 import dev.nquangit.corestra.access.flow.AccessTargetType;
 import dev.nquangit.corestra.access.flow.FlowInjectionOverride;
@@ -971,7 +972,10 @@ public final class SingleAccessTestRunner {
             ScopedVariableStore store,
             RenderMode mode,
             List<String> warnings) {
-        StoredRequestTemplate template = step.requestTemplate();
+        // Strip the browsing user's captured identity before inject rules and actor auth run, so the
+        // step is sent strictly as the tested actor (explicit inject rules still apply afterwards).
+        StoredRequestTemplate template = CapturedIdentityScrubber.forActor(authProfile,
+                isManual(authProfile) ? null : authProvider).scrub(step.requestTemplate());
         InjectionService.MutableHttpRequest mutableRequest = new InjectionService.MutableHttpRequest(
                 template.method() + " " + template.pathAndQuery() + " HTTP/1.1",
                 template.headerLines(),
@@ -1333,7 +1337,9 @@ public final class SingleAccessTestRunner {
             RenderMode mode,
             List<String> baseWarnings) {
         ScopedVariableStore store = storeFactory.from(env, authProfile.state(), dataProfile, scenario, legacy);
-        RenderedAccessRequest rendered = templateRenderer.render(template, store, mode);
+        AccessRequestTemplate actorTemplate = CapturedIdentityScrubber.forActor(authProfile,
+                isManual(authProfile) ? null : authProvider).scrub(template);
+        RenderedAccessRequest rendered = templateRenderer.render(actorTemplate, store, mode);
         List<String> renderWarnings = warnings(baseWarnings, rendered.warnings());
         if (!rendered.success()) {
             return PreparedTargetRequest.invalid(
@@ -1912,27 +1918,15 @@ public final class SingleAccessTestRunner {
         if (dotPath == null || dotPath.isBlank()) {
             return Optional.empty();
         }
-        JsonNode node = snapshot.jsonBody(objectMapper).orElse(null);
-        if (node == null) {
-            return Optional.empty();
-        }
-        for (String segment : dotPath.split("\\.")) {
-            if (segment.isBlank() || node == null || node.isMissingNode() || node.isNull()) {
-                return Optional.empty();
-            }
-            node = node.get(segment.strip());
-        }
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return Optional.empty();
-        }
-        return Optional.of(node);
+        // Post-check assertions compare one value: use the first match of the shared path syntax
+        // (indexes, [*], $. prefix and implicit array fan-out), same as evaluation profiles.
+        return JsonPathSelector.select(snapshot.jsonBody(objectMapper).orElse(null), dotPath)
+                .stream()
+                .findFirst();
     }
 
     private String jsonComparableValue(JsonNode node) {
-        if (node.isTextual() || node.isNumber() || node.isBoolean()) {
-            return node.asText();
-        }
-        return node.toString();
+        return JsonPathSelector.comparableText(node);
     }
 
     private Verdict finalVerdict(Verdict baseVerdict, ExpectedResult expected, PostCheckRunSummary postChecks) {

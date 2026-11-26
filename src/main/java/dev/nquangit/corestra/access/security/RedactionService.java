@@ -14,8 +14,13 @@ import java.util.regex.Pattern;
 public final class RedactionService {
     private static final String DEFAULT_REPLACEMENT = "<redacted>";
     private static final Pattern INLINE_SECRET_PATTERN = Pattern.compile(
-            "(?i)(accessToken|refreshToken|csrfToken|sessionId|password|deviceId|accountNumber|cardNumber|nationalId)" +
-                    "([\"'\\s:=]+)([^\\s\"',&}]+)");
+            "(?i)(access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|session[-_]?token|csrf[-_]?token"
+                    + "|session[-_]?id|api[-_]?key|client[-_]?secret|private[-_]?key|password|device[-_]?id"
+                    + "|account[-_]?number|card[-_]?number|national[-_]?id)"
+                    + "([\"'\\s:=]+)([^\\s\"',&}]+)");
+    /** Matches a compact JWS/JWT ({@code header.payload.signature}) whose header and payload are JSON objects. */
+    private static final Pattern JWT_PATTERN = Pattern.compile(
+            "eyJ[A-Za-z0-9_-]{4,}\\.eyJ[A-Za-z0-9_-]{4,}\\.[A-Za-z0-9_-]*");
 
     private final SensitiveKeyMatcher keyMatcher;
     private final String replacement;
@@ -109,7 +114,7 @@ public final class RedactionService {
             }
             String name = header.substring(0, colonIndex).strip();
             String value = header.substring(colonIndex + 1).strip();
-            redacted.add(name + ": " + redactHeader(name, value));
+            redacted.add(name + ": " + redactJwts(redactHeader(name, value)));
         }
         return List.copyOf(redacted);
     }
@@ -131,7 +136,7 @@ public final class RedactionService {
         }
 
         List<String> redacted = new ArrayList<>();
-        redacted.add(lines.getFirst());
+        redacted.add(redactJwts(redactStartLineQuery(lines.getFirst())));
         int index = 1;
         List<String> headerLines = new ArrayList<>();
         while (index < lines.size() && !lines.get(index).isEmpty()) {
@@ -160,6 +165,57 @@ public final class RedactionService {
         if (text == null || text.isEmpty()) {
             return "";
         }
-        return INLINE_SECRET_PATTERN.matcher(text).replaceAll("$1$2" + replacement);
+        String quotedReplacement = java.util.regex.Matcher.quoteReplacement(replacement);
+        return redactJwts(INLINE_SECRET_PATTERN.matcher(text).replaceAll("$1$2" + quotedReplacement));
+    }
+
+    /**
+     * Redacts compact JWTs anywhere in the text, whatever field or header carries them.
+     *
+     * @param text text to redact
+     * @return text with JWTs replaced
+     */
+    public String redactJwts(String text) {
+        if (text == null || text.isEmpty()) {
+            return Objects.requireNonNullElse(text, "");
+        }
+        return JWT_PATTERN.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement(replacement));
+    }
+
+    /**
+     * Redacts sensitive query parameter values in a request start line ({@code METHOD target VERSION}).
+     * Response status lines and lines without a query are returned unchanged.
+     */
+    private String redactStartLineQuery(String startLine) {
+        int firstSpace = startLine.indexOf(' ');
+        int query = startLine.indexOf('?');
+        if (firstSpace < 0 || query < firstSpace) {
+            return startLine;
+        }
+        int targetEnd = startLine.indexOf(' ', query);
+        if (targetEnd < 0) {
+            targetEnd = startLine.length();
+        }
+        int fragment = startLine.indexOf('#', query);
+        int queryEnd = fragment >= 0 && fragment < targetEnd ? fragment : targetEnd;
+        String[] pairs = startLine.substring(query + 1, queryEnd).split("&", -1);
+        List<String> redactedPairs = new ArrayList<>(pairs.length);
+        for (String pair : pairs) {
+            int equals = pair.indexOf('=');
+            if (equals > 0 && keyMatcher.isSensitive(decodeQueryName(pair.substring(0, equals)))) {
+                redactedPairs.add(pair.substring(0, equals + 1) + replacement);
+            } else {
+                redactedPairs.add(pair);
+            }
+        }
+        return startLine.substring(0, query + 1) + String.join("&", redactedPairs) + startLine.substring(queryEnd);
+    }
+
+    private static String decodeQueryName(String name) {
+        try {
+            return java.net.URLDecoder.decode(name, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException exception) {
+            return name;
+        }
     }
 }

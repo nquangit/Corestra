@@ -490,6 +490,63 @@ class InjectionServiceTest {
         }
 
         @Test
+        void overwritePreservesExistingNumberAndBooleanTypes() {
+            InjectRule id = staticRule("id", Target.REQUEST_JSON_PATH, "accountId", "456", WriteStrategy.OVERWRITE);
+            InjectRule amount = staticRule("amount", Target.REQUEST_JSON_PATH, "amount", "12.50", WriteStrategy.OVERWRITE);
+            InjectRule flag = staticRule("flag", Target.REQUEST_JSON_PATH, "admin", "true", WriteStrategy.OVERWRITE);
+            InjectRule name = staticRule("name", Target.REQUEST_JSON_PATH, "name", "123", WriteStrategy.OVERWRITE);
+            InjectionService.MutableHttpRequest req = request("POST /api HTTP/1.1", List.of(),
+                    "{\"accountId\":123,\"amount\":1.5,\"admin\":false,\"name\":\"bob\"}");
+
+            RequestMutationResult result = service.apply(List.of(id, amount, flag, name), Map.of(), req);
+
+            assertEquals("{\"accountId\":456,\"amount\":12.50,\"admin\":true,\"name\":\"123\"}", result.body());
+        }
+
+        @Test
+        void nonNumericValueForNumericFieldIsWrittenAsString() {
+            InjectRule id = staticRule("id", Target.REQUEST_JSON_PATH, "accountId", "abc", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(id), Map.of(),
+                    request("POST /api HTTP/1.1", List.of(), "{\"accountId\":123}"));
+
+            assertEquals("{\"accountId\":\"abc\"}", result.body());
+        }
+
+        @Test
+        void arrayIndexesAndDollarPrefixAreSupported() {
+            InjectRule first = staticRule("first", Target.REQUEST_JSON_PATH, "$.items[1].id", "9", WriteStrategy.OVERWRITE);
+            InjectRule dotted = staticRule("dotted", Target.REQUEST_JSON_PATH, "items.0.id", "8", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(first, dotted), Map.of(),
+                    request("POST /api HTTP/1.1", List.of(), "{\"items\":[{\"id\":1},{\"id\":2}]}"));
+
+            assertEquals("{\"items\":[{\"id\":8},{\"id\":9}]}", result.body());
+        }
+
+        @Test
+        void dottedNumericSegmentIsAnObjectKeyUnlessTheNodeIsAnArray() {
+            InjectRule key = staticRule("k", Target.REQUEST_JSON_PATH, "scores.2024", "6", WriteStrategy.OVERWRITE);
+            InjectRule zeros = staticRule("z", Target.REQUEST_JSON_PATH, "code", "007", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(key, zeros), Map.of(),
+                    request("POST /api HTTP/1.1", List.of(), "{\"scores\":{\"2024\":5},\"code\":1}"));
+
+            assertEquals("{\"scores\":{\"2024\":6},\"code\":\"007\"}", result.body());
+        }
+
+        @Test
+        void outOfRangeArrayIndexIsReportedInsteadOfGrowingTheArray() {
+            InjectRule rule = staticRule("r", Target.REQUEST_JSON_PATH, "items[3].id", "9", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(rule), Map.of(),
+                    request("POST /api HTTP/1.1", List.of(), "{\"items\":[{\"id\":1}]}"));
+
+            assertEquals("{\"items\":[{\"id\":1}]}", result.body());
+            assertTrue(result.diagnostics().stream().anyMatch(d -> d.contains("index 3")), result.diagnostics()::toString);
+        }
+
+        @Test
         void skipJsonInjectionWhenBodyIsInvalidJson() {
             InjectRule r = staticRule("r1", Target.REQUEST_JSON_PATH, "token", "val", WriteStrategy.OVERWRITE);
             InjectionService.MutableHttpRequest req = request("POST /api HTTP/1.1", List.of(), "not-json");

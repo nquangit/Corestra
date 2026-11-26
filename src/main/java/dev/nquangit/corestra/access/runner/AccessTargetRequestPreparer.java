@@ -94,7 +94,10 @@ public final class AccessTargetRequestPreparer {
         Objects.requireNonNull(authProfile, "authProfile");
         RenderMode renderMode = Objects.requireNonNullElse(mode, RenderMode.STRICT);
         ScopedVariableStore store = storeFactory.from(env, authProfile.state(), dataProfile, scenario, legacy);
-        RenderedAccessRequest rendered = templateRenderer.render(template, store, renderMode);
+        RenderedAccessRequest rendered = templateRenderer.render(
+                CapturedIdentityScrubber.forActor(authProfile, isManual(authProfile) ? null : authProvider).scrub(template),
+                store,
+                renderMode);
         List<String> renderWarnings = warnings(baseWarnings, rendered.warnings());
         if (!rendered.success()) {
             return PreparedAccessRequest.invalid(

@@ -74,7 +74,7 @@ final class TemplatesPanel extends JPanel implements AccessTabPanel {
             }
         };
         table = new JTable(tableModel);
-        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setFillsViewportHeight(true);
         table.getColumnModel().removeColumn(table.getColumnModel().getColumn(8));
         table.getSelectionModel().addListSelectionListener(event -> {
@@ -104,12 +104,25 @@ final class TemplatesPanel extends JPanel implements AccessTabPanel {
         javax.swing.JButton importTemplates = StyledButton.neutral("Import Templates");
         javax.swing.JButton delete = StyledButton.danger("Delete");
         javax.swing.JButton preview = StyledButton.success("Preview");
+        javax.swing.JButton enable = StyledButton.primary("Enable");
+        javax.swing.JButton disable = StyledButton.neutral("Disable");
+        enable.setToolTipText("Enable the selected templates so Generate Matrix uses them");
+        disable.setToolTipText("Disable the selected templates");
+        enable.addActionListener(event -> setSelectedEnabled(true));
+        disable.addActionListener(event -> setSelectedEnabled(false));
+        javax.swing.JButton insights = StyledButton.success("Insights");
+        insights.setToolTipText("Rank templates by access-control risk, infer operation types,"
+                + " parameterize object ids and see which matrix strategies are ready");
+        insights.addActionListener(event -> TemplateInsightsDialog.open(this, controller, this::refresh));
         add.addActionListener(event -> showManualTemplateDialog());
         importTemplates.addActionListener(event -> showImportTemplatesDialog());
         delete.addActionListener(event -> selectedTemplate().ifPresent(this::deleteTemplate));
         preview.addActionListener(event -> renderPreview());
         panel.add(add);
         panel.add(importTemplates);
+        panel.add(insights);
+        panel.add(enable);
+        panel.add(disable);
         panel.add(delete);
         panel.add(preview);
         panel.add(new JLabel("Auth"));
@@ -351,6 +364,30 @@ final class TemplatesPanel extends JPanel implements AccessTabPanel {
             rendered.setText("");
             issueModel.setRowCount(0);
         });
+    }
+
+    private List<String> selectedTemplateIds() {
+        List<String> ids = new java.util.ArrayList<>();
+        for (int row : table.getSelectedRows()) {
+            ids.add((String) tableModel.getValueAt(table.convertRowIndexToModel(row), 8));
+        }
+        return ids;
+    }
+
+    private void setSelectedEnabled(boolean enabled) {
+        List<String> ids = selectedTemplateIds();
+        if (ids.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Select one or more templates first.",
+                    enabled ? "Enable Templates" : "Disable Templates", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        try {
+            controller.setTemplatesEnabled(ids, enabled);
+            refresh();
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(),
+                    enabled ? "Enable Templates" : "Disable Templates", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private java.util.Optional<AccessRequestTemplate> selectedTemplate() {

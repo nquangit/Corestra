@@ -97,6 +97,20 @@ Immutable, Jackson-annotated. Rebuild the whole chain on change:
   allowed for session-binding injections.
 - Condition sources include `REQUEST_FULL_MESSAGE` / `RESPONSE_FULL_MESSAGE` for regex over the
   whole message.
+
+## Intelligence (`intel`)
+
+Deterministic, explainable heuristics only — no LLM, never sends traffic, reads captured data.
+- `intel.flow.ValueCorrelationService` matches values from earlier steps' `lastResponseRaw` /
+  existing extractors against a later request (header incl. `Bearer` prefix, cookie, query, form,
+  JSON leaf, path segment) and proposes extract+inject pairs; new extractors are re-verified with
+  `ExtractionService`. `CorrelationApplier` applies them immutably. Used by Flowise "Suggest".
+- `intel.access`: `ObjectIdentifierDetector`, `OperationClassifier`, `AccessInsightService`
+  (score + strategy readiness), `TemplateParameterizer` (literal ids → `{{data.*}}`). Used by
+  Access Testing > Templates > Insights.
+- Access runs strip captured identity first (`access.runner.CapturedIdentityScrubber`); JSON paths
+  in evaluation use `access.evaluate.JsonPathSelector`; `BaselineVerdictReconciler` downgrades
+  DENY→OK rows whose ALLOW baseline failed in the same plan run.
 - Live re-login: `SessionManager.recoverFromLiveFailure` checks each Session Handler response against
   the linked provider's failure rules + `targetRetryPolicy` (or a standalone profile's re-login
   status/body conditions), re-authenticates once per generation with a 30 s failure cooldown, and

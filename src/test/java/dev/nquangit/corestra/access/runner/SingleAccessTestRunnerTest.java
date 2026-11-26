@@ -338,6 +338,48 @@ class SingleAccessTestRunnerTest {
     }
 
     @Test
+    void capturedIdentityOfAnotherActorIsNotSentWithTheTargetActor() {
+        CountingHttpClient httpClient = new CountingHttpClient(403, "{}");
+        AccessRequestTemplate captured = new AccessRequestTemplate(
+                "template-1",
+                "Captured as admin",
+                new StoredRequestTemplate("GET", "https", "example.test", 443,
+                        "/accounts/{{data.accountId}}?access_token=admin-query",
+                        List.of("Authorization: Bearer admin-token",
+                                "Cookie: session=admin; remember_me=admin-remember",
+                                "X-Trace: keep"),
+                        ""),
+                Set.of(new ScopedVariableRef(VariableScope.DATA, "accountId")),
+                OperationMetadata.unknown(),
+                "flow-1",
+                "step-1",
+                "hash-1",
+                true);
+        AccessWorkspace base = ownerTargetWorkspace();
+        AccessWorkspace workspace = AccessWorkspace.builder()
+                .authProfile(base.authProfiles().get("auth-owner"))
+                .authProfile(base.authProfiles().get("auth-target"))
+                .dataProfile(base.dataProfiles().get("data-1"))
+                .template(captured)
+                .build();
+
+        runner(httpClient).run(
+                testCase("template-1", "auth-target", "data-1", SetupConfig.none()),
+                workspace,
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                RenderMode.STRICT);
+
+        String sent = httpClient.request(0);
+        assertTrue(sent.contains("Authorization: Bearer target-token"));
+        assertFalse(sent.contains("admin-token"));
+        assertFalse(sent.contains("remember_me"));
+        assertFalse(sent.contains("admin-query"));
+        assertTrue(sent.contains("X-Trace: keep"));
+    }
+
+    @Test
     void postCheckCanUseTargetActorAuthBinding() {
         CountingHttpClient httpClient = new CountingHttpClient(403, "{\"balance\":100}", 200);
         PostCheckRequest postCheck = postCheck("post-target", PostCheckAuthBinding.TARGET_ACTOR, "",

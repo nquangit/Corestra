@@ -59,6 +59,7 @@ the bootstrap registers the session scheduler for cleanup through the unloading 
 | `integration` | HTTP transport, live traffic handlers and Burp session-handling action. |
 | `session` | Project session profiles, scoped selection, authentication, extraction/injection and scheduling. |
 | `access` and subpackages | Access Testing domain, auth, scenarios, matrices, runners, evaluation, evidence and persistence. |
+| `intel`, `intel.flow`, `intel.access` | Offline, deterministic suggestions (no LLM, no traffic): value-based extract→inject correlation for flows; identifier detection, operation inference, risk scoring, strategy readiness and template parameterization for Access Testing. |
 | `persistence` | Flow/project JSON, metadata, settings, migration and UI preferences. |
 | `actions` | Burp context menus, request capture and flow execution actions. |
 | `ui`, `ui.flowise`, `ui.project`, `ui.session`, `ui.access`, `ui.component` | Swing views/controllers, native editors and theme components. |

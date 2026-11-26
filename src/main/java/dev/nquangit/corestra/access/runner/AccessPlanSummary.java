@@ -3,6 +3,7 @@ package dev.nquangit.corestra.access.runner;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dev.nquangit.corestra.access.result.Verdict;
 
 import java.util.Objects;
 
@@ -187,6 +188,22 @@ public final class AccessPlanSummary {
                 case SUSPICIOUS -> suspicious++;
                 case REVIEW -> review++;
                 case ERROR -> error++;
+                case NOT_RUN -> {
+                }
+            }
+        }
+
+        void replaceVerdict(Verdict previous, Verdict replacement) {
+            adjust(previous, -1);
+            adjust(replacement, 1);
+        }
+
+        private void adjust(Verdict verdict, int delta) {
+            switch (verdict) {
+                case OK -> ok += delta;
+                case SUSPICIOUS -> suspicious += delta;
+                case REVIEW -> review += delta;
+                case ERROR -> error += delta;
                 case NOT_RUN -> {
                 }
             }
