@@ -207,6 +207,13 @@ Do not recreate `Authorization`, Cookie, or query injection in Session Handler w
 
 TTL and Scheduler solve different problems. The provider TTL marks Auth State stale; it never sends a request by itself. With Scheduler disabled, matching traffic checks stale authentication on demand. With an optional **Keep-alive Flow** configured in the linked Auth Provider, Scheduler maintains the actor's current session and extends local TTL on success. Without that flow, scheduled runs retain the previous behavior of forcing the provider's auth policy. Set the interval safely below the server timeout without sending excessive traffic.
 
+**Re-login when live traffic shows the session was lost.** TTL alone cannot notice a token revoked early. The Session Handler checks each live response against conditions you configure, and nothing is hardcoded — with no conditions it does nothing:
+
+- **Linked profiles** use the linked Auth Provider's enabled **Failure Rules** (status code, header exists, body contains / not contains) and its **Target Retry Policy**. `REFRESH_AND_RETRY_ONCE`, `LOGIN_AND_RETRY_ONCE` and `REFRESH_THEN_LOGIN_AND_RETRY_ONCE` re-authenticate and then resend the failed request once with the new session; Burp receives the resent response. `NO_RETRY` leaves the response untouched.
+- **Standalone profiles** set **Re-login on status** (e.g. `401, 419`) and/or **Re-login if body contains** (case-insensitive) on the General tab. Either condition re-runs the standalone auth flow; **Resend the failed request once** is optional.
+
+Only one re-authentication runs per session: other in-flight responses from the same lost session are resent with the new session without logging in again. After a failed re-authentication, further attempts wait 30 seconds, so a wrong password cannot flood the login endpoint from Intruder or Scanner. Results are written to the extension's error log (Extensions → Corestra → Errors). A failure page is never used as a source for session extraction rules. The resend goes directly (not through the Proxy pipeline send mode) and, because it is Corestra-origin traffic, it is not processed again by the Session Handler or Auto Trigger. Proxy/Repeater history still shows the original request; the delivered response is the resent one.
+
 Configure keep-alive's independent **Success** and **Session Expired** rules in the provider's **Keep-alive** tab. Timeout/network/unknown failures keep state unchanged and retry with backoff; only an explicit expiry match permits re-authentication. The keep-alive step needs its own `auth.*` injection rules. **Maintain Session Now** tests maintenance immediately; **Run Auth Now** continues to run the original authentication policy. See [Keep-alive setup for one or multiple actors](guides/KEEP_ALIVE.md).
 
 During a Session Handler renewal, matching requests wait until authentication finishes, then render all injection rules from the latest state. Linked provider rules and local overrides use the same Auth Profile snapshot, so cookies such as `JSESSIONID` and `token` are injected together. Internal login traffic through Proxy Pipeline is excluded from live session extraction even after its internal marker header is removed. Responses from requests sent before renewal cannot overwrite the new state. Responses without a tracked outgoing request (including expired or evicted tracking entries) are forwarded without extracting session values.
@@ -273,7 +280,7 @@ Typical provider setup:
 - Validate Flow: a low-impact request that confirms the current auth state is still valid.
 - Injection rule: inject `Bearer {{auth.accessToken}}` into the `Authorization` header.
 - Success rule: status code is 200, or body contains a success marker.
-- Failure rule: status code is 401 or 403, or body contains an auth error code.
+- Failure rule: status code is 401 or 403, or body contains an auth error code. Failure rules are checked against Access Testing/Race target responses and, for Session Handler profiles linked to this provider, against live traffic; the Target Retry Policy decides what happens next. Only `STATUS_CODE`, `HEADER_EXISTS`, `BODY_CONTAINS` and `BODY_NOT_CONTAINS` rules apply to target/live responses.
 
 Provider injection currently supports headers, individual cookies, and query parameters. Put auth values required in a JSON/form body or path directly in an Access Template as `{{auth.variableName}}`, or use a Flow Target with Flowise injection rules.
 

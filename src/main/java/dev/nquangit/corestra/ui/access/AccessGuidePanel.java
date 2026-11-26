@@ -76,7 +76,7 @@ final class AccessGuidePanel extends JPanel {
                 • Dry Run / Render Only each actor at least once.
                 • Confirm Authorization and Cookie values belong to the selected actor.
                 • Confirm owner data and target actor are intentionally different for BOLA tests.
-                • Add failure rules (usually 401/403) if target auth retry is enabled.
+                • Add failure rules (usually 401/403) if target auth retry is enabled; they also drive live re-login for linked Session Handler profiles.
                 • Start with one Matrix row, then expand to the full plan.
 
                 Access requests use an actor-isolated transport. Project Session Handler rules

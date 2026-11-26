@@ -59,6 +59,11 @@ public final class SessionManager {
     private final ConcurrentHashMap<String, AtomicLong> authenticationGenerations = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<Consumer<SessionProfileChangeEvent>> profileChangeListeners =
             new CopyOnWriteArrayList<>();
+    /** Failed live re-authentications per profile; further attempts wait for this cooldown. */
+    static final long LIVE_REAUTH_COOLDOWN_MILLIS = 30_000L;
+    private final ConcurrentHashMap<String, Long> liveReauthFailedAt = new ConcurrentHashMap<>();
+    private final dev.nquangit.corestra.access.runner.TargetAuthFailureDetector failureDetector =
+            new dev.nquangit.corestra.access.runner.TargetAuthFailureDetector();
 
     /**
      * Creates a session manager.
@@ -549,6 +554,137 @@ public final class SessionManager {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Checks a live response handled by the Session Handler against the user's configured
+     * "session lost" conditions and recovers according to the configured policy.
+     *
+     * <ul>
+     *   <li>Linked profiles use the Auth Provider's enabled failure rules and its
+     *       {@code targetRetryPolicy} (refresh / login / refresh-then-login, each followed by one
+     *       resend). {@code NO_RETRY} leaves the response untouched.</li>
+     *   <li>Standalone profiles use their own re-login status codes / body text and re-run the
+     *       standalone auth flow; resending is opt-in.</li>
+     * </ul>
+     *
+     * <p>Only one re-authentication runs per session generation: a response sent with a session
+     * that another request already replaced is resent with the new session without logging in
+     * again. After a failed re-authentication, further attempts wait
+     * {@value #LIVE_REAUTH_COOLDOWN_MILLIS} ms so live traffic cannot hammer the login endpoint.</p>
+     *
+     * @param profileId profile captured when the request was prepared
+     * @param expectedAuthenticationGeneration generation captured when the request was prepared
+     * @param statusCode live response status code
+     * @param rawResponse live response text (status line, headers, blank line, body)
+     * @return what was detected and done; never {@code null}
+     */
+    public LiveAuthRecovery recoverFromLiveFailure(
+            String profileId, long expectedAuthenticationGeneration, int statusCode, String rawResponse) {
+        Optional<SessionProfile> stored = repository.profile(profileId);
+        if (stored.isEmpty() || !stored.get().enabled() || !hasAuthentication(stored.get())) {
+            return LiveAuthRecovery.notAuthFailure();
+        }
+        SessionProfile profile = stored.get();
+        String raw = Objects.requireNonNullElse(rawResponse, "");
+        dev.nquangit.corestra.access.auth.AuthRetryPolicy policy;
+        boolean resend;
+        if (profile.usesLinkedAuthProfile()) {
+            AuthProvider provider = linkedProvider(profile).orElse(null);
+            if (provider == null || !provider.enabled()
+                    || !failureDetector.isAuthFailure(provider, statusCode, raw)) {
+                return LiveAuthRecovery.notAuthFailure();
+            }
+            policy = provider.targetRetryPolicy();
+            resend = true;
+        } else {
+            SessionAuthConfig config = profile.authConfig();
+            if (!config.hasReloginConditions() || !config.indicatesSessionLost(statusCode, body(raw))) {
+                return LiveAuthRecovery.notAuthFailure();
+            }
+            policy = dev.nquangit.corestra.access.auth.AuthRetryPolicy.LOGIN_AND_RETRY_ONCE;
+            resend = config.resendAfterRelogin();
+        }
+        if (policy == dev.nquangit.corestra.access.auth.AuthRetryPolicy.NO_RETRY) {
+            return new LiveAuthRecovery(LiveAuthRecovery.Outcome.POLICY_NO_RETRY, false,
+                    "Session '" + profile.name() + "': failure rule matched (HTTP " + statusCode
+                            + "); provider retry policy is NO_RETRY");
+        }
+
+        ReentrantLock lock = lockFor(profile.id());
+        lock.lock();
+        try {
+            if (authenticationGeneration(profile.id()) != expectedAuthenticationGeneration) {
+                return new LiveAuthRecovery(LiveAuthRecovery.Outcome.ALREADY_REAUTHENTICATED, resend,
+                        "Session '" + profile.name() + "': already re-authenticated by another request");
+            }
+            Long failedAt = liveReauthFailedAt.get(profile.id());
+            if (failedAt != null && clock.millis() - failedAt < LIVE_REAUTH_COOLDOWN_MILLIS) {
+                return new LiveAuthRecovery(LiveAuthRecovery.Outcome.BACKING_OFF, false,
+                        "Session '" + profile.name() + "': re-authentication recently failed; waiting before retrying");
+            }
+            // Invalidate in-flight responses from the lost session before network I/O.
+            advanceAuthenticationGeneration(profile.id());
+            String failure = profile.usesLinkedAuthProfile()
+                    ? reauthenticateLinked(profile, policy)
+                    : reauthenticateStandalone(profile);
+            if (failure != null) {
+                liveReauthFailedAt.put(profile.id(), clock.millis());
+                return new LiveAuthRecovery(LiveAuthRecovery.Outcome.FAILED, false,
+                        "Session '" + profile.name() + "': re-authentication after HTTP " + statusCode
+                                + " failed: " + failure);
+            }
+            liveReauthFailedAt.remove(profile.id());
+            return new LiveAuthRecovery(LiveAuthRecovery.Outcome.REAUTHENTICATED, resend,
+                    "Session '" + profile.name() + "': failure rule matched (HTTP " + statusCode
+                            + "); re-authenticated with " + policy + (resend ? " and resent the request" : ""));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Returns null on success, otherwise the failure reason. */
+    private String reauthenticateLinked(SessionProfile profile,
+                                        dev.nquangit.corestra.access.auth.AuthRetryPolicy policy) {
+        if (!linkedAuthAvailable()) {
+            return "Shared Authentication runtime is unavailable.";
+        }
+        SessionGuard.enter();
+        AuthEnsureResult result;
+        try {
+            result = authManager.retryAuth(profile.linkedAuthProfileId(), "", Map.of(), RenderMode.STRICT, policy);
+        } finally {
+            SessionGuard.exit();
+        }
+        if (result.failed()) {
+            return result.reason();
+        }
+        SessionProfile synchronizedProfile = synchronizeLinkedStateMarker(profile, true);
+        notifyProfileChanged(new SessionProfileChangeEvent(
+                synchronizedProfile.id(), SessionProfileChangeType.STATE_UPDATED));
+        return null;
+    }
+
+    /** Returns null on success, otherwise the failure reason. */
+    private String reauthenticateStandalone(SessionProfile profile) {
+        SessionAuthenticationResult result = runAuthFlowLockedWithResult(profile.id(), AuthRunMode.FORCED);
+        return result.succeeded() ? null : result.reason();
+    }
+
+    private Optional<AuthProvider> linkedProvider(SessionProfile profile) {
+        if (accessRepository == null) {
+            return Optional.empty();
+        }
+        return accessRepository.authProfile(profile.linkedAuthProfileId())
+                .filter(AuthProfile::enabled)
+                .flatMap(actor -> accessRepository.authProvider(actor.providerId()));
+    }
+
+    private static String body(String rawResponse) {
+        int crlf = rawResponse.indexOf("\r\n\r\n");
+        if (crlf >= 0) return rawResponse.substring(crlf + 4);
+        int lf = rawResponse.indexOf("\n\n");
+        return lf >= 0 ? rawResponse.substring(lf + 2) : "";
     }
 
     /**

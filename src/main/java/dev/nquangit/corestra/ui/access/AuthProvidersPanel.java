@@ -319,7 +319,12 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             fields.add(keepAliveFlow);
             fields.add(new JLabel("Fallback Policy"));
             fields.add(fallbackPolicy);
-            fields.add(new JLabel("Target Retry Policy"));
+            JLabel retryLabel = new JLabel("Target Retry Policy");
+            retryLabel.setToolTipText("When a target response matches a Failure Rule: refresh/login, then send it once more. "
+                    + "Applies to Access Testing, Race runs and live traffic of Session Handler profiles linked to this provider. "
+                    + "NO_RETRY leaves the response untouched.");
+            targetRetryPolicy.setToolTipText(retryLabel.getToolTipText());
+            fields.add(retryLabel);
             fields.add(targetRetryPolicy);
             JLabel ttlLabel = new JLabel("Auth State TTL (seconds)");
             ttlLabel.setToolTipText("Fallback reuse period when login/refresh does not extract expiresAt, expiresIn, or expires_in. Set 0 to authenticate every target.");

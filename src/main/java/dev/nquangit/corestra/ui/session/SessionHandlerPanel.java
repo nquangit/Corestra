@@ -93,6 +93,10 @@ public final class SessionHandlerPanel extends JPanel {
     private final JComboBox<FlowOption> authFlowCombo = new JComboBox<>();
     private final JTextField ttlField = new JTextField();
     private final JLabel authSourceHint = new JLabel(" ");
+    private final JTextField reloginStatusField = new JTextField();
+    private final JTextField reloginBodyField = new JTextField();
+    private final JCheckBox resendAfterReloginCheck = new JCheckBox("Resend the failed request once");
+    private final JLabel reloginHint = new JLabel(" ");
     private final JComboBox<SessionScopeMode> scopeModeCombo = new JComboBox<>(SessionScopeMode.values());
     private final JCheckBox schedulerEnabledCheck = new JCheckBox("Enabled");
     private final JTextField schedulerIntervalField = new JTextField();
@@ -268,7 +272,11 @@ public final class SessionHandlerPanel extends JPanel {
         addLabeled(panel, 4, "Standalone auth flow:", authFlowCombo);
         addLabeled(panel, 5, "Standalone TTL seconds:", ttlField);
         addLabeled(panel, 6, "", authSourceHint);
-        addFiller(panel, 7);
+        addLabeled(panel, 7, "Re-login on status:", reloginStatusField);
+        addLabeled(panel, 8, "Re-login if body contains:", reloginBodyField);
+        addLabeled(panel, 9, "", resendAfterReloginCheck);
+        addLabeled(panel, 10, "", reloginHint);
+        addFiller(panel, 11);
         return panel;
     }
 
@@ -411,6 +419,14 @@ public final class SessionHandlerPanel extends JPanel {
         nameField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
         ttlField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         ttlField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
+        reloginStatusField.setToolTipText("Comma-separated HTTP status codes that mean the session was lost, e.g. 401, 419");
+        reloginBodyField.setToolTipText("Case-insensitive text in a live response body that means the session was lost, e.g. Session expired");
+        resendAfterReloginCheck.setToolTipText("After re-login, send the failed live request again with the new session and deliver that response");
+        reloginStatusField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
+        reloginStatusField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
+        reloginBodyField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
+        reloginBodyField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
+        resendAfterReloginCheck.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         enabledCheck.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         authSourceCombo.addActionListener(event -> {
             if (!refreshing
@@ -628,6 +644,12 @@ public final class SessionHandlerPanel extends JPanel {
         linkedAuthProfileCombo.setEnabled(linked && sessionManager.linkedAuthAvailable());
         authFlowCombo.setEnabled(!linked);
         ttlField.setEnabled(!linked);
+        reloginStatusField.setEnabled(!linked);
+        reloginBodyField.setEnabled(!linked);
+        resendAfterReloginCheck.setEnabled(!linked);
+        reloginHint.setText(linked
+                ? "Live re-login uses the linked Auth Provider's Failure rules and Target retry policy (Authentication tab)."
+                : "When a live response matches, the standalone auth flow runs again. Leave both empty to rely on TTL only.");
         authSourceHint.setText(linked
                 ? "Uses the selected actor's credentials, auth state, provider flows, and injection rules."
                 : "Uses this Session Profile's flow, state, TTL, and injection rules.");
@@ -659,6 +681,9 @@ public final class SessionHandlerPanel extends JPanel {
             refreshLinkedAuthProfileOptions(profile.linkedAuthProfileId());
             refreshFlowOptions(profile.authConfig().mainAuthFlowId());
             ttlField.setText(Long.toString(profile.authConfig().ttlSeconds()));
+            reloginStatusField.setText(profile.authConfig().reloginStatusCodes());
+            reloginBodyField.setText(profile.authConfig().reloginBodyContains());
+            resendAfterReloginCheck.setSelected(profile.authConfig().resendAfterRelogin());
             scopeModeCombo.setSelectedItem(profile.scope().mode());
             schedulerEnabledCheck.setSelected(profile.scheduler().enabled());
             schedulerIntervalField.setText(Long.toString(profile.scheduler().intervalSeconds()));
@@ -826,7 +851,8 @@ public final class SessionHandlerPanel extends JPanel {
 
     private SessionAuthConfig readAuthConfig() {
         FlowOption option = (FlowOption) authFlowCombo.getSelectedItem();
-        return new SessionAuthConfig(option == null ? "" : option.id(), parseLong(ttlField.getText(), 0L), List.of());
+        return new SessionAuthConfig(option == null ? "" : option.id(), parseLong(ttlField.getText(), 0L), List.of(),
+                reloginStatusField.getText(), reloginBodyField.getText(), resendAfterReloginCheck.isSelected());
     }
 
     private String selectedLinkedAuthProfileId() {

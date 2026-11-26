@@ -97,6 +97,10 @@ Immutable, Jackson-annotated. Rebuild the whole chain on change:
   allowed for session-binding injections.
 - Condition sources include `REQUEST_FULL_MESSAGE` / `RESPONSE_FULL_MESSAGE` for regex over the
   whole message.
+- Live re-login: `SessionManager.recoverFromLiveFailure` checks each Session Handler response against
+  the linked provider's failure rules + `targetRetryPolicy` (or a standalone profile's re-login
+  status/body conditions), re-authenticates once per generation with a 30 s failure cooldown, and
+  `CorestraSessionHttpHandler` resends the request once via a Corestra-origin sender.
 - `apply(...)` skips unresolved rules with diagnostics; `applyRequired(...)` throws. Paths that
   must not send half-rendered requests (auth flows, auto-trigger, teardown) use the required mode
   or `FlowInputValidator.missingStepVariables`.

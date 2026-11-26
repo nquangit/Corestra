@@ -8,6 +8,9 @@ import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import dev.nquangit.corestra.session.LiveAuthRecovery;
+import dev.nquangit.corestra.session.SessionProfile;
 import dev.nquangit.corestra.flow.rule.InjectRule;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
@@ -45,7 +48,8 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     private final long retentionMillis;
     private volatile boolean closed;
     private final SessionSelectionService sessionSelector;
-    private final Consumer<String> diagnostics;
+    private volatile Consumer<String> diagnostics;
+    private volatile HttpClient retrySender;
     private final Predicate<SessionTrafficContext> captureSession;
     private CorestraTrafficOrigin origin;
 
@@ -207,16 +211,98 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
                     .flatMap(profile -> profile.extractionRules().stream())
                     .filter(rule -> rule.enabled() && rule.extractorType() == ExtractRule.ExtractorType.BODY_RAW)
                     .map(rule -> rule.toExtractRule()).toList();
+            HttpMessageSnapshot liveResponse = responseSnapshot(responseReceived, binaryRules);
+            SessionTrafficContext context = requestContext(initiating, marker.toolTypeName());
+
+            // User-configured "session lost" conditions take precedence: a failure page must not be
+            // treated as a source of fresh session values.
+            LiveAuthRecovery recovery = sessionManager.recoverFromLiveFailure(marker.profileId(),
+                    marker.authenticationGeneration(), responseReceived.statusCode(),
+                    liveResponse.regexInput(ExtractRule.RegexSource.FULL_MESSAGE));
+            if (recovery.detected()) {
+                if (recovery.outcome() == LiveAuthRecovery.Outcome.REAUTHENTICATED
+                        || recovery.outcome() == LiveAuthRecovery.Outcome.FAILED) {
+                    report(recovery.message());
+                }
+                if (recovery.resend() && !closed) {
+                    Optional<HttpResponse> retried = resendWithCurrentSession(marker, initiating, context, binaryRules);
+                    if (retried.isPresent()) {
+                        return ResponseReceivedAction.continueWith(retried.get());
+                    }
+                }
+                return ResponseReceivedAction.continueWith(responseReceived);
+            }
             sessionManager.applyExtractionRulesIfCurrent(
                     marker.profileId(),
                     marker.authenticationGeneration(),
-                    requestContext(initiating, marker.toolTypeName()),
+                    context,
                     requestSnapshot(initiating, binaryRules),
-                    responseSnapshot(responseReceived, binaryRules));
+                    liveResponse);
         } catch (RuntimeException ignored) {
             // Session handling must never break the live response.
         }
         return ResponseReceivedAction.continueWith(responseReceived);
+    }
+
+    /**
+     * Re-applies the profile's current injection rules to the failed request and sends it once.
+     * The resend is a Corestra-origin send, so neither this handler nor Auto Trigger reprocesses it.
+     */
+    private Optional<HttpResponse> resendWithCurrentSession(SessionRequestMarker marker, HttpRequest initiating,
+                                                            SessionTrafficContext context, List<ExtractRule> binaryRules) {
+        HttpClient sender = retrySender;
+        if (sender == null) {
+            return Optional.empty();
+        }
+        Optional<SessionProfile> profile = sessionManager.profiles().stream()
+                .filter(candidate -> candidate.id().equals(marker.profileId())).findFirst();
+        if (profile.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            SessionInjectionPlan plan = sessionManager.prepareInjectionRules(profile.get(), context);
+            MutableHttpRequest mutable = new MutableHttpRequest(
+                    initiating.method() + " " + requestPath(initiating) + " " + requestVersion(initiating),
+                    headerLines(initiating), initiating.bodyToString());
+            HttpRequest retry = HttpRequestMutationAdapter.apply(initiating,
+                    injectionService.apply(plan.rules(), java.util.Map.of(), mutable));
+            HttpResponse response = sender.send(retry);
+            if (response == null) {
+                return Optional.empty();
+            }
+            sessionManager.applyExtractionRulesIfCurrent(plan.profileId(), plan.authenticationGeneration(), context,
+                    requestSnapshot(retry, binaryRules), HttpMessageSnapshots.response(response, binaryRules));
+            return Optional.of(response);
+        } catch (RuntimeException failure) {
+            report("Session '" + profile.get().name() + "': resend after re-authentication failed: "
+                    + failure.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Sets the transport used to resend a live request once after re-authentication. Without it,
+     * recovery still re-authenticates but the original failed response is delivered.
+     *
+     * @param sender Corestra-origin transport, or {@code null} to disable resending
+     */
+    public void setRetrySender(HttpClient sender) {
+        this.retrySender = sender;
+    }
+
+    /**
+     * Replaces the diagnostics sink (e.g. Burp's extension error log).
+     *
+     * @param sink message consumer
+     */
+    public void setDiagnostics(Consumer<String> sink) {
+        this.diagnostics = Objects.requireNonNull(sink, "sink");
+    }
+
+    private void report(String message) {
+        if (message == null || message.isBlank()) return;
+        try { diagnostics.accept("Corestra: " + message); }
+        catch (RuntimeException ignored) { /* Logging must not affect live traffic. */ }
     }
 
     private static SessionTrafficContext requestContext(HttpRequestToBeSent request) {

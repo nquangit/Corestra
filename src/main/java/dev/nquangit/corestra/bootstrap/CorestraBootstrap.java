@@ -311,6 +311,9 @@ public final class CorestraBootstrap {
                         .flatMap(flow -> flow.steps().stream()).filter(FlowStep::enabled).map(FlowStep::triggerRule)
                         .anyMatch(rule -> rule.enabled() && rule.inheritSession() && rule.matchesRequest(traffic.toolTypeName(),
                                 traffic.method(), traffic.host(), traffic.path(), traffic.headers(), traffic.body())), trafficOrigin);
+        // Resend a live request once after the user's "session lost" conditions trigger re-auth.
+        // Corestra-origin sends are skipped by this handler and Auto Trigger, so there is no loop.
+        sessionHttpHandler.setRetrySender(new MontoyaHttpClient(api, trafficOrigin));
         registry.registerCloseable(sessionHttpHandler);
         api.http().registerHttpHandler(sessionHttpHandler);
 

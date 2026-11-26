@@ -7,8 +7,21 @@ import dev.nquangit.corestra.access.auth.AuthRuleType;
 import java.util.Locale;
 import java.util.Objects;
 
-final class TargetAuthFailureDetector {
-    boolean isAuthFailure(AuthProvider provider, int statusCode, String rawResponse) {
+/**
+ * Decides whether a target response means the actor's session was lost, using the Auth Provider's
+ * enabled failure rules. Shared by Access Testing, Race and live Session Handler traffic so every
+ * path interprets the user's rules identically.
+ */
+public final class TargetAuthFailureDetector {
+    /**
+     * Returns whether an enabled provider failure rule matches the response.
+     *
+     * @param provider auth provider whose failure rules are evaluated
+     * @param statusCode response status code
+     * @param rawResponse raw response text (status line, headers, blank line, body)
+     * @return true when a failure rule matches
+     */
+    public boolean isAuthFailure(AuthProvider provider, int statusCode, String rawResponse) {
         Objects.requireNonNull(provider, "provider");
         for (AuthFailureRule rule : provider.failureRules()) {
             if (rule.enabled() && matches(rule, statusCode, rawResponse)) {

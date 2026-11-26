@@ -87,3 +87,26 @@ validate flow phù hợp, để tránh đánh dấu phiên chưa đăng nhập l
 Delay sau login hoặc chờ lock lâu hơn không tự làm hidden field cũ trở thành field
 hợp lệ của session mới. Cũng không tự retry action khi gặp 302: cần dựng lại context
 trước và xác định chính sách gửi lại phù hợp với operation.
+
+## Đăng nhập lại khi traffic thật báo mất session
+
+TTL không phát hiện được token bị thu hồi sớm. Session Handler đối chiếu từng response
+thật với điều kiện **do bạn cấu hình**; không có điều kiện thì không làm gì.
+
+- **Profile liên kết actor (Linked):** dùng **Failure Rules** đang bật của Auth Provider
+  (STATUS_CODE, HEADER_EXISTS, BODY_CONTAINS, BODY_NOT_CONTAINS) và **Target Retry Policy**.
+  Các policy `*_AND_RETRY_ONCE` refresh/login rồi gửi lại request lỗi **một lần** bằng session
+  mới; Burp nhận response của lần gửi lại. `NO_RETRY` giữ nguyên response.
+- **Profile standalone:** tab General → **Re-login on status** (ví dụ `401, 419`) và/hoặc
+  **Re-login if body contains** (không phân biệt hoa thường). Khớp một trong hai là chạy lại
+  auth flow; **Resend the failed request once** là tùy chọn.
+
+Mỗi session chỉ login lại một lần: các response khác còn đang bay của session cũ được gửi lại
+bằng session mới mà không login thêm. Login lại thất bại thì các lần sau chờ 30 giây, tránh
+Intruder/Scanner bắn dồn vào endpoint login (và khóa tài khoản). Kết quả ghi vào Extensions →
+Corestra → Errors. Trang lỗi không bao giờ được dùng làm nguồn cho extraction rule.
+
+Với form có context như mục trên (302 về trang login vì hidden field cũ), chỉ bật gửi lại khi
+operation chịu được việc gửi hai lần. Profile standalone có thể bỏ chọn **Resend** để chỉ
+login lại cho request kế tiếp. Với profile linked, mọi policy có login lại đều gửi lại một lần;
+`NO_RETRY` thì không login lại.
