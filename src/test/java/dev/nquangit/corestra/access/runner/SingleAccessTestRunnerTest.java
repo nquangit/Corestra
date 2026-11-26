@@ -493,6 +493,25 @@ class SingleAccessTestRunnerTest {
     }
 
     @Test
+    void teardownWithMissingInjectVariableIsNotSent() {
+        CountingHttpClient httpClient = new CountingHttpClient(403, 200);
+
+        AccessRunResult result = runnerWithTeardown(httpClient, List.of(teardownScenarioFlow())).run(
+                testCaseWithTeardown(teardownConfig(true, false, false, TeardownAuthBinding.TARGET_ACTOR)),
+                workspace(true, true, true),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                RenderMode.STRICT);
+
+        // Only the target request was sent; the cleanup request would have used the stale template value.
+        assertEquals(1, httpClient.count());
+        assertEquals(Verdict.OK, result.result().verdict());
+        assertTrue(result.result().warnings().stream().anyMatch(warning -> warning.contains("Teardown flow failed")));
+        assertTrue(result.evidence().orElseThrow().teardownEvidence().getFirst().reason().contains("missing variables"));
+    }
+
+    @Test
     void teardownFailureAddsWarningWithoutHidingTargetVerdict() {
         CountingHttpClient httpClient = new CountingHttpClient(403, -1);
 

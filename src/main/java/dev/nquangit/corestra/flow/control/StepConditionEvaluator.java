@@ -155,6 +155,10 @@ public final class StepConditionEvaluator {
                 yield Optional.ofNullable(parseForm(request.body()).get(condition.selector()));
             }
             case VARIABLE -> Optional.ofNullable(context.variables().get(condition.selector()));
+            case RESPONSE_FULL_MESSAGE -> record.receivedResponse() == null || record.receivedResponse().isEmpty()
+                    ? Optional.empty() : Optional.of(record.receivedResponse());
+            case REQUEST_FULL_MESSAGE -> record.renderedRequest() == null || record.renderedRequest().isEmpty()
+                    ? Optional.empty() : Optional.of(record.renderedRequest());
         };
     }
 

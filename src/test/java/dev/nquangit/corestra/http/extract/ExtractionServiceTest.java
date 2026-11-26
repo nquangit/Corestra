@@ -383,6 +383,29 @@ class ExtractionServiceTest {
         }
 
         @Test
+        void requestFullMessageRegexCanReadRequestLineHeadersAndBody() {
+            HttpMessageSnapshot req = new HttpMessageSnapshot("POST /orders/981?draft=1 HTTP/1.1",
+                    List.of("Host: shop.test", "X-Csrf: c-77"), "note=hello");
+            ExtractRule path = new ExtractRule("p", "order", true, ExtractRule.SourceSide.REQUEST,
+                    ExtractRule.ExtractorType.REGEX, "/orders/(\\d+)", "orderId", List.of(),
+                    ExtractRule.RegexSource.FULL_MESSAGE, 1);
+            ExtractRule header = new ExtractRule("h", "csrf", true, ExtractRule.SourceSide.REQUEST,
+                    ExtractRule.ExtractorType.REGEX, "X-Csrf: (\\S+)", "csrf", List.of(),
+                    ExtractRule.RegexSource.FULL_MESSAGE, 1);
+            ExtractRule across = new ExtractRule("a", "across", true, ExtractRule.SourceSide.REQUEST,
+                    ExtractRule.ExtractorType.REGEX, "(?s)draft=(\\d).*note=(\\w+)", "note", List.of(),
+                    ExtractRule.RegexSource.FULL_MESSAGE, 2);
+            ExtractRule bodyOnly = new ExtractRule("b", "body only", true, ExtractRule.SourceSide.REQUEST,
+                    ExtractRule.ExtractorType.REGEX, "/orders/(\\d+)", "missing", List.of(),
+                    ExtractRule.RegexSource.BODY, 1);
+
+            assertEquals("981", service.extract(path, req, null).value());
+            assertEquals("c-77", service.extract(header, req, null).value());
+            assertEquals("hello", service.extract(across, req, null).value());
+            assertFalse(service.extract(bodyOnly, req, null).isSuccess());
+        }
+
+        @Test
         void explicitGroupKeepsRegexAlternationIntact() {
             ExtractRule rule = new ExtractRule(
                     "id-1", "alternation", true,

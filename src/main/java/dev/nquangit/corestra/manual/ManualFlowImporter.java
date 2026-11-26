@@ -66,7 +66,8 @@ public final class ManualFlowImporter {
             if (!rule.enabled()) { remaining.add(rule); continue; }
             try {
                 if (keepRest || rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE
-                        || rule.target() == InjectRule.Target.REQUEST_REGEX_REPLACEMENT) throw new IllegalArgumentException();
+                        || rule.target() == InjectRule.Target.REQUEST_REGEX_REPLACEMENT
+                        || rule.target() == InjectRule.Target.REQUEST_FULL_REGEX_REPLACEMENT) throw new IllegalArgumentException();
                 String expression;
                 List<String> encoding = switch (rule.target()) {
                     case REQUEST_QUERY_PARAMETER, REQUEST_FORM_FIELD -> List.of("urlEncode");

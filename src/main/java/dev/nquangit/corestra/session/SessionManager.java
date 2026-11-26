@@ -457,7 +457,8 @@ public final class SessionManager {
         ExistingSessionSnapshot snapshot = existingUsableState(profile, context, actor, true, binding);
         if (snapshot == null) throw new SessionBindingException("Bound session is expired or its injection rules are incomplete");
         if (binding && snapshot.rules().stream().anyMatch(rule -> rule.target() == InjectRule.Target.REQUEST_RAW_BODY_APPEND
-                || rule.target() == InjectRule.Target.REQUEST_REGEX_REPLACEMENT)) {
+                || rule.target() == InjectRule.Target.REQUEST_REGEX_REPLACEMENT
+                || rule.target() == InjectRule.Target.REQUEST_FULL_REGEX_REPLACEMENT)) {
             throw new SessionBindingException("Session binding requires repeatable injection targets; use Header, Cookie, Query, Form, JSON or Raw Body Replace");
         }
         return new SessionInjectionPlan(profile.id(), authenticationGeneration(profile.id()), snapshot.rules(), authenticationRevision(profile));

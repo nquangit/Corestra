@@ -45,7 +45,7 @@ Khoảng trắng sau `Bearer` có ý nghĩa. Xem [cú pháp transform đầy đ�
 
 `OVERWRITE` phù hợp với OTP hoặc token cần thay thế giá trị có sẵn. `APPEND` và `SKIP_IF_PRESENT` vẫn giữ ý nghĩa thông thường: APPEND có thể thêm một occurrence; SKIP_IF_PRESENT có thể giữ giá trị cũ. Chọn OVERWRITE nếu mục đích là luôn sử dụng dữ liệu vừa nhập.
 
-Với Target `REQUEST_REGEX_REPLACEMENT`, giá trị interactive được chèn như text literal: `$` và `\` trong dữ liệu nhập không trở thành tham chiếu capture group. Regex vẫn phải khớp body. Các nguồn STATIC/VARIABLE/TEMPLATE giữ quy tắc replacement hiện có.
+Với Target `REQUEST_REGEX_REPLACEMENT` (chỉ body) và `REQUEST_FULL_REGEX_REPLACEMENT` (request line + headers + body), giá trị interactive được chèn như text literal: `$` và `\` trong dữ liệu nhập không trở thành tham chiếu capture group. Regex vẫn phải khớp phạm vi tương ứng. Nguồn VARIABLE cũng được chèn literal (giá trị lấy từ traffic có thể chứa `$`). STATIC/TEMPLATE giữ cú pháp replacement của Java (`$1`).
 
 ## Huỷ, timeout và chạy đồng thời
 

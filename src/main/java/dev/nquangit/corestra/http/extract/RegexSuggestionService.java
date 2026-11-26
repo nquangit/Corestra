@@ -108,16 +108,10 @@ public final class RegexSuggestionService {
         return new Suggestion(regex, 1, source, selected, check.matchCount(), check.matchCount() == 1);
     }
 
+    // Must match ExtractionService exactly; HEADERS previously omitted the start line here,
+    // so suggestion offsets/uniqueness were computed against different text than runtime.
     private static String sourceText(HttpMessageSnapshot snapshot, ExtractRule.RegexSource source) {
-        return switch (source) {
-            case BODY -> snapshot.body();
-            case HEADERS -> String.join("\r\n", snapshot.headers());
-            case FULL_MESSAGE -> {
-                String headers = String.join("\r\n", snapshot.headers());
-                yield snapshot.statusLine() + (headers.isEmpty() ? "" : "\r\n" + headers)
-                        + "\r\n\r\n" + snapshot.body();
-            }
-        };
+        return snapshot.regexInput(source);
     }
 
     private static List<String> valuePatterns(String value, char next) {

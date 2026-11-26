@@ -51,6 +51,36 @@ class StepConditionEvaluatorTest {
     }
 
     @Test
+    void fullMessageSourcesSearchStartLineHeadersAndBody() {
+        StepExecutionRecord record = record(
+                "POST /orders/77 HTTP/1.1\r\nX-Csrf: abc\r\n\r\nnote=x",
+                "HTTP/1.1 302 Found\r\nLocation: /login?expired=1\r\n\r\n",
+                302);
+        ExecutionContext context = context(Map.of());
+        List<String> warnings = new ArrayList<>();
+
+        assertTrue(evaluator.matches(condition(
+                StepConditionSource.RESPONSE_FULL_MESSAGE, "", StepConditionOperator.MATCHES_REGEX,
+                ConditionValueSource.STATIC, "(?s)302.*Location: /login"), record, context, warnings));
+        assertTrue(evaluator.matches(condition(
+                StepConditionSource.REQUEST_FULL_MESSAGE, "", StepConditionOperator.MATCHES_REGEX,
+                ConditionValueSource.STATIC, "(?s)^POST /orders/\\d+.*X-Csrf: abc.*note=x"), record, context, warnings));
+        assertFalse(evaluator.matches(condition(
+                StepConditionSource.RESPONSE_BODY, "", StepConditionOperator.CONTAINS,
+                ConditionValueSource.STATIC, "Location"), record, context, warnings));
+        assertTrue(warnings.isEmpty(), warnings.toString());
+    }
+
+    @Test
+    void fullMessageSourceIsAbsentWhenNoResponseWasReceived() {
+        StepExecutionRecord record = record("GET / HTTP/1.1\r\n\r\n", "", 0);
+
+        assertTrue(evaluator.matches(condition(
+                StepConditionSource.RESPONSE_FULL_MESSAGE, "", StepConditionOperator.NOT_EXISTS,
+                ConditionValueSource.STATIC, ""), record, context(Map.of()), new ArrayList<>()));
+    }
+
+    @Test
     void invalidRegexDoesNotCrashAndReturnsFalse() {
         StepExecutionRecord record = record(
                 "GET / HTTP/1.1\r\n\r\n",

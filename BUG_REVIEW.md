@@ -1,4 +1,48 @@
-# Corestra — rà soát lỗi, cập nhật ngày 2026-09-30
+# Corestra — rà soát lỗi, cập nhật ngày 2026-11-26
+
+## Đợt 2026-11-26: regex trên toàn bộ request/response
+
+Yêu cầu: regex extract rule bị cho là chỉ lấy được trong body, chưa lấy được trong full request;
+kiểm tra tương tự cho response; rà soát các thiếu sót liên quan và sửa.
+
+**Kết luận về yêu cầu gốc:** phần lõi extract đã có `RegexSource` = BODY / HEADERS /
+FULL_MESSAGE cho **cả request và response** (`ExtractionService`), nên một Request rule chọn
+`FULL_MESSAGE` đọc được request line, header và body. Những gì thật sự chỉ dùng được với body,
+hoặc chạy sai lệch khi không dùng body, nằm ở các chỗ xung quanh. Dưới đây là các chỗ đó.
+
+| Vấn đề | Ảnh hưởng trước sửa | Cách sửa / kiểm chứng |
+| --- | --- | --- |
+| Gợi ý regex chỉ lấy từ selection ở **response editor**; selection vắt qua header và body bị từ chối | Không gợi ý được regex cho request rule, cũng không gợi ý được kiểu FULL_MESSAGE; source side luôn bị đặt cứng là RESPONSE | `RegexSelection.fromRawMessage` ánh xạ selection ở request hoặc response vào HEADERS / BODY / FULL_MESSAGE, xử lý cả CRLF lẫn LF; nút đổi thành **Suggest from editor selection** và đặt source side theo editor có selection. Kiểm chứng: `RegexSelectionTest`, gồm một test gợi ý trên request line rồi chạy đúng regex đó qua `ExtractionService` |
+| Văn bản mà gợi ý dùng cho HEADERS **khác** văn bản lúc runtime: gợi ý bỏ status/request line, runtime thì có | Offset và độ duy nhất của regex được tính trên một chuỗi khác chuỗi rule thực sự tìm; regex có thể khớp nhầm ở start line | Thêm `HttpMessageSnapshot.regexInput(source)` làm nguồn chung, cả `ExtractionService` lẫn `RegexSuggestionService` đều gọi nó. Kiểm chứng: `RegexSelectionTest#regexInputUsesTheSameTextForEverySource`; đã cập nhật `RegexSuggestionServiceTest` |
+| Status line của response khác nhau giữa các đường chạy: flow engine và teardown có reason phrase, còn auto-trigger, Session Handler, Manual và preview trong editor thì không | Regex HEADERS / FULL_MESSAGE dạng `200 OK`, hoặc neo theo reason phrase, test trong editor thấy pass nhưng chạy trên traffic thật thì không khớp (hoặc ngược lại); HTTP/2 còn để lại khoảng trắng thừa ở cuối dòng | Thêm `integration.HttpMessageSnapshots` (request/response/statusLine) và dùng cho StepExecutor, AutoTrigger, CorestraSessionHttpHandler, ManualSessionHttpClient, SingleAccessTestRunner, TeardownFlowRunner, RuleEditorDialog và ResponseExtractionDialog. Reason phrase rỗng thì bỏ, không để khoảng trắng thừa. Kiểm chứng: `RegexSelectionTest#startLineOmitsBlankReasonPhrase` |
+| Inject regex (`REQUEST_REGEX_REPLACEMENT`) chỉ thay được trong body | Không thay được path segment, query trong request line hay header bằng regex; guide Access ghi rõ là teardown không đổi được ID trong path | Thêm target `REQUEST_FULL_REGEX_REPLACEMENT`: regex chạy trên `request-line CRLF headers CRLF CRLF body`, sau đó tách ngược lại; nếu kết quả làm mất dòng trống phân cách thì bỏ qua rule (hoặc báo lỗi khi rule là bắt buộc). Session binding và việc chuyển rule sang Manual Testing đối xử với target này giống regex body. Enum value được thêm sau giá trị cũ nên tài liệu đã lưu vẫn đọc được. Kiểm chứng: `InjectionServiceTest$FullRequestRegexReplacementInjection` |
+| Giá trị từ VARIABLE đi vào `replaceAll` dưới dạng replacement syntax | Token hoặc password chứa `$` hay `\` bị hiểu thành group reference: hoặc chèn sai, hoặc ném `IllegalArgumentException` làm step thất bại | VARIABLE và INTERACTIVE được chèn literal; STATIC và TEMPLATE vẫn dùng cú pháp `$1`. Replacement sai (ví dụ `$9`) chỉ sinh diagnostic, và chỉ ném lỗi khi rule là bắt buộc. Regex sai cú pháp ở chế độ bắt buộc giờ báo "Invalid regex …" thay vì ném `PatternSyntaxException` thô. Đã xóa `RegexBodyInjector` vì không còn dùng. **Thay đổi hành vi:** rule VARIABLE nào trước đây cố ý dùng `$1` trong giá trị biến thì nay được chèn nguyên văn |
+| Nguồn condition chỉ có header theo tên hoặc body; không có toàn bộ message | `MATCHES_REGEX` không kiểm tra được điều kiện vắt qua nhiều phần, ví dụ `302` kèm `Location: /login` | Thêm `REQUEST_FULL_MESSAGE` và `RESPONSE_FULL_MESSAGE` (response sẽ rỗng nếu không nhận được response). Kiểm chứng: `StepConditionEvaluatorTest#fullMessageSourcesSearchStartLineHeadersAndBody` |
+| **Teardown gửi request dọn dẹp khi inject rule thiếu biến** | Rule bị bỏ qua lặng lẽ, request (thường là DELETE) được gửi với giá trị cũ lấy từ request mẫu, có thể xóa nhầm bản ghi khác. Flow engine, auth flow và auto-trigger đều đã chặn trường hợp này, riêng teardown thì chưa | Teardown kiểm tra `FlowInputValidator.missingStepVariables` và gọi `applyRequired`. Nếu thiếu biến, regex không khớp hoặc injection lỗi thì **không gửi**; evidence ghi `Not sent: …`. Ngoài ra teardown giờ dùng method sau khi inject, giống runner chính. Kiểm chứng: `SingleAccessTestRunnerTest#teardownWithMissingInjectVariableIsNotSent` |
+
+Kết quả: `mvn -o test` trong WSL kali-linux: **999 test, 0 failure, 0 error, 8 skipped**
+(các test Swing bị skip khi chạy headless). Chưa kiểm thử thủ công trong Burp, nên phần UI
+(gợi ý từ request editor và combobox target/source mới) chỉ mới được kiểm qua compile và unit
+test của phần logic thuần.
+
+Tài liệu đã cập nhật: `USAGE.md` (regex trên cả hai phía, gợi ý từ selection, target
+FULL_REGEX, condition FULL_MESSAGE), `guides/INTERACTIVE_INPUT.md`,
+`guides/ACCESS_ADVANCED.md` (thay path segment ở teardown), `CLAUDE.md` (viết lại theo code
+hiện tại).
+
+**Còn mở / chưa làm:**
+- Rule của Access Testing và Auth (`AssertionType`, `IndicatorType`, `AuthRuleType`,
+  `PostCheckAssertionType`) chưa có toán tử regex nào, chỉ có contains, JSON và status. Đây là
+  tính năng mới chứ không phải lỗi, nên chưa thêm.
+- Khi cả request lẫn response editor đều có selection thì selection của response được ưu tiên;
+  muốn gợi ý cho request thì cần bỏ chọn ở response trước.
+- Request snapshot ở teardown, Access runner và preview trong editor dùng `HTTP/1.1` cố định
+  vì `StoredRequestTemplate` không lưu HTTP version. Regex FULL_MESSAGE ở phía request nên tránh
+  neo theo version.
+- `pom.xml` khai báo Montoya `2026.4`, còn máy local có jar `2026.7`; các API dùng trong đợt này
+  đã được kiểm bằng `javap` trên jar 2026.7.
+
+## Đợt 2026-09-30
 
 Phạm vi: đọc các đường chạy chính từ bootstrap đến session, auto-trigger, flow engine,
 Access Testing, HTTP mutation và persistence; đối chiếu tests và thêm regression tests.

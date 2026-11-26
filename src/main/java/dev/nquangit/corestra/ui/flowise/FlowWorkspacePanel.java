@@ -149,7 +149,7 @@ public final class FlowWorkspacePanel extends JPanel {
         JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
 
         tabs.addTab("Rules", new RuleSummaryPanel(
-                controller, requestResponsePanel::responseRegexSelection, accessController, requestResponsePanel::displayedResponse));
+                controller, requestResponsePanel::regexSelection, accessController, requestResponsePanel::displayedResponse));
         tabs.addTab("Conditions & Actions", new ConditionActionPanel(controller));
         tabs.addTab("Execution", new ExecutionPanel(controller, accessController));
         tabs.addTab("Auto Trigger Flow", new TriggerPanel(controller, accessController));

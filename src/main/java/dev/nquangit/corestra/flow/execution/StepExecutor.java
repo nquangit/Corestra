@@ -11,6 +11,7 @@ import dev.nquangit.corestra.http.extract.ExtractionResult;
 import dev.nquangit.corestra.http.extract.ExtractionService;
 import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
 import dev.nquangit.corestra.integration.HttpBodyBytes;
+import dev.nquangit.corestra.integration.HttpMessageSnapshots;
 import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.http.inject.InjectionService.MutableHttpRequest;
@@ -173,15 +174,7 @@ public class StepExecutor {
                 renderedBody, HttpBodyBytes.readForExtraction(montoyaRequest, step.extractRules(), ExtractRule.SourceSide.REQUEST));
 
         // 5. Build response snapshot
-        String responseStatusLine = response.httpVersion() + " " + response.statusCode() + " " + response.reasonPhrase();
-        List<String> responseHeaders = response.headers().stream()
-                .map(HttpHeader::toString)
-                .collect(Collectors.toList());
-        String responseBody = response.bodyToString();
-        HttpMessageSnapshot responseSnapshot = new HttpMessageSnapshot(
-                responseStatusLine,
-                responseHeaders,
-                responseBody, HttpBodyBytes.readForExtraction(response, step.extractRules(), ExtractRule.SourceSide.RESPONSE));
+        HttpMessageSnapshot responseSnapshot = HttpMessageSnapshots.response(response, step.extractRules());
 
         // 6. Apply extract rules and collect extracted variables
         Map<String, String> extractedVariables = new LinkedHashMap<>();

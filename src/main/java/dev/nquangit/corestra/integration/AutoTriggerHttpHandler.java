@@ -264,12 +264,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             FlowDefinition flow = pending.flow;
             List<FlowStep> steps = flow.steps();
             FlowStep triggeredStep = steps.get(pending.matchedStepIndex);
-            HttpMessageSnapshot liveResponseSnapshot = new HttpMessageSnapshot(
-                    responseVersion(responseReceived) + " " + responseReceived.statusCode(),
-                    responseReceived.headers().stream()
-                            .map(h -> h.name() + ": " + h.value()).toList(),
-                    responseReceived.bodyToString(), HttpBodyBytes.readForExtraction(
-                            responseReceived, triggeredStep.extractRules(), ExtractRule.SourceSide.RESPONSE));
+            HttpMessageSnapshot liveResponseSnapshot = HttpMessageSnapshots.response(responseReceived, triggeredStep.extractRules());
             ExecutionContext updatedCtx = applyExtractRulesToContext(
                     triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx, ExtractRule.SourceSide.RESPONSE);
 
@@ -397,9 +392,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         if (rule.inheritSession()) {
             modified = sessionBindings.apply(ctx, modified);
             if (closed.get()) throw new SessionBindingException("Extension unloaded during trigger execution");
-            requestSnapshot = new HttpMessageSnapshot(modified.method() + " " + modified.path() + " " + modified.httpVersion(),
-                    modified.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), modified.bodyToString(),
-                    HttpBodyBytes.readForExtraction(modified, matchedStep.extractRules(), ExtractRule.SourceSide.REQUEST));
+            requestSnapshot = HttpMessageSnapshots.request(modified, matchedStep.extractRules());
         }
         // Publish only after prerequisite execution and request preparation both succeed.
         storePending(req.messageId(), new PendingTrigger(

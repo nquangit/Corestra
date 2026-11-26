@@ -50,7 +50,7 @@ public final class RuleSummaryPanel extends JPanel {
             "Name", "Target", "Selector", "Source", "Transforms", "Strategy"};
 
     private final FlowWorkspaceController controller;
-    private final Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier;
+    private final Supplier<Optional<dev.nquangit.corestra.http.extract.RegexSelection>> regexSelectionSupplier;
     private final AccessUiController accessController;
     private final Supplier<Optional<burp.api.montoya.http.message.responses.HttpResponse>> responseSupplier;
 
@@ -77,21 +77,21 @@ public final class RuleSummaryPanel extends JPanel {
      */
     public RuleSummaryPanel(
             FlowWorkspaceController controller,
-            Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier) {
+            Supplier<Optional<dev.nquangit.corestra.http.extract.RegexSelection>> regexSelectionSupplier) {
         this(controller, regexSelectionSupplier, null);
     }
 
     /** Creates a rule panel with Access Testing variable/profile integration. */
     public RuleSummaryPanel(
             FlowWorkspaceController controller,
-            Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier,
+            Supplier<Optional<dev.nquangit.corestra.http.extract.RegexSelection>> regexSelectionSupplier,
             AccessUiController accessController) {
         this(controller, regexSelectionSupplier, accessController, Optional::empty);
     }
 
     /** Creates a rule panel using the currently displayed response for optional extraction discovery. */
     public RuleSummaryPanel(FlowWorkspaceController controller,
-            Supplier<Optional<RequestResponsePanel.ResponseRegexSelection>> regexSelectionSupplier,
+            Supplier<Optional<dev.nquangit.corestra.http.extract.RegexSelection>> regexSelectionSupplier,
             AccessUiController accessController,
             Supplier<Optional<burp.api.montoya.http.message.responses.HttpResponse>> responseSupplier) {
         super(new BorderLayout());

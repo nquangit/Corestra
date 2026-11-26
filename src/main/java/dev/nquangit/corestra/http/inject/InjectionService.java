@@ -41,7 +41,6 @@ public final class InjectionService {
     private final HeaderInjector headerInjector;
     private final CookieInjector cookieInjector;
     private final JsonBodyInjector jsonBodyInjector;
-    private final RegexBodyInjector regexBodyInjector;
     private final QueryParameterInjector queryParameterInjector = new QueryParameterInjector();
     private final ValueTransformService transformService;
     private final InteractiveInputPrompt inputPrompt;
@@ -59,7 +58,6 @@ public final class InjectionService {
         this.headerInjector = new HeaderInjector();
         this.cookieInjector = new CookieInjector();
         this.jsonBodyInjector = new JsonBodyInjector();
-        this.regexBodyInjector = new RegexBodyInjector();
         this.transformService = new ValueTransformService();
     }
 
@@ -172,20 +170,33 @@ public final class InjectionService {
                         }
                     }
                     case REQUEST_REGEX_REPLACEMENT -> {
-                        if (mandatory && !Pattern.compile(rule.targetSelector()).matcher(body).find()) {
-                            if (rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE) throw new InteractionAbortedException("Regex did not match for rule '" + rule.name() + "'");
-                            throw new IllegalArgumentException("Rule '" + rule.name() + "': regex did not match request body");
+                        String replaced = regexReplace(rule, body, value, mandatory, "request body", diagnostics);
+                        if (replaced != null) {
+                            body = replaced;
                         }
-                        RegexBodyInjector.ReplaceOutcome outcome =
-                                regexBodyInjector.inject(body, rule.targetSelector(),
-                                        rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE
-                                                ? java.util.regex.Matcher.quoteReplacement(value) : value);
-                        if (outcome.succeeded()) {
-                            body = outcome.body();
-                            diagnostics.add("Rule '" + rule.name() + "': regex replacement applied for pattern '" + rule.targetSelector() + "'");
-                        } else {
-                            if (mandatory) throw new IllegalArgumentException("Rule '" + rule.name() + "': regex injection failed");
-                            diagnostics.add("Rule '" + rule.name() + "': " + outcome.failureReason());
+                    }
+                    case REQUEST_FULL_REGEX_REPLACEMENT -> {
+                        String raw = requestLine
+                                + (headers.isEmpty() ? "" : "\r\n" + String.join("\r\n", headers))
+                                + "\r\n\r\n" + body;
+                        String replaced = regexReplace(rule, raw, value, mandatory, "full request", diagnostics);
+                        if (replaced != null) {
+                            int separator = replaced.indexOf("\r\n\r\n");
+                            if (separator < 0) {
+                                if (mandatory) throw new IllegalArgumentException("Rule '" + rule.name()
+                                        + "': replacement removed the header/body separator");
+                                diagnostics.add("Rule '" + rule.name()
+                                        + "': skipped — replacement removed the header/body separator");
+                            } else {
+                                String[] head = replaced.substring(0, separator).split("\r\n", -1);
+                                requestLine = head[0];
+                                List<String> rebuilt = new ArrayList<>();
+                                for (int index = 1; index < head.length; index++) {
+                                    if (!head[index].isEmpty()) rebuilt.add(head[index]);
+                                }
+                                headers = rebuilt;
+                                body = replaced.substring(separator + 4);
+                            }
                         }
                     }
                     case REQUEST_RAW_BODY_APPEND -> {
@@ -208,6 +219,55 @@ public final class InjectionService {
         }
 
         return RequestMutationResult.of(requestLine, headers, body, diagnostics);
+    }
+
+    // -----------------------------------------------------------------------
+    // Regex replacement
+    // -----------------------------------------------------------------------
+
+    /**
+     * Applies a regex replacement rule to {@code text}.
+     *
+     * <p>STATIC and TEMPLATE values use Java replacement syntax ({@code $1} group references).
+     * VARIABLE and INTERACTIVE values come from traffic or a user and are inserted literally, so
+     * a captured token containing {@code $} or {@code \} cannot be misread as a group reference.
+     *
+     * @return the replaced text, or {@code null} when the rule was skipped with a diagnostic
+     * @throws IllegalArgumentException when a mandatory rule cannot be applied
+     */
+    private String regexReplace(InjectRule rule, String text, String value, boolean mandatory,
+                                String scope, List<String> diagnostics) {
+        boolean interactive = rule.valueSourceType() == InjectRule.ValueSourceType.INTERACTIVE;
+        Pattern pattern;
+        try {
+            pattern = Pattern.compile(rule.targetSelector());
+        } catch (java.util.regex.PatternSyntaxException invalid) {
+            if (interactive) throw new InteractionAbortedException("Invalid regex for rule '" + rule.name() + "'");
+            if (mandatory) throw new IllegalArgumentException("Rule '" + rule.name()
+                    + "': Invalid regex pattern '" + rule.targetSelector() + "': " + invalid.getDescription());
+            diagnostics.add("Rule '" + rule.name() + "': Invalid regex pattern '" + rule.targetSelector()
+                    + "': " + invalid.getMessage());
+            return null;
+        }
+        if (mandatory && !pattern.matcher(text).find()) {
+            if (interactive) throw new InteractionAbortedException("Regex did not match for rule '" + rule.name() + "'");
+            throw new IllegalArgumentException("Rule '" + rule.name() + "': regex did not match " + scope);
+        }
+        boolean literal = interactive || rule.valueSourceType() == InjectRule.ValueSourceType.VARIABLE;
+        try {
+            String replaced = pattern.matcher(text).replaceAll(
+                    literal ? java.util.regex.Matcher.quoteReplacement(value) : value);
+            diagnostics.add("Rule '" + rule.name() + "': regex replacement applied to " + scope
+                    + " for pattern '" + rule.targetSelector() + "'");
+            return replaced;
+        } catch (IllegalArgumentException | IndexOutOfBoundsException badReplacement) {
+            // e.g. "$9" referencing a missing group, or a trailing backslash in STATIC/TEMPLATE text.
+            if (interactive) throw new InteractionAbortedException("Regex injection failed for rule '" + rule.name() + "'");
+            if (mandatory) throw new IllegalArgumentException("Rule '" + rule.name()
+                    + "': invalid replacement: " + badReplacement.getMessage());
+            diagnostics.add("Rule '" + rule.name() + "': invalid replacement: " + badReplacement.getMessage());
+            return null;
+        }
     }
 
     // -----------------------------------------------------------------------

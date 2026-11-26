@@ -344,9 +344,16 @@ public final class InjectRule {
         REQUEST_JSON_PATH,
 
         /**
-         * Performs regex replacement on the request body.
+         * Performs regex replacement on the request body only.
          */
         REQUEST_REGEX_REPLACEMENT,
+
+        /**
+         * Performs regex replacement on the whole request: request line, header lines and body,
+         * rendered as {@code request-line CRLF headers CRLF CRLF body}. The result must keep the
+         * blank-line separator so it can be split back into request line, headers and body.
+         */
+        REQUEST_FULL_REGEX_REPLACEMENT,
 
         /**
          * Appends raw text to the request body.
@@ -439,7 +446,8 @@ public final class InjectRule {
                     REQUEST_QUERY_PARAMETER,
                     REQUEST_FORM_FIELD,
                     REQUEST_JSON_PATH,
-                    REQUEST_REGEX_REPLACEMENT -> true;
+                    REQUEST_REGEX_REPLACEMENT,
+                    REQUEST_FULL_REGEX_REPLACEMENT -> true;
             case REQUEST_RAW_BODY_APPEND, REQUEST_RAW_BODY_REPLACE -> false;
         };
     }

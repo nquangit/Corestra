@@ -22,7 +22,7 @@ public final class ResponseExtractionDialog {
     /** Snapshots the response actually displayed, without binary-to-text transformations or any HTTP send. */
     public static Optional<HttpMessageSnapshot> snapshot(HttpResponse response) {
         if (response == null || response.statusCode() < 100) return Optional.empty();
-        return Optional.of(new HttpMessageSnapshot(response.httpVersion() + " " + response.statusCode(),
+        return Optional.of(new HttpMessageSnapshot(dev.nquangit.corestra.integration.HttpMessageSnapshots.statusLine(response),
                 response.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), response.bodyToString()));
     }
 

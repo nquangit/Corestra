@@ -1015,10 +1015,7 @@ public final class SingleAccessTestRunner {
                 request.method() + " " + request.pathAndQuery() + " HTTP/1.1",
                 request.headerLines(),
                 request.body());
-        HttpMessageSnapshot responseSnapshot = new HttpMessageSnapshot(
-                response.httpVersion() + " " + response.statusCode() + " " + response.reasonPhrase(),
-                response.headers().stream().map(HttpHeader::toString).toList(),
-                response.bodyToString(), HttpBodyBytes.readForExtraction(response, step.extractRules(), ExtractRule.SourceSide.RESPONSE));
+        HttpMessageSnapshot responseSnapshot = dev.nquangit.corestra.integration.HttpMessageSnapshots.response(response, step.extractRules());
         for (ExtractRule rule : step.extractRules()) {
             if (!rule.enabled()) {
                 continue;

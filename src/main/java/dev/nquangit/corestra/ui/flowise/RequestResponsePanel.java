@@ -7,7 +7,10 @@ import burp.api.montoya.ui.editor.HttpResponseEditor;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.flow.FlowStep;
 import dev.nquangit.corestra.flow.rule.ExtractRule;
-import dev.nquangit.corestra.http.extract.HttpMessageSnapshot;
+import dev.nquangit.corestra.http.extract.RegexSelection;
+import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.http.message.HttpMessage;
+import burp.api.montoya.ui.Selection;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -37,6 +40,7 @@ public final class RequestResponsePanel extends JPanel {
 
     private final FlowWorkspaceController workspaceController;
     private final RequestResponseController reqRespController;
+    private final HttpRequestEditor requestEditor;
     private final HttpResponseEditor responseEditor;
 
     public RequestResponsePanel(FlowWorkspaceController workspaceController, MontoyaApi api) {
@@ -44,7 +48,7 @@ public final class RequestResponsePanel extends JPanel {
         this.workspaceController = Objects.requireNonNull(workspaceController, "workspaceController");
         Objects.requireNonNull(api, "api");
 
-        HttpRequestEditor requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
+        requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
 
         reqRespController = new RequestResponseController(workspaceController, requestEditor, responseEditor, api);
@@ -74,69 +78,57 @@ public final class RequestResponsePanel extends JPanel {
     }
 
     /**
-     * Returns the current response-editor selection translated to an extraction snapshot.
-     * Selections crossing the header/body boundary are rejected.
+     * Returns the current editor selection translated to regex-suggestion coordinates.
+     *
+     * <p>The response editor's selection wins when both editors have one; otherwise the request
+     * editor's selection is used, so regex rules can be suggested for either side. A selection in
+     * the start line or headers maps to {@code HEADERS}, one in the body to {@code BODY}, and one
+     * crossing the header/body boundary to {@code FULL_MESSAGE}.
      *
      * @return selection suitable for regex suggestion
      */
-    public Optional<ResponseRegexSelection> responseRegexSelection() {
-        return responseEditor.selection().flatMap(selection -> {
-            burp.api.montoya.http.message.responses.HttpResponse response = responseEditor.getResponse();
-            if (response == null || selection.contents().length() == 0) {
-                return Optional.empty();
-            }
+    public Optional<RegexSelection> regexSelection() {
+        Optional<RegexSelection> response = responseEditor.selection().flatMap(selection ->
+                map(ExtractRule.SourceSide.RESPONSE, responseEditor.getResponse(), selection));
+        if (response.isPresent()) {
+            return response;
+        }
+        return requestEditor.selection().flatMap(selection ->
+                map(ExtractRule.SourceSide.REQUEST, requestEditor.getRequest(), selection));
+    }
+
+    private static Optional<RegexSelection> map(ExtractRule.SourceSide side, HttpMessage message, Selection selection) {
+        if (message == null || selection.contents().length() == 0) {
+            return Optional.empty();
+        }
+        try {
+            ByteArray raw = message.toByteArray();
+            int bodyOffset = Math.min(message.bodyOffset(), raw.length());
             int start = selection.offsets().startIndexInclusive();
             int end = selection.offsets().endIndexExclusive();
-            int bodyOffset = response.bodyOffset();
-            String raw = response.toByteArray().toString();
-            int firstLineEnd = raw.indexOf("\r\n");
-            int lineDelimiterLength = 2;
-            if (firstLineEnd < 0) {
-                firstLineEnd = raw.indexOf('\n');
-                lineDelimiterLength = 1;
-            }
-            if (firstLineEnd < 0) return Optional.empty();
-            int headerStart = firstLineEnd + lineDelimiterLength;
-            int headerEnd = raw.indexOf("\r\n\r\n", headerStart);
-            if (headerEnd < 0) headerEnd = raw.indexOf("\n\n", headerStart);
-            if (headerEnd < 0) headerEnd = bodyOffset;
-            String rawHeaders = raw.substring(Math.min(headerStart, raw.length()), Math.min(headerEnd, raw.length()));
-            ExtractRule.RegexSource source;
-            int sourceStart;
-            if (end <= bodyOffset) {
-                source = ExtractRule.RegexSource.HEADERS;
-                if (start < headerStart || end > headerEnd) {
-                    return Optional.empty();
-                }
-                sourceStart = response.toByteArray()
-                        .subArray(headerStart, start).toString().length();
-            } else if (start >= bodyOffset) {
-                source = ExtractRule.RegexSource.BODY;
-                sourceStart = response.toByteArray().subArray(bodyOffset, start).toString().length();
-            } else {
+            if (start < 0 || end > raw.length() || start >= end) {
                 return Optional.empty();
             }
-            String selected = selection.contents().toString();
-            HttpMessageSnapshot snapshot = new HttpMessageSnapshot(
-                    raw.substring(0, firstLineEnd),
-                    rawHeaders.isEmpty() ? List.of() : List.of(rawHeaders.split("\\r?\\n", -1)),
-                    response.bodyToString());
-            return Optional.of(new ResponseRegexSelection(
-                    snapshot, source, sourceStart, sourceStart + selected.length()));
-        });
+            // Montoya offsets are bytes; convert to characters as decoded by the same ByteArray.
+            String head = bodyOffset == 0 ? "" : raw.subArray(0, bodyOffset).toString();
+            int startChar = charOffset(raw, bodyOffset, head, start);
+            int endChar = charOffset(raw, bodyOffset, head, end);
+            return RegexSelection.fromRawMessage(side, head, message.bodyToString(), startChar, endChar);
+        } catch (RuntimeException unavailable) {
+            return Optional.empty();
+        }
+    }
+
+    private static int charOffset(ByteArray raw, int bodyOffset, String head, int byteOffset) {
+        if (byteOffset <= bodyOffset) {
+            return byteOffset == 0 ? 0 : raw.subArray(0, byteOffset).toString().length();
+        }
+        return head.length() + raw.subArray(bodyOffset, byteOffset).toString().length();
     }
 
     /** Returns the response currently shown for optional extraction discovery. */
     public Optional<burp.api.montoya.http.message.responses.HttpResponse> displayedResponse() {
         return ResponseExtractionDialog.available(responseEditor.getResponse());
-    }
-
-    /** Selection coordinates resolved against either response headers or body. */
-    public record ResponseRegexSelection(
-            HttpMessageSnapshot snapshot,
-            ExtractRule.RegexSource source,
-            int start,
-            int end) {
     }
 
     // -------------------------------------------------------------------------

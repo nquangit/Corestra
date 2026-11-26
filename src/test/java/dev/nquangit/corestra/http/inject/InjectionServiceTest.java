@@ -594,6 +594,97 @@ class InjectionServiceTest {
         }
     }
 
+    @Nested
+    class FullRequestRegexReplacementInjection {
+
+        @Test
+        void replacesInRequestLineHeadersAndBody() {
+            InjectRule r = staticRule("full", Target.REQUEST_FULL_REGEX_REPLACEMENT, "old-token", "new-token", WriteStrategy.OVERWRITE);
+            InjectionService.MutableHttpRequest req = request("GET /api?t=old-token HTTP/1.1",
+                    List.of("Host: a.test", "X-Token: old-token"), "t=old-token");
+
+            RequestMutationResult result = service.apply(List.of(r), Map.of(), req);
+
+            assertEquals("GET /api?t=new-token HTTP/1.1", result.requestLine());
+            assertEquals(List.of("Host: a.test", "X-Token: new-token"), result.headers());
+            assertEquals("t=new-token", result.body());
+        }
+
+        @Test
+        void supportsCaptureGroupReferencesInHeaders() {
+            InjectRule r = staticRule("csrf", Target.REQUEST_FULL_REGEX_REPLACEMENT,
+                    "(X-Csrf: )[^\\r\\n]+", "$1fresh", WriteStrategy.OVERWRITE);
+            InjectionService.MutableHttpRequest req = request("POST /x HTTP/1.1", List.of("X-Csrf: stale"), "body");
+
+            RequestMutationResult result = service.apply(List.of(r), Map.of(), req);
+
+            assertEquals(List.of("X-Csrf: fresh"), result.headers());
+            assertEquals("body", result.body());
+        }
+
+        @Test
+        void requiredRuleFailsWhenPatternDoesNotMatchAnywhere() {
+            InjectRule r = staticRule("full", Target.REQUEST_FULL_REGEX_REPLACEMENT, "absent", "x", WriteStrategy.OVERWRITE);
+            InjectionService.MutableHttpRequest req = request("GET / HTTP/1.1", List.of("Host: a"), "");
+
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> service.applyRequired(List.of(r), Map.of(), req));
+            assertTrue(failure.getMessage().contains("full request"));
+        }
+
+        @Test
+        void rejectsReplacementThatRemovesTheHeaderBodySeparator() {
+            InjectRule r = staticRule("full", Target.REQUEST_FULL_REGEX_REPLACEMENT, "\\r\\n\\r\\n", "", WriteStrategy.OVERWRITE);
+            InjectionService.MutableHttpRequest req = request("POST / HTTP/1.1", List.of("Host: a"), "body");
+
+            RequestMutationResult result = service.apply(List.of(r), Map.of(), req);
+
+            assertEquals("POST / HTTP/1.1", result.requestLine());
+            assertEquals(List.of("Host: a"), result.headers());
+            assertEquals("body", result.body());
+            assertTrue(result.diagnostics().stream().anyMatch(d -> d.contains("separator")));
+        }
+
+        @Test
+        void invalidRegexIsReportedAsDiagnostic() {
+            InjectRule r = staticRule("full", Target.REQUEST_FULL_REGEX_REPLACEMENT, "[bad", "x", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(r), Map.of(),
+                    request("GET / HTTP/1.1", List.of(), ""));
+
+            assertTrue(result.diagnostics().stream().anyMatch(d -> d.contains("Invalid regex")));
+        }
+
+        @Test
+        void variableValuesAreInsertedLiterallyEvenWithDollarSigns() {
+            InjectRule r = variableRule("pw", Target.REQUEST_REGEX_REPLACEMENT, "pw=[^&]*", "password", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(r), Map.of("password", "p@$1\\x"),
+                    request("POST / HTTP/1.1", List.of(), "pw=old&x=1"));
+
+            assertEquals("p@$1\\x&x=1", result.body());
+        }
+
+        @Test
+        void staticReplacementWithMissingGroupIsReportedNotThrown() {
+            InjectRule r = staticRule("bad", Target.REQUEST_REGEX_REPLACEMENT, "a", "$9", WriteStrategy.OVERWRITE);
+
+            RequestMutationResult result = service.apply(List.of(r), Map.of(), request("POST / HTTP/1.1", List.of(), "abc"));
+
+            assertEquals("abc", result.body());
+            assertTrue(result.diagnostics().stream().anyMatch(d -> d.contains("invalid replacement")));
+        }
+
+        @Test
+        void requiredBodyRegexWithInvalidPatternFailsCleanly() {
+            InjectRule r = staticRule("body", Target.REQUEST_REGEX_REPLACEMENT, "[bad", "x", WriteStrategy.OVERWRITE);
+
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> service.applyRequired(List.of(r), Map.of(), request("POST / HTTP/1.1", List.of(), "body")));
+            assertTrue(failure.getMessage().contains("Invalid regex"));
+        }
+    }
+
     // -----------------------------------------------------------------------
     // REQUEST_RAW_BODY_APPEND / REQUEST_RAW_BODY_REPLACE
     // -----------------------------------------------------------------------

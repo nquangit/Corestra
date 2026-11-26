@@ -228,19 +228,11 @@ public final class CorestraSessionHttpHandler implements HttpHandler, AutoClosea
     }
 
     private static HttpMessageSnapshot requestSnapshot(HttpRequest request, List<ExtractRule> rules) {
-        return new HttpMessageSnapshot(
-                request.method() + " " + requestPath(request) + " " + requestVersion(request),
-                headerLines(request),
-                request.bodyToString(), HttpBodyBytes.readForExtraction(request, rules, ExtractRule.SourceSide.REQUEST));
+        return HttpMessageSnapshots.request(request, rules);
     }
 
     private static HttpMessageSnapshot responseSnapshot(HttpResponseReceived response, List<ExtractRule> rules) {
-        return new HttpMessageSnapshot(
-                requestVersion(response) + " " + response.statusCode(),
-                response.headers().stream()
-                        .map(header -> header.name() + ": " + header.value())
-                        .collect(Collectors.toList()),
-                response.bodyToString(), HttpBodyBytes.readForExtraction(response, rules, ExtractRule.SourceSide.RESPONSE));
+        return HttpMessageSnapshots.response(response, rules);
     }
 
     private static List<String> headerLines(HttpRequest request) {

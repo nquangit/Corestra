@@ -183,7 +183,7 @@ Các checkbox chọn theo outcome thực tế của run/verdict, không theo ch�
 
 Không giả định teardown luôn có transactionId: nếu setup thất bại trước extractor, flow dọn có thể thiếu biến. Chọn endpoint dọn phù hợp cả trạng thái DRAFT/CONFIRMED theo ứng dụng; teardown thất bại cần xử lý dữ liệu còn lại bằng cách hợp lệ của ứng dụng.
 
-Inject Rules hiện không có target thay path segment; REQUEST_REGEX_REPLACEMENT chỉ sửa body. Setup/teardown cũng không render path placeholder tự động như Access Template/Flow Target. Nếu endpoint dọn chỉ nhận DELETE `/transactions/{id}` và ID sinh lúc chạy, cấu hình teardown bằng các rule hiện tại chưa đủ; không điền `{{scenario.transactionId}}` vào path rồi coi nó đã được thay. Khi đó dùng request cleanup riêng đã render đúng ID hoặc dọn thủ công theo API ứng dụng.
+Setup/teardown không render path placeholder tự động như Access Template/Flow Target; không điền `{{scenario.transactionId}}` vào path rồi coi nó đã được thay. REQUEST_REGEX_REPLACEMENT chỉ sửa body. Để thay path segment, dùng Inject Rule target `REQUEST_FULL_REGEX_REPLACEMENT` (regex chạy trên request line + headers + body). Ví dụ endpoint dọn DELETE `/transactions/{id}`: lưu request mẫu `DELETE /transactions/0 HTTP/1.1`, Selector `^(DELETE /transactions/)[^ ?]+`, Value source TEMPLATE `$1{{scenario.transactionId}}`, rồi kiểm tra bằng dry-run. Teardown không gửi step khi inject rule tham chiếu biến bị thiếu/rỗng, regex không khớp hoặc injection lỗi: evidence ghi `Not sent: …` thay vì gửi `/transactions/0` hay giá trị cũ trong request mẫu.
 
 ## 4. Kiểm tra masking
 

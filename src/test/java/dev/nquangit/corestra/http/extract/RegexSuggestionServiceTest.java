@@ -38,10 +38,12 @@ class RegexSuggestionServiceTest {
     void supportsHeaderSelections() {
         String header = "X-Csrf-Token: token-9988";
         String selected = "token-9988";
-        int start = header.indexOf(selected);
+        HttpMessageSnapshot snapshot = new HttpMessageSnapshot("HTTP/1.1 200 OK", List.of(header, "Server: test"), "body");
+        // HEADERS offsets are relative to the start line + headers text that runtime extraction searches.
+        int start = snapshot.regexInput(ExtractRule.RegexSource.HEADERS).indexOf(selected);
 
         RegexSuggestionService.SuggestionResult result = service.suggest(
-                new HttpMessageSnapshot("HTTP/1.1 200 OK", List.of(header, "Server: test"), "body"),
+                snapshot,
                 ExtractRule.RegexSource.HEADERS,
                 start,
                 start + selected.length());

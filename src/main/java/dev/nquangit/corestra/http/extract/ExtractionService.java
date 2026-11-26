@@ -171,13 +171,7 @@ public final class ExtractionService {
     }
 
     private String regexInput(HttpMessageSnapshot snapshot, ExtractRule.RegexSource source) {
-        String headerBlock = snapshot.statusLine()
-                + (snapshot.headers().isEmpty() ? "" : "\r\n" + String.join("\r\n", snapshot.headers()));
-        return switch (source) {
-            case BODY -> snapshot.body();
-            case HEADERS -> headerBlock;
-            case FULL_MESSAGE -> headerBlock + "\r\n\r\n" + snapshot.body();
-        };
+        return snapshot.regexInput(source);
     }
 
     private ExtractionResult applyTransforms(ExtractRule rule, ExtractionResult extracted) {

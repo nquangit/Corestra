@@ -140,12 +140,8 @@ public final class ManualSessionHttpClient implements HttpClient {
                     if (Thread.currentThread().isInterrupted()) return response;
                     manager.applyExtractionRulesIfCurrent(plan.profileId(), plan.authenticationGeneration(),
                             SessionTrafficContexts.fromRequest(request, run.options.tool()),
-                            new HttpMessageSnapshot(request.method() + " " + request.path() + " " + request.httpVersion(),
-                                    request.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), request.bodyToString(),
-                                    dev.nquangit.corestra.integration.HttpBodyBytes.readForExtraction(request, rules, dev.nquangit.corestra.flow.rule.ExtractRule.SourceSide.REQUEST)),
-                            new HttpMessageSnapshot(response.httpVersion() + " " + response.statusCode(),
-                                    response.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), response.bodyToString(),
-                                    dev.nquangit.corestra.integration.HttpBodyBytes.readForExtraction(response, rules, dev.nquangit.corestra.flow.rule.ExtractRule.SourceSide.RESPONSE)));
+                            dev.nquangit.corestra.integration.HttpMessageSnapshots.request(request, rules),
+                            dev.nquangit.corestra.integration.HttpMessageSnapshots.response(response, rules));
                 } catch (RuntimeException ignored) { /* Extraction must not discard a response already received. */ }
             }
             return response;

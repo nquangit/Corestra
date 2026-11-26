@@ -58,5 +58,16 @@ public enum StepConditionSource {
     /**
      * Reads a variable from the current flow execution context.
      */
-    VARIABLE
+    VARIABLE,
+
+    /**
+     * Reads the whole received response: status line, headers, blank line and body. Absent
+     * when no response was received. Useful with regex operators spanning several sections.
+     */
+    RESPONSE_FULL_MESSAGE,
+
+    /**
+     * Reads the whole rendered request: request line, headers, blank line and body.
+     */
+    REQUEST_FULL_MESSAGE
 }

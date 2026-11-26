@@ -481,12 +481,30 @@ public final class TeardownFlowRunner {
             RenderMode renderMode,
             Map<String, String> variables) {
         long startedAt = clock.millis();
+        // Cleanup requests are often destructive (DELETE …). Never send one whose inject rules
+        // could not resolve their variables: the stale captured value could target another record.
+        List<String> missing = dev.nquangit.corestra.flow.execution.FlowInputValidator
+                .missingStepVariables(step, variables);
+        if (!missing.isEmpty()) {
+            String reason = "Not sent: missing variables: " + String.join(", ", missing);
+            TeardownStepEvidence evidence = new TeardownStepEvidence(
+                    step.id(), "", "", 0, false, reason, Math.max(clock.millis(), startedAt));
+            return new DirectStepExecution(false, reason, evidence, Map.of(), List.of());
+        }
         StoredRequestTemplate template = step.requestTemplate();
         MutableHttpRequest mutableRequest = new MutableHttpRequest(
                 template.method() + " " + template.pathAndQuery() + " HTTP/1.1",
                 template.headerLines(),
                 template.body());
-        RequestMutationResult mutation = injectionService.apply(step.injectRules(), variables, mutableRequest);
+        RequestMutationResult mutation;
+        try {
+            mutation = injectionService.applyRequired(step.injectRules(), variables, mutableRequest);
+        } catch (IllegalArgumentException | dev.nquangit.corestra.interaction.InteractionAbortedException failure) {
+            String reason = "Not sent: injection failed: " + failure.getMessage();
+            TeardownStepEvidence evidence = new TeardownStepEvidence(
+                    step.id(), "", "", 0, false, reason, Math.max(clock.millis(), startedAt));
+            return new DirectStepExecution(false, reason, evidence, Map.of(), List.of());
+        }
         StoredRequestTemplate renderedTemplate = applyManualAuth(
                 renderedTemplate(template, mutation),
                 teardownAuth,
@@ -542,10 +560,7 @@ public final class TeardownFlowRunner {
                 renderedTemplate.method() + " " + renderedTemplate.pathAndQuery() + " HTTP/1.1",
                 renderedTemplate.headerLines(),
                 renderedTemplate.body());
-        HttpMessageSnapshot responseSnapshot = new HttpMessageSnapshot(
-                statusLine(response),
-                responseHeaders(response),
-                response.bodyToString(), HttpBodyBytes.readForExtraction(response, step.extractRules(), ExtractRule.SourceSide.RESPONSE));
+        HttpMessageSnapshot responseSnapshot = dev.nquangit.corestra.integration.HttpMessageSnapshots.response(response, step.extractRules());
         LinkedHashMap<String, String> extracted = new LinkedHashMap<>();
         for (ExtractRule rule : step.extractRules()) {
             ExtractionResult result = extractionService.extract(rule, requestSnapshot, responseSnapshot);
@@ -582,8 +597,10 @@ public final class TeardownFlowRunner {
     private StoredRequestTemplate renderedTemplate(
             StoredRequestTemplate source,
             RequestMutationResult mutation) {
+        String[] line = mutation.requestLine().split(" ", 3);
+        String method = line.length > 0 && !line[0].isBlank() ? line[0] : source.method();
         return new StoredRequestTemplate(
-                source.method(),
+                method,
                 source.scheme(),
                 source.host(),
                 source.port(),

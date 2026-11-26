@@ -109,14 +109,14 @@ public final class RuleEditorDialog extends JDialog {
             FlowWorkspaceController controller,
             FlowStep step,
             ExtractRule rule,
-            Optional<RequestResponsePanel.ResponseRegexSelection> selection,
+            Optional<dev.nquangit.corestra.http.extract.RegexSelection> selection,
             Consumer<ExtractRule> onSave) {
         openForExtract(parent, controller, step, rule, selection, Optional::empty, onSave);
     }
 
     /** Opens an extract editor whose previews prefer the currently displayed immutable response. */
     public static void openForExtract(Component parent, FlowWorkspaceController controller, FlowStep step,
-                                      ExtractRule rule, Optional<RequestResponsePanel.ResponseRegexSelection> selection,
+                                      ExtractRule rule, Optional<dev.nquangit.corestra.http.extract.RegexSelection> selection,
                                       Supplier<Optional<HttpResponse>> response, Consumer<ExtractRule> onSave) {
         Objects.requireNonNull(step, "step");
         Objects.requireNonNull(onSave, "onSave");
@@ -194,13 +194,13 @@ public final class RuleEditorDialog extends JDialog {
     static JPanel buildExtractForm(
             FlowStep step,
             ExtractRule existing,
-            Optional<RequestResponsePanel.ResponseRegexSelection> selection,
+            Optional<dev.nquangit.corestra.http.extract.RegexSelection> selection,
             Consumer<ExtractRule> onSave) {
         return buildExtractForm(step, existing, selection, Optional::empty, onSave);
     }
 
     static JPanel buildExtractForm(FlowStep step, ExtractRule existing,
-                                   Optional<RequestResponsePanel.ResponseRegexSelection> selection,
+                                   Optional<dev.nquangit.corestra.http.extract.RegexSelection> selection,
                                    Supplier<Optional<HttpResponse>> response, Consumer<ExtractRule> onSave) {
         JTextField nameField = new JTextField(existing != null ? existing.name() : "New Extract Rule", 24);
         JCheckBox enabledBox = new JCheckBox("Enabled", existing == null || existing.enabled());
@@ -232,11 +232,11 @@ public final class RuleEditorDialog extends JDialog {
         JLabel regexGroupLabel = new JLabel("Capture group:");
         JLabel regexHelpLabel = new JLabel("Java regex; first match. Group 0 = full match.");
         JButton testRegexButton = new JButton("Test regex");
-        JButton suggestRegexButton = new JButton("Suggest from response selection");
+        JButton suggestRegexButton = new JButton("Suggest from editor selection");
         suggestRegexButton.setEnabled(selection.isPresent());
         suggestRegexButton.setToolTipText(selection.isPresent()
-                ? "Build and verify a regex from the text selected in the response editor"
-                : "Select a value in the response editor before opening this dialog");
+                ? "Build and verify a regex from the text selected in the response editor (or the request editor when the response has no selection). Selections spanning headers and body use FULL_MESSAGE."
+                : "Select a value in the request or response editor before opening this dialog");
         JTextArea testResultLabel = new JTextArea("", 4, 44);
         testResultLabel.setName("extractionPreview");
         testResultLabel.setEditable(false); testResultLabel.setLineWrap(true); testResultLabel.setWrapStyleWord(true);
@@ -380,7 +380,7 @@ public final class RuleEditorDialog extends JDialog {
             }
             RegexSuggestionService.Suggestion suggestion = result.suggestion();
             extractorTypeCombo.setSelectedItem(ExtractRule.ExtractorType.REGEX);
-            sourceSideCombo.setSelectedItem(ExtractRule.SourceSide.RESPONSE);
+            sourceSideCombo.setSelectedItem(selected.side());
             regexSourceCombo.setSelectedItem(suggestion.source());
             regexGroupSpinner.setValue(suggestion.captureGroup());
             selectorField.setText(suggestion.regex());
@@ -985,9 +985,7 @@ public final class RuleEditorDialog extends JDialog {
                 step.requestTemplate().headerLines(),
                 step.requestTemplate().body());
         HttpMessageSnapshot response = displayedResponse == null ? decodeResponseSnapshot(step.lastResponseRaw())
-                : new HttpMessageSnapshot(displayedResponse.httpVersion() + " " + displayedResponse.statusCode(),
-                        displayedResponse.headers().stream().map(h -> h.name() + ": " + h.value()).toList(), displayedResponse.bodyToString(),
-                        HttpBodyBytes.readForExtraction(displayedResponse, List.of(rule), ExtractRule.SourceSide.RESPONSE));
+                : dev.nquangit.corestra.integration.HttpMessageSnapshots.response(displayedResponse, List.of(rule));
         return new ExtractionService().extract(rule, request, response);
     }
 
