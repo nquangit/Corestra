@@ -117,7 +117,7 @@ public final class CorestraBootstrap {
         var retryGate = new dev.nquangit.corestra.http.retry.HostCooldownGate(Clock.systemUTC());
         var retryWaiter = new dev.nquangit.corestra.http.retry.ClosableRetryWaiter();
         GlobalRetryHttpHandler globalRetryHandler = new GlobalRetryHttpHandler(
-                () -> settingsRepo.load().globalRetry(),
+                () -> settingsRepo.load().retry(),
                 new dev.nquangit.corestra.http.retry.LiveRetryEngine(Clock.systemUTC(), retryWaiter, retryGate),
                 retryGate, retryWaiter, trafficOrigin);
         globalRetryHandler.setSender(new MontoyaHttpClient(api, trafficOrigin));

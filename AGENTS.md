@@ -100,12 +100,17 @@ large controllers/runners with unrelated responsibilities.
    extracts from the live response before running downstream steps and aggregation.
 
 `GlobalRetryHttpHandler` (registered right after `CorestraTrafficOrigin`, before the paths
-above) applies `ProjectSettings.globalRetry()` (`http.retry.GlobalRetryPolicy`) to live
-Proxy/Repeater/Intruder/Scanner traffic: it admits covered requests by message ID, waits on
-`HostCooldownGate` for rate-limited hosts, and on a retryable response resends the initiating
-request through a Corestra-origin `MontoyaHttpClient` (`LiveRetryEngine` loop) and replaces the
-response with a note. It must stay before the Session Handler so session-lost detection and
-Auto Trigger see the final response. No-response failures never reach a response handler.
+above) applies `ProjectSettings.retry()` (`http.retry.RetryConfig`) to live
+Proxy/Repeater/Intruder/Scanner traffic. Request side: `RetryConfig.select` picks the first
+enabled `RetryProfile` covering the request (tools, Burp scope, host/path regex, methods); the
+request waits on `HostCooldownGate` if its host is cooling down. Response side:
+`LiveRetryEngine` evaluates the profile's ordered `RetryRule`s with `RetryRuleEvaluator`
+(conditions: same group = AND, groups = OR) on the original and every resent response; RETRY
+resends via a Corestra-origin `MontoyaHttpClient`, STOP delivers as-is; notes and highlights are
+added to the annotations. `RetryRuleTester` backs the tab's offline Test view; `RetryPresets`
+holds WAF/rate-limit templates; `LegacyGlobalRetryPolicy` only migrates the first flat
+`globalRetry` format. It must stay before the Session Handler so session-lost detection and Auto
+Trigger see the final response. No-response failures never reach a response handler.
 
 Global HTTP handlers are already part of the implementation. Preserve scope matching,
 recursion guards, Corestra-origin traffic exclusion in auto-trigger, execution stop bounds,

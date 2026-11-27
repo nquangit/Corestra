@@ -13,7 +13,13 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.internal.MontoyaObjectFactory;
 import burp.api.montoya.internal.ObjectFactoryLocator;
-import dev.nquangit.corestra.http.retry.GlobalRetryPolicy;
+import burp.api.montoya.core.HighlightColor;
+import dev.nquangit.corestra.flow.control.StepConditionOperator;
+import dev.nquangit.corestra.http.retry.RetryCondition;
+import dev.nquangit.corestra.http.retry.RetryConditionSource;
+import dev.nquangit.corestra.http.retry.RetryConfig;
+import dev.nquangit.corestra.http.retry.RetryProfile;
+import dev.nquangit.corestra.http.retry.RetryRule;
 import dev.nquangit.corestra.http.retry.HostCooldownGate;
 import dev.nquangit.corestra.http.retry.LiveRetryEngine;
 import dev.nquangit.corestra.http.retry.RetryWaiter;
@@ -45,13 +51,19 @@ class GlobalRetryHttpHandlerTest {
     private final List<HttpRequest> resent = new CopyOnWriteArrayList<>();
     private final Deque<HttpResponse> resendResponses = new ArrayDeque<>();
     private final List<String> diagnostics = new CopyOnWriteArrayList<>();
-    private final AtomicReference<GlobalRetryPolicy> policy = new AtomicReference<>(enabledPolicy());
+    private final AtomicReference<RetryConfig> policy = new AtomicReference<>(enabledPolicy());
     private HostCooldownGate gate;
     private GlobalRetryHttpHandler handler;
 
-    private static GlobalRetryPolicy enabledPolicy() {
-        return new GlobalRetryPolicy(true, true, "", List.of("PROXY", "REPEATER"), List.of(429), "",
-                List.of(), 3, 1_000, 30_000, 2.0, true, 60, true);
+    private static RetryConfig enabledPolicy() {
+        RetryRule waf = RetryRule.of("WAF block", RetryRule.Action.STOP, List.of(RetryCondition.of(
+                RetryConditionSource.RESPONSE_BODY, "", StepConditionOperator.CONTAINS, "request blocked")))
+                .withHighlight(RetryRule.Highlight.RED);
+        RetryRule rate = RetryRule.of("Rate limited", RetryRule.Action.RETRY, List.of(RetryCondition.of(
+                RetryConditionSource.STATUS, "", StepConditionOperator.EQUALS, "429")));
+        RetryProfile api = new RetryProfile(null, "API", true, List.of("PROXY", "REPEATER"), true, "", "^/api",
+                List.of(), List.of(waf, rate), 3, 1_000, 30_000, 2.0, true, 60, true);
+        return new RetryConfig(true, List.of(api));
     }
 
     @BeforeEach
@@ -95,8 +107,9 @@ class GlobalRetryHttpHandlerTest {
         assertEquals(200, action.response().statusCode());
         assertEquals(List.of(request), resent, "the original request is resent unchanged");
         assertEquals(List.of(1_000L), waits);
-        assertEquals("earlier note | Corestra retry: 1 resend, waited 1.0s, final status 200 (recovered)",
-                action.annotations().notes());
+        assertEquals("earlier note | Corestra retry [API]: 1 resend (rule 'Rate limited'), waited 1.0s,"
+                + " final status 200 - recovered", action.annotations().notes());
+        assertEquals(HighlightColor.NONE, action.annotations().highlightColor());
     }
 
     @Test
@@ -110,7 +123,8 @@ class GlobalRetryHttpHandlerTest {
 
         assertEquals(List.of(4_000L, 2_000L), waits);
         assertEquals("still limited", action.response().bodyToString());
-        assertTrue(action.annotations().notes().contains("gave up: resend failed — connection reset"));
+        assertTrue(action.annotations().notes().contains("gave up: resend failed (connection reset)"),
+                action.annotations().notes());
         assertEquals(1, diagnostics.size());
     }
 
@@ -132,7 +146,7 @@ class GlobalRetryHttpHandlerTest {
 
     @Test
     void disabledPolicyAndUnadmittedResponsesAreIgnored() {
-        policy.set(GlobalRetryPolicy.defaults());
+        policy.set(RetryConfig.defaults());
         HttpRequestToBeSent request = request(6, ToolType.PROXY, true, "GET");
         handler.handleHttpRequestToBeSent(request);
         HttpResponseReceived limited = received(6, request, 429, List.of(), "");
@@ -141,6 +155,30 @@ class GlobalRetryHttpHandlerTest {
         policy.set(enabledPolicy());
         HttpResponseReceived neverAdmitted = received(77, request, 429, List.of(), "");
         assertSame(neverAdmitted, handler.handleHttpResponseReceived(neverAdmitted).response());
+        assertTrue(resent.isEmpty());
+    }
+
+    @Test
+    void stopRuleDeliversTheResponseWithNoteAndHighlight() {
+        HttpRequestToBeSent request = request(11, ToolType.PROXY, true, "GET");
+        handler.handleHttpRequestToBeSent(request);
+        HttpResponseReceived blocked = received(11, request, 429, List.of(), "Request blocked by policy");
+
+        ResponseReceivedAction action = handler.handleHttpResponseReceived(blocked);
+
+        assertSame(blocked, action.response());
+        assertTrue(resent.isEmpty(), "STOP is evaluated before the 429 retry rule");
+        assertEquals("earlier note | Corestra retry [API]: rule 'WAF block' - stop, not retried",
+                action.annotations().notes());
+        assertEquals(HighlightColor.RED, action.annotations().highlightColor());
+    }
+
+    @Test
+    void pathOutsideTheProfileIsNotCovered() {
+        HttpRequestToBeSent request = request(12, ToolType.PROXY, true, "GET", "/static/app.js");
+        handler.handleHttpRequestToBeSent(request);
+        HttpResponseReceived limited = received(12, request, 429, List.of(), "");
+        assertSame(limited, handler.handleHttpResponseReceived(limited).response());
         assertTrue(resent.isEmpty());
     }
 
@@ -168,6 +206,10 @@ class GlobalRetryHttpHandlerTest {
     // ── fixtures ────────────────────────────────────────────────────────────
 
     private static HttpRequestToBeSent request(int id, ToolType toolType, boolean inScope, String method) {
+        return request(id, toolType, inScope, method, "/api/items");
+    }
+
+    private static HttpRequestToBeSent request(int id, ToolType toolType, boolean inScope, String method, String path) {
         HttpService service = proxy(HttpService.class, (p, m, a) -> switch (m.getName()) {
             case "host" -> "Example.com";
             case "port" -> 443;
@@ -180,7 +222,7 @@ class GlobalRetryHttpHandlerTest {
             case "toolSource" -> tool;
             case "isInScope" -> inScope;
             case "method" -> method;
-            case "path" -> "/api";
+            case "path" -> path;
             case "httpService" -> service;
             case "headers" -> List.<HttpHeader>of();
             case "hasHeader" -> false;
@@ -217,10 +259,16 @@ class GlobalRetryHttpHandlerTest {
     }
 
     private static Annotations annotations(String notes) {
+        return annotations(notes, HighlightColor.NONE);
+    }
+
+    private static Annotations annotations(String notes, HighlightColor color) {
         return proxy(Annotations.class, (p, m, a) -> switch (m.getName()) {
             case "notes" -> notes;
             case "hasNotes" -> notes != null && !notes.isEmpty();
-            case "withNotes" -> annotations((String) a[0]);
+            case "withNotes" -> annotations((String) a[0], color);
+            case "highlightColor" -> color;
+            case "withHighlightColor" -> annotations(notes, (HighlightColor) a[0]);
             default -> throw new UnsupportedOperationException(m.getName());
         });
     }

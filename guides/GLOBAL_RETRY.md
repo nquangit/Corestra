@@ -1,56 +1,116 @@
-# Global retry: tự retry khi bị rate limit / WAF chặn
+# Global Retry: profile, rule và điều kiện AND/OR
 
-Tính năng này áp dụng cho **live traffic của Burp** (Proxy, Repeater, Intruder, Scanner). Khi response trông giống bị rate limit hoặc bị WAF chặn, Corestra chờ rồi gửi lại request gốc. Công cụ Burp nhận **response cuối cùng** thay cho response lỗi.
+Tab **Global Retry** áp dụng cho **live traffic của Burp** (Proxy, Repeater, Intruder, Scanner). Với mỗi response, Corestra quyết định: **retry** (chờ rồi gửi lại), **stop** (giữ nguyên và đánh dấu), hoặc không làm gì. Công cụ Burp nhận **response cuối cùng**.
 
-Mặc định tính năng **tắt**.
+Mặc định tính năng **tắt**. Tick **Enable global retry** rồi nhấn **Save**. **Revert** bỏ thay đổi chưa lưu, **Load defaults** nạp cấu hình mặc định vào form (cần Save để giữ).
 
-## 1. Bật và cấu hình
-
-Mở tab **Global Retry** (nằm trước tab Project), chỉnh cấu hình rồi nhấn **Save**. **Revert** bỏ thay đổi chưa lưu, **Load defaults** khôi phục mặc định (tắt).
-
-| Cấu hình | Mặc định | Ý nghĩa |
-| --- | --- | --- |
-| Retry rate-limited / blocked responses | Tắt | Bật/tắt toàn bộ |
-| Tools | PROXY, REPEATER, INTRUDER | Công cụ được retry. SCANNER tắt mặc định (xem mục 4) |
-| Only requests in Burp's target scope | Bật | Chỉ retry request nằm trong Target scope |
-| Host regex | rỗng = mọi host | Regex phải khớp **toàn bộ** host, không phân biệt hoa thường |
-| Methods | rỗng = mọi method | Ví dụ `GET, HEAD` nếu không muốn retry POST |
-| Retry on status | `429, 503` | Status kích hoạt retry |
-| …or response regex | rỗng | Regex trên toàn bộ response (status line + headers + dòng trống + body) |
-| Max retries | 3 | Số lần gửi lại tối đa (1–10) |
-| Base delay / Max delay / Multiplier | 1000 ms / 30000 ms / 2.0 | Backoff: 1s → 2s → 4s…, mỗi lần chờ không quá Max delay |
-| Honor Retry-After | Bật | Dùng `Retry-After` (số giây hoặc HTTP-date) nếu server trả về |
-| Max total wait per request | 60 s | Tổng thời gian chờ tối đa cho một request |
-| Host cooldown | Bật | Khi host đang bị rate limit, các request khác tới host đó chờ trước khi gửi |
-
-Ví dụ regex cho trang chặn của WAF:
+## 1. Ba tầng cấu hình
 
 ```text
-(?i)request blocked|access denied|cf-mitigated|captcha
+Profile (chọn theo request)          ← thử từ trên xuống, profile đầu tiên khớp được dùng
+ └─ Rule (quyết định theo response)  ← thử từ trên xuống, rule đầu tiên khớp quyết định
+     └─ Điều kiện (group)            ← cùng group = AND, khác group = OR
 ```
 
-## 2. Cách hoạt động
+### Profile
 
-1. Request từ công cụ được chọn đi qua Corestra. Nếu host đang trong cooldown, request chờ (tối đa bằng Max total wait).
-2. Khi response về và khớp điều kiện, Corestra chờ theo `Retry-After` hoặc backoff, rồi gửi lại đúng request đã gửi đi.
-3. Lặp lại tới khi response không còn khớp, hết số lần retry, hoặc lần chờ tiếp theo vượt quá ngân sách thời gian.
-4. Công cụ Burp nhận response cuối cùng. Phần **Notes** của response ghi lại kết quả, ví dụ:
-   `Corestra retry: 2 resends, waited 3.0s, final status 200 (recovered)`.
+Mỗi profile gồm:
 
-Request gửi lại đi trực tiếp (không qua Proxy Pipeline) và là traffic của Corestra, nên Session Handler và Auto Trigger không xử lý lại. Trong Logger chúng hiện với tool là Extensions. Proxy/Repeater history vẫn hiện request gốc.
+| Phần | Ý nghĩa |
+| --- | --- |
+| Tools | PROXY, REPEATER, INTRUDER, SCANNER |
+| Only requests in Burp's target scope | Chỉ request trong Target scope |
+| Host regex | Khớp **toàn bộ** host, không phân biệt hoa thường. Rỗng = mọi host |
+| Path regex | Tìm trong path (kể cả query). Rỗng = mọi path |
+| Methods | Ví dụ `GET, HEAD`. Rỗng = mọi method |
+| Max retries, Base delay, Max delay, Multiplier | Backoff: `base × multiplier^lần` (giới hạn bởi Max delay) |
+| Honor Retry-After | Dùng `Retry-After` của server khi rule không đặt delay cố định |
+| Max total wait per request | Tổng thời gian chờ tối đa cho một request |
+| Host cooldown | Khi host đang bị retry, các request khác tới host đó chờ trước khi gửi |
 
-Global retry chạy **trước** Session Handler. Nếu sau khi retry response vẫn cho thấy mất session, Session Handler vẫn re-login và gửi lại như bình thường.
+Ví dụ: cùng `api.example.com` nhưng `/login` cần rule khác `/api/v2` → tạo hai profile, profile cụ thể hơn đặt **trên**. Một profile "Default" không lọc host đặt cuối cùng.
 
-## 3. Gợi ý cấu hình
+### Rule
 
-- **Intruder với rate limit chặt:** bật Host cooldown, giữ Honor Retry-After, tăng Max total wait lên 120–300 s. Nên giảm số thread trong resource pool của Intruder.
-- **WAF trả 403 kèm trang chặn:** để status `429, 503` và thêm response regex cho trang chặn. Không nên thêm `403` vào status vì sẽ retry cả các lỗi phân quyền thật.
-- **Chỉ một vài host:** tắt "Only requests in Burp's target scope" và dùng Host regex, ví dụ `api\.example\.com`.
+Mỗi rule có:
 
-## 4. Giới hạn
+- **Action**: `RETRY` (chờ, gửi lại, rồi kiểm tra response mới với các rule) hoặc `STOP` (giao nguyên response, không retry nữa).
+- **Fixed delay ms**: nếu điền, dùng delay cố định thay cho Retry-After/backoff.
+- **Max retries**: nếu điền, giới hạn số lần retry khi rule này khớp.
+- **Highlight**: tô màu response trong Burp khi response cuối cùng khớp rule này.
 
-- **Không có response thì không retry được:** timeout, connection reset, WAF drop kết nối không đi tới handler response của Burp.
-- **Scanner:** thời gian chờ retry cộng vào thời gian response mà Scanner đo, có thể gây báo nhầm ở các check dựa trên thời gian (blind SQLi kiểu sleep). Chỉ bật SCANNER khi chấp nhận rủi ro này.
-- **Method không idempotent:** retry POST/PUT/DELETE khi gặp `5xx` có thể lặp lại tác dụng phụ (tạo bản ghi trùng). Với `429` thường an toàn vì server chưa xử lý request. Giới hạn Methods nếu cần.
-- Trong lúc chờ, thread của công cụ Burp bị giữ lại (browser chờ với Proxy, thread Intruder chờ với Intruder). Đây là chủ ý, giống throttle.
-- Khi unload extension, mọi request đang chờ được giải phóng ngay và nhận response hiện có.
+Response mới sau mỗi lần retry cũng được kiểm tra lại. Ví dụ 429 → retry → lần sau trả trang chặn WAF → rule STOP của WAF khớp → dừng và tô đỏ.
+
+### Điều kiện
+
+| Cột | Ý nghĩa |
+| --- | --- |
+| On | Bật/tắt điều kiện |
+| Group | Cùng số group = **AND**; khác group = **OR** |
+| Source | status, header, headers (status line + headers), body, response (toàn bộ), json, body.length, method, path, request.header |
+| Header / JSON path | Tên header, hoặc JSON path như `$.error.code`, `items[*].id` |
+| Operator | EQUALS, NOT_EQUALS, CONTAINS, NOT_CONTAINS, MATCHES_REGEX, IN (danh sách cách nhau dấu phẩy), NUMERIC_GT/GTE/LT/LTE, EXISTS, NOT_EXISTS |
+| Case | Phân biệt hoa thường (mặc định không) |
+| Not | Đảo kết quả điều kiện |
+
+Biểu thức tổng hợp hiển thị ngay dưới bảng, ví dụ:
+
+```text
+(status = "403" AND header[Server] contains "cloudflare")
+OR (status = "403" AND json[error.code] = "FORBIDDEN")
+```
+
+## 2. Phân biệt các loại 403
+
+Đặt rule theo thứ tự từ cụ thể tới chung:
+
+1. **Cloudflare challenge (stop)**: `cf-mitigated: challenge`, hoặc 403/503 + `Server: cloudflare` + body "Just a moment". Gửi lại không vượt được challenge.
+2. **Cloudflare WAF block (stop)**: 403 + `Server: cloudflare` + body "Attention Required" / error 1020.
+3. **Rate limited (429/503) (retry)**.
+4. **Application 403 (stop)**: mọi 403 còn lại là từ chối thật của ứng dụng, không retry.
+
+Nếu ứng dụng trả 403 kiểu JSON có thể retry (ví dụ `{"error":{"retryable":true}}`), thêm rule RETRY với điều kiện `json[error.retryable] = "true"` đặt **trên** rule "Application 403".
+
+## 3. Preset
+
+Chọn preset trong danh sách cạnh nút **Add preset**. Rule mới được chèn ngay dưới rule đang chọn.
+
+| Preset | Action |
+| --- | --- |
+| Rate limited (429/503) | RETRY |
+| Retry-After header present | RETRY |
+| Cloudflare rate limit (1015) | RETRY, delay cố định 10 s |
+| Cloudflare challenge | STOP, cam |
+| Cloudflare WAF block | STOP, đỏ |
+| AWS WAF / CloudFront block | STOP, đỏ |
+| Akamai block | STOP, đỏ |
+| Imperva / Incapsula block | STOP, đỏ |
+| F5 BIG-IP ASM block | STOP, đỏ |
+| Gateway error (502/504) | RETRY |
+| Application 403 | STOP |
+
+Chữ ký WAF thay đổi theo từng triển khai. Luôn kiểm tra preset với response thật trong tab **Test**.
+
+## 4. Tab Test
+
+Dán một raw response (status line, headers, dòng trống, body), điền tool/method/host/path, rồi nhấn **Evaluate**. Kết quả cho biết profile nào được chọn, rule nào khớp, vì sao, và lần chờ đầu tiên là bao lâu. Test dùng nội dung form hiện tại (kể cả chưa Save) và **không gửi request nào**.
+
+## 5. Kết quả trên Burp
+
+Phần **Notes** của response ghi lại kết quả, ví dụ:
+
+```text
+Corestra retry [API]: 2 resends (rule 'Rate limited'), waited 3.0s, final status 200 - recovered
+Corestra retry [API]: rule 'Cloudflare WAF block' - stop, not retried
+```
+
+Request gửi lại đi trực tiếp (không qua Proxy Pipeline) và là traffic của Corestra, nên Session Handler và Auto Trigger không xử lý lại. Trong Logger chúng hiện với tool là Extensions. Global Retry chạy **trước** Session Handler, nên nếu sau khi retry vẫn mất session thì re-login vẫn chạy như bình thường.
+
+Project lưu bằng định dạng cũ (một policy duy nhất) được tự chuyển thành một profile "Default".
+
+## 6. Giới hạn
+
+- **Không có response thì không retry được**: timeout, connection reset, WAF drop kết nối không đi tới handler response của Burp.
+- **Scanner**: thời gian chờ retry cộng vào thời gian response mà Scanner đo, có thể gây báo nhầm ở check dựa trên thời gian. Chỉ bật SCANNER khi chấp nhận rủi ro này.
+- **Method không idempotent**: retry POST/PUT/DELETE khi gặp `5xx` có thể lặp lại tác dụng phụ. Với `429` thường an toàn. Dùng profile riêng hoặc giới hạn Methods.
+- Trong lúc chờ, thread của công cụ Burp bị giữ lại. Khi unload extension, mọi request đang chờ được giải phóng ngay.

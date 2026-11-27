@@ -1,6 +1,9 @@
 package dev.nquangit.corestra.ui.retry;
 
-import dev.nquangit.corestra.http.retry.GlobalRetryPolicy;
+import dev.nquangit.corestra.http.retry.RetryConfig;
+import dev.nquangit.corestra.http.retry.RetryPresets;
+import dev.nquangit.corestra.http.retry.RetryProfile;
+import dev.nquangit.corestra.http.retry.RetryRule;
 import dev.nquangit.corestra.persistence.ProjectSettings;
 import dev.nquangit.corestra.persistence.ProjectSettingsRepository;
 import org.junit.jupiter.api.Test;
@@ -18,27 +21,43 @@ import static org.junit.jupiter.api.Assertions.*;
 class GlobalRetryPanelTest {
 
     @Test
-    void savingTheLoadedFormKeepsThePolicyAndOtherSettings() throws Exception {
+    void savingTheLoadedFormKeepsProfilesRulesAndOtherSettings() throws Exception {
         ProjectSettingsRepository repository = new ProjectSettingsRepository();
-        GlobalRetryPolicy policy = new GlobalRetryPolicy(true, false, "api\\..*", List.of("PROXY", "SCANNER"),
-                List.of(429, 503), "(?i)captcha", List.of("GET"), 5, 250, 10_000, 1.5, false, 90, false);
-        ProjectSettings settings = ProjectSettings.defaults().withProxyPort(9091).withGlobalRetry(policy);
+        RetryProfile cdn = new RetryProfile(null, "CDN host", true, List.of("PROXY", "SCANNER"), false, "cdn\\..*",
+                "/api", List.of("GET"), RetryPresets.all().stream().map(RetryPresets.Preset::create).toList(),
+                5, 250, 10_000, 1.5, false, 90, false);
+        RetryConfig config = new RetryConfig(true, List.of(cdn, RetryProfile.standard("Default")));
+        ProjectSettings settings = ProjectSettings.defaults().withProxyPort(9091).withRetry(config);
         repository.save(settings);
 
         SwingUtilities.invokeAndWait(() -> {
             GlobalRetryPanel panel = new GlobalRetryPanel(repository);
-            repository.save(settings.withGlobalRetry(GlobalRetryPolicy.defaults()));
-            assertTrue(panel.save(), "form still holds the policy loaded at construction");
+            assertEquals(config, panel.currentConfig(), "form round-trips every field");
+            repository.save(settings.withRetry(RetryConfig.defaults()));
+            assertTrue(panel.save(), "form still holds the configuration loaded at construction");
         });
         assertEquals(settings, repository.load());
     }
 
     @Test
-    void parsesCommaOrSpaceSeparatedLists() {
-        assertEquals(List.of(429, 503), GlobalRetryPanel.parseStatuses(" 429, 503 "));
+    void presetsAreAddedToTheSelectedProfile() throws Exception {
+        ProjectSettingsRepository repository = new ProjectSettingsRepository();
+        SwingUtilities.invokeAndWait(() -> {
+            GlobalRetryPanel panel = new GlobalRetryPanel(repository);
+            panel.addPreset("Cloudflare WAF block (stop)");
+            List<RetryRule> rules = panel.workingProfiles().get(0).rules();
+            assertEquals(List.of("Rate limited (429/503)", "Cloudflare WAF block"),
+                    rules.stream().map(RetryRule::name).toList());
+            assertEquals(RetryRule.Action.STOP, rules.get(1).action());
+            assertTrue(panel.save());
+        });
+        assertEquals(2, repository.load().retry().profiles().get(0).rules().size());
+    }
+
+    @Test
+    void splitsCommaOrSpaceSeparatedLists() {
         assertEquals(List.of("GET", "HEAD"), GlobalRetryPanel.splitList("GET HEAD,"));
         assertEquals(List.of(), GlobalRetryPanel.splitList("  "));
-        assertThrows(IllegalArgumentException.class, () -> GlobalRetryPanel.parseStatuses("429, abc"));
     }
 
     /** Burp's look-and-feel renders HTML labels badly; UI text must be plain (see WrappedText). */
