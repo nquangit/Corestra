@@ -564,8 +564,8 @@ public final class SessionManager {
      *   <li>Linked profiles use the Auth Provider's enabled failure rules and its
      *       {@code targetRetryPolicy} (refresh / login / refresh-then-login, each followed by one
      *       resend). {@code NO_RETRY} leaves the response untouched.</li>
-     *   <li>Standalone profiles use their own re-login status codes / body text and re-run the
-     *       standalone auth flow; resending is opt-in.</li>
+     *   <li>Standalone profiles use their own failure rules and retry policy (NO_RETRY or
+     *       re-run the standalone auth flow and resend once).</li>
      * </ul>
      *
      * <p>Only one re-authentication runs per session generation: a response sent with a session
@@ -599,16 +599,16 @@ public final class SessionManager {
             resend = true;
         } else {
             SessionAuthConfig config = profile.authConfig();
-            if (!config.hasReloginConditions() || !config.indicatesSessionLost(statusCode, body(raw))) {
+            if (!failureDetector.isAuthFailure(config.failureRules(), statusCode, raw)) {
                 return LiveAuthRecovery.notAuthFailure();
             }
-            policy = dev.nquangit.corestra.access.auth.AuthRetryPolicy.LOGIN_AND_RETRY_ONCE;
-            resend = config.resendAfterRelogin();
+            policy = config.retryPolicy();
+            resend = true;
         }
         if (policy == dev.nquangit.corestra.access.auth.AuthRetryPolicy.NO_RETRY) {
             return new LiveAuthRecovery(LiveAuthRecovery.Outcome.POLICY_NO_RETRY, false,
                     "Session '" + profile.name() + "': failure rule matched (HTTP " + statusCode
-                            + "); provider retry policy is NO_RETRY");
+                            + "); retry policy is NO_RETRY");
         }
 
         ReentrantLock lock = lockFor(profile.id());

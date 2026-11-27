@@ -47,6 +47,8 @@ import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableCellEditor;
 import javax.swing.table.TableColumn;
+import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
+import dev.nquangit.corestra.ui.access.AuthOutcomeRulesTable;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.Component;
@@ -93,10 +95,12 @@ public final class SessionHandlerPanel extends JPanel {
     private final JComboBox<FlowOption> authFlowCombo = new JComboBox<>();
     private final JTextField ttlField = new JTextField();
     private final JLabel authSourceHint = new JLabel(" ");
-    private final JTextField reloginStatusField = new JTextField();
-    private final JTextField reloginBodyField = new JTextField();
-    private final JCheckBox resendAfterReloginCheck = new JCheckBox("Resend the failed request once");
-    private final JLabel reloginHint = new JLabel(" ");
+    private final JComboBox<AuthRetryPolicy> reloginPolicyCombo = new JComboBox<>(
+            new AuthRetryPolicy[]{AuthRetryPolicy.LOGIN_AND_RETRY_ONCE, AuthRetryPolicy.NO_RETRY});
+    private final AuthOutcomeRulesTable failureRulesTable = new AuthOutcomeRulesTable("Failure Rules", List.of(), false);
+    private final JPanel standaloneReloginSection = new JPanel(new BorderLayout(0, 6));
+    private final JLabel linkedReloginHint = new JLabel(
+            "Live re-login uses the linked Auth Provider's Failure rules and Target retry policy (Authentication tab).");
     private final JComboBox<SessionScopeMode> scopeModeCombo = new JComboBox<>(SessionScopeMode.values());
     private final JCheckBox schedulerEnabledCheck = new JCheckBox("Enabled");
     private final JTextField schedulerIntervalField = new JTextField();
@@ -272,11 +276,8 @@ public final class SessionHandlerPanel extends JPanel {
         addLabeled(panel, 4, "Standalone auth flow:", authFlowCombo);
         addLabeled(panel, 5, "Standalone TTL seconds:", ttlField);
         addLabeled(panel, 6, "", authSourceHint);
-        addLabeled(panel, 7, "Re-login on status:", reloginStatusField);
-        addLabeled(panel, 8, "Re-login if body contains:", reloginBodyField);
-        addLabeled(panel, 9, "", resendAfterReloginCheck);
-        addLabeled(panel, 10, "", reloginHint);
-        addFiller(panel, 11);
+        addLabeled(panel, 7, "", linkedReloginHint);
+        addReloginSection(panel, 8);
         return panel;
     }
 
@@ -419,14 +420,10 @@ public final class SessionHandlerPanel extends JPanel {
         nameField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
         ttlField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         ttlField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
-        reloginStatusField.setToolTipText("Comma-separated HTTP status codes that mean the session was lost, e.g. 401, 419");
-        reloginBodyField.setToolTipText("Case-insensitive text in a live response body that means the session was lost, e.g. Session expired");
-        resendAfterReloginCheck.setToolTipText("After re-login, send the failed live request again with the new session and deliver that response");
-        reloginStatusField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
-        reloginStatusField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
-        reloginBodyField.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
-        reloginBodyField.addFocusListener(onFocusLost(this::saveCurrentProfileAfterStoppingEditors));
-        resendAfterReloginCheck.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
+        reloginPolicyCombo.setToolTipText("LOGIN_AND_RETRY_ONCE: re-run the standalone auth flow, then resend the"
+                + " failed live request once. NO_RETRY: leave the response untouched.");
+        reloginPolicyCombo.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
+        failureRulesTable.addChangeListener(() -> SwingUtilities.invokeLater(this::saveCurrentProfileAfterStoppingEditors));
         enabledCheck.addActionListener(event -> saveCurrentProfileAfterStoppingEditors());
         authSourceCombo.addActionListener(event -> {
             if (!refreshing
@@ -644,12 +641,8 @@ public final class SessionHandlerPanel extends JPanel {
         linkedAuthProfileCombo.setEnabled(linked && sessionManager.linkedAuthAvailable());
         authFlowCombo.setEnabled(!linked);
         ttlField.setEnabled(!linked);
-        reloginStatusField.setEnabled(!linked);
-        reloginBodyField.setEnabled(!linked);
-        resendAfterReloginCheck.setEnabled(!linked);
-        reloginHint.setText(linked
-                ? "Live re-login uses the linked Auth Provider's Failure rules and Target retry policy (Authentication tab)."
-                : "When a live response matches, the standalone auth flow runs again. Leave both empty to rely on TTL only.");
+        standaloneReloginSection.setVisible(!linked);
+        linkedReloginHint.setVisible(linked);
         authSourceHint.setText(linked
                 ? "Uses the selected actor's credentials, auth state, provider flows, and injection rules."
                 : "Uses this Session Profile's flow, state, TTL, and injection rules.");
@@ -681,9 +674,8 @@ public final class SessionHandlerPanel extends JPanel {
             refreshLinkedAuthProfileOptions(profile.linkedAuthProfileId());
             refreshFlowOptions(profile.authConfig().mainAuthFlowId());
             ttlField.setText(Long.toString(profile.authConfig().ttlSeconds()));
-            reloginStatusField.setText(profile.authConfig().reloginStatusCodes());
-            reloginBodyField.setText(profile.authConfig().reloginBodyContains());
-            resendAfterReloginCheck.setSelected(profile.authConfig().resendAfterRelogin());
+            reloginPolicyCombo.setSelectedItem(profile.authConfig().retryPolicy());
+            failureRulesTable.setRules(profile.authConfig().failureRules());
             scopeModeCombo.setSelectedItem(profile.scope().mode());
             schedulerEnabledCheck.setSelected(profile.scheduler().enabled());
             schedulerIntervalField.setText(Long.toString(profile.scheduler().intervalSeconds()));
@@ -852,7 +844,12 @@ public final class SessionHandlerPanel extends JPanel {
     private SessionAuthConfig readAuthConfig() {
         FlowOption option = (FlowOption) authFlowCombo.getSelectedItem();
         return new SessionAuthConfig(option == null ? "" : option.id(), parseLong(ttlField.getText(), 0L), List.of(),
-                reloginStatusField.getText(), reloginBodyField.getText(), resendAfterReloginCheck.isSelected());
+                failureRulesTable.failureRules(), selectedReloginPolicy());
+    }
+
+    private AuthRetryPolicy selectedReloginPolicy() {
+        Object selected = reloginPolicyCombo.getSelectedItem();
+        return selected instanceof AuthRetryPolicy policy ? policy : SessionAuthConfig.DEFAULT_RETRY_POLICY;
     }
 
     private String selectedLinkedAuthProfileId() {
@@ -1023,6 +1020,7 @@ public final class SessionHandlerPanel extends JPanel {
         stopEditing(criteriaTable);
         stopEditing(injectionTable);
         stopEditing(extractionTable);
+        failureRulesTable.stopEditing();
     }
 
     private static void stopEditing(JTable table) {
@@ -1046,6 +1044,32 @@ public final class SessionHandlerPanel extends JPanel {
         fc.fill = GridBagConstraints.HORIZONTAL;
         fc.insets = new Insets(4, 0, 4, 0);
         panel.add(component, fc);
+    }
+
+    private void addReloginSection(JPanel panel, int row) {
+        JPanel policyRow = new JPanel(new BorderLayout(8, 0));
+        policyRow.add(new JLabel("On match:"), BorderLayout.WEST);
+        policyRow.add(reloginPolicyCombo, BorderLayout.CENTER);
+        JPanel header = new JPanel(new BorderLayout(0, 4));
+        header.add(new JLabel("Live re-login"), BorderLayout.NORTH);
+        header.add(new WrappedText("Any enabled Failure rule matching a Session Handler response means the session"
+                + " was lost. Leave the table empty to rely on TTL only."), BorderLayout.CENTER);
+        header.add(policyRow, BorderLayout.SOUTH);
+        standaloneReloginSection.add(header, BorderLayout.NORTH);
+        failureRulesTable.setPreferredSize(new Dimension(400, 180));
+        standaloneReloginSection.add(failureRulesTable, BorderLayout.CENTER);
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = 0;
+        gbc.gridy = row;
+        gbc.gridwidth = 2;
+        gbc.weightx = 1;
+        gbc.weighty = 1;
+        gbc.fill = GridBagConstraints.BOTH;
+        gbc.anchor = GridBagConstraints.NORTHWEST;
+        gbc.insets = new Insets(10, 0, 0, 0);
+        panel.add(standaloneReloginSection, gbc);
+        addFiller(panel, row + 1);
     }
 
     private static void addFiller(JPanel panel, int row) {

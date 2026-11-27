@@ -173,9 +173,83 @@ class LiveAuthFailureRecoveryTest {
     }
 
     @Test
-    void standaloneProfileUsesItsOwnFailureConditions() {
+    void standaloneProfileUsesItsOwnFailureRules() {
+        SessionManager manager = standaloneManager(AuthRetryPolicy.LOGIN_AND_RETRY_ONCE);
+        CorestraSessionHttpHandler handler = handler(manager);
+
+        HttpRequest sent = handler.handleHttpRequestToBeSent(request(1, List.of())).request();
+        assertEquals("Bearer old", sent.headerValue("Authorization"));
+        HttpResponse ignored = handler.handleHttpResponseReceived(response(1, sent, 200, "ok")).response();
+        assertEquals(200, ignored.statusCode());
+        assertEquals(0, loginRuns.get());
+
+        HttpRequest next = handler.handleHttpRequestToBeSent(request(2, List.of())).request();
+        HttpResponse delivered = handler.handleHttpResponseReceived(
+                response(2, next, 200, "{\"error\":\"Session expired\"}")).response();
+
+        assertEquals(1, loginRuns.get(), "BODY_CONTAINS failure rule triggers re-login");
+        assertEquals("Bearer fresh", resent.getFirst().headerValue("Authorization"));
+        assertEquals(200, delivered.statusCode());
+        assertEquals("fresh", repository.profile(SessionProfile.GENERAL_ID).orElseThrow().state().values().get("accessToken"));
+    }
+
+    @Test
+    void standaloneNoRetryPolicyLeavesTheResponseUntouched() {
+        CorestraSessionHttpHandler handler = handler(standaloneManager(AuthRetryPolicy.NO_RETRY));
+        HttpRequest sent = handler.handleHttpRequestToBeSent(request(1, List.of())).request();
+        HttpResponseReceived original = response(1, sent, 401, "denied");
+
+        assertSame(original, handler.handleHttpResponseReceived(original).response());
+        assertEquals(0, loginRuns.get());
+        assertTrue(resent.isEmpty());
+    }
+
+    @Test
+    void standaloneFailureRulesRoundTripThroughJson() throws Exception {
+        SessionAuthConfig config = new SessionAuthConfig("login", 30, List.of(),
+                List.of(new AuthFailureRule("r1", "401", true, AuthRuleType.STATUS_CODE, "401", "")),
+                AuthRetryPolicy.NO_RETRY);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
+        String json = mapper.writeValueAsString(config);
+        SessionAuthConfig restored = mapper.readValue(json, SessionAuthConfig.class);
+        SessionAuthConfig empty = mapper.readValue(
+                "{\"mainAuthFlowId\":\"login\",\"ttlSeconds\":30,\"triggerCriteria\":[]}", SessionAuthConfig.class);
+
+        assertEquals(config, restored);
+        assertFalse(json.contains("reloginStatusCodes"), json);
+        assertTrue(empty.failureRules().isEmpty());
+        assertEquals(AuthRetryPolicy.LOGIN_AND_RETRY_ONCE, empty.retryPolicy());
+    }
+
+    @Test
+    void legacyReloginFieldsMigrateToFailureRules() throws Exception {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        SessionAuthConfig legacy = mapper.readValue("{\"mainAuthFlowId\":\"login\",\"ttlSeconds\":30,"
+                + "\"triggerCriteria\":[],\"reloginStatusCodes\":\"401,419\","
+                + "\"reloginBodyContains\":\"expired\",\"resendAfterRelogin\":false}", SessionAuthConfig.class);
+
+        assertEquals(List.of(AuthRuleType.STATUS_CODE, AuthRuleType.STATUS_CODE, AuthRuleType.BODY_CONTAINS),
+                legacy.failureRules().stream().map(AuthFailureRule::type).toList());
+        assertEquals(List.of("401", "419", "expired"),
+                legacy.failureRules().stream().map(AuthFailureRule::expression).toList());
+        assertTrue(legacy.failureRules().stream().allMatch(AuthFailureRule::enabled));
+        assertEquals(AuthRetryPolicy.LOGIN_AND_RETRY_ONCE, legacy.retryPolicy());
+    }
+
+    @Test
+    void standaloneHasNoRefreshFlowSoRefreshPoliciesMeanLogin() {
+        SessionAuthConfig config = new SessionAuthConfig("login", 0, List.of(), List.of(),
+                AuthRetryPolicy.REFRESH_THEN_LOGIN_AND_RETRY_ONCE);
+        assertEquals(AuthRetryPolicy.LOGIN_AND_RETRY_ONCE, config.retryPolicy());
+    }
+
+    private SessionManager standaloneManager(AuthRetryPolicy policy) {
         repository.saveProfile(SessionProfile.general().withConfig("General", SessionScope.custom(List.of()),
-                        new SessionAuthConfig("login", 0, List.of(), "401, 419", "session expired", true),
+                        new SessionAuthConfig("login", 0, List.of(), List.of(
+                                new AuthFailureRule("s401", "401", true, AuthRuleType.STATUS_CODE, "401", ""),
+                                new AuthFailureRule("body", "expired", true, AuthRuleType.BODY_CONTAINS,
+                                        "Session expired", "")), policy),
                         new SessionSchedulerConfig(false, 60, false),
                         List.of(new SessionInjectionRule("auth", true, InjectRule.Target.REQUEST_HEADER,
                                 "Authorization", "Bearer {{session.accessToken}}", InjectRule.WriteStrategy.OVERWRITE,
@@ -192,39 +266,7 @@ class LiveAuthFailureRecoveryTest {
                     loginRuns.incrementAndGet();
                     return plainResponse(200, List.of(header("X-Token", "fresh")), "");
                 }), new ExtractionService(), CLOCK);
-        CorestraSessionHttpHandler handler = handler(manager);
-
-        HttpRequest sent = handler.handleHttpRequestToBeSent(request(1, List.of())).request();
-        assertEquals("Bearer old", sent.headerValue("Authorization"));
-        HttpResponse ignored = handler.handleHttpResponseReceived(response(1, sent, 200, "ok")).response();
-        assertEquals(200, ignored.statusCode());
-        assertEquals(0, loginRuns.get());
-
-        HttpRequest next = handler.handleHttpRequestToBeSent(request(2, List.of())).request();
-        HttpResponse delivered = handler.handleHttpResponseReceived(
-                response(2, next, 200, "{\"error\":\"Session expired\"}")).response();
-
-        assertEquals(1, loginRuns.get(), "Body condition is case-insensitive and triggers re-login");
-        assertEquals("Bearer fresh", resent.getFirst().headerValue("Authorization"));
-        assertEquals(200, delivered.statusCode());
-        assertEquals("fresh", repository.profile(SessionProfile.GENERAL_ID).orElseThrow().state().values().get("accessToken"));
-    }
-
-    @Test
-    void standaloneConditionsRoundTripThroughJson() throws Exception {
-        SessionAuthConfig config = new SessionAuthConfig("login", 30, List.of(), "401,403", "expired", true);
-        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-
-        SessionAuthConfig restored = mapper.readValue(mapper.writeValueAsString(config), SessionAuthConfig.class);
-        SessionAuthConfig legacy = mapper.readValue(
-                "{\"mainAuthFlowId\":\"login\",\"ttlSeconds\":30,\"triggerCriteria\":[]}", SessionAuthConfig.class);
-
-        assertEquals(config, restored);
-        assertEquals("", legacy.reloginStatusCodes());
-        assertFalse(legacy.hasReloginConditions());
-        assertEquals(List.of(401, 403), restored.reloginStatusCodeList());
-        assertThrows(IllegalArgumentException.class,
-                () -> new SessionAuthConfig("login", 30, List.of(), "40x", "", false));
+        return manager;
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

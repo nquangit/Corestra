@@ -227,10 +227,10 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
         private final AuthProviderFlowAnalyzer analyzer = new AuthProviderFlowAnalyzer();
         private final AuthFlowVariableMigrator migrator = new AuthFlowVariableMigrator();
         private final InjectionRulesTablePanel injectionRules;
-        private final OutcomeRulesTablePanel successRules;
-        private final OutcomeRulesTablePanel failureRules;
-        private final OutcomeRulesTablePanel keepAliveSuccessRules;
-        private final OutcomeRulesTablePanel keepAliveExpiredRules;
+        private final AuthOutcomeRulesTable successRules;
+        private final AuthOutcomeRulesTable failureRules;
+        private final AuthOutcomeRulesTable keepAliveSuccessRules;
+        private final AuthOutcomeRulesTable keepAliveExpiredRules;
 
         AuthProviderFormPanel(AuthProviderFormModel model, List<FlowDefinition> flows) {
             this(model, flows, null);
@@ -271,10 +271,10 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
             targetRetryPolicy.setSelectedItem(initial.targetRetryPolicy());
             stateTtlSeconds.setValue(initial.stateTtlSeconds());
             injectionRules = new InjectionRulesTablePanel(initial.injectionRules());
-            successRules = new OutcomeRulesTablePanel("Success Rules", initial.successRules(), true);
-            failureRules = new OutcomeRulesTablePanel("Failure Rules", initial.failureRules(), false);
-            keepAliveSuccessRules = new OutcomeRulesTablePanel("Keep-alive Success", initial.keepAlive().successRules(), true);
-            keepAliveExpiredRules = new OutcomeRulesTablePanel("Session Expired", initial.keepAlive().expiredRules(), false);
+            successRules = new AuthOutcomeRulesTable("Success Rules", initial.successRules(), true);
+            failureRules = new AuthOutcomeRulesTable("Failure Rules", initial.failureRules(), false);
+            keepAliveSuccessRules = new AuthOutcomeRulesTable("Keep-alive Success", initial.keepAlive().successRules(), true);
+            keepAliveExpiredRules = new AuthOutcomeRulesTable("Session Expired", initial.keepAlive().expiredRules(), false);
 
             add(buildTopSection(), BorderLayout.NORTH);
             add(buildRuleTabs(), BorderLayout.CENTER);
@@ -757,171 +757,6 @@ final class AuthProvidersPanel extends JPanel implements AccessTabPanel {
                 }
             }
             return false;
-        }
-
-        private void removeSelectedRow() {
-            int row = table.getSelectedRow();
-            if (row >= 0) {
-                model.removeRow(table.convertRowIndexToModel(row));
-            }
-        }
-
-        private void stopEditing() {
-            if (table.isEditing()) {
-                table.getCellEditor().stopCellEditing();
-            }
-        }
-
-        private String stringAt(int row, int column) {
-            Object value = model.getValueAt(row, column);
-            return value == null ? "" : value.toString().strip();
-        }
-
-        private boolean booleanAt(int row, int column) {
-            Object value = model.getValueAt(row, column);
-            return value instanceof Boolean bool ? bool : Boolean.parseBoolean(String.valueOf(value));
-        }
-
-        private String idAt(int row, String prefix) {
-            String id = stringAt(row, ID_COLUMN);
-            return id.isBlank() ? prefix + "-" + UUID.randomUUID() : id;
-        }
-
-        private <T extends Enum<T>> T enumAt(int row, int column, Class<T> enumType, T defaultValue) {
-            Object value = model.getValueAt(row, column);
-            if (enumType.isInstance(value)) {
-                return enumType.cast(value);
-            }
-            if (value != null) {
-                try {
-                    return Enum.valueOf(enumType, value.toString());
-                } catch (IllegalArgumentException ignored) {
-                    return defaultValue;
-                }
-            }
-            return defaultValue;
-        }
-    }
-
-    private static final class OutcomeRulesTablePanel extends JPanel {
-        private static final int ID_COLUMN = 4;
-
-        private final String title;
-        private final boolean success;
-        private final DefaultTableModel model;
-        private final JTable table;
-
-        OutcomeRulesTablePanel(String title, List<?> rules, boolean success) {
-            super(new BorderLayout(6, 6));
-            this.title = title;
-            this.success = success;
-            setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
-            model = new DefaultTableModel(new Object[]{"Enabled", "Type", "Expression", "Expected Value", "Id"}, 0) {
-                @Override
-                public boolean isCellEditable(int row, int column) {
-                    return true;
-                }
-
-                @Override
-                public Class<?> getColumnClass(int columnIndex) {
-                    return columnIndex == 0 ? Boolean.class : Object.class;
-                }
-            };
-            table = new JTable(model);
-            table.setFillsViewportHeight(true);
-            table.getColumnModel().getColumn(1)
-                    .setCellEditor(new DefaultCellEditor(new JComboBox<>(new AuthRuleType[]{
-                            AuthRuleType.STATUS_CODE,
-                            AuthRuleType.HEADER_EXISTS,
-                            AuthRuleType.BODY_CONTAINS,
-                            AuthRuleType.BODY_NOT_CONTAINS})));
-            table.getColumnModel().removeColumn(table.getColumnModel().getColumn(ID_COLUMN));
-
-            add(new JScrollPane(table), BorderLayout.CENTER);
-            add(buttons(), BorderLayout.SOUTH);
-            setRules(rules);
-        }
-
-        List<AuthSuccessRule> successRules() {
-            stopEditing();
-            ArrayList<AuthSuccessRule> rules = new ArrayList<>();
-            for (int row = 0; row < model.getRowCount(); row++) {
-                String expression = stringAt(row, 2);
-                String expectedValue = stringAt(row, 3);
-                if (expression.isBlank() && expectedValue.isBlank()) {
-                    continue;
-                }
-                rules.add(new AuthSuccessRule(
-                        idAt(row, "success"),
-                        nameFor("Success", expression, expectedValue),
-                        booleanAt(row, 0),
-                        enumAt(row, 1, AuthRuleType.class, AuthRuleType.CUSTOM),
-                        expression,
-                        expectedValue));
-            }
-            return List.copyOf(rules);
-        }
-
-        List<AuthFailureRule> failureRules() {
-            stopEditing();
-            ArrayList<AuthFailureRule> rules = new ArrayList<>();
-            for (int row = 0; row < model.getRowCount(); row++) {
-                String expression = stringAt(row, 2);
-                String expectedValue = stringAt(row, 3);
-                if (expression.isBlank() && expectedValue.isBlank()) {
-                    continue;
-                }
-                rules.add(new AuthFailureRule(
-                        idAt(row, "failure"),
-                        nameFor("Failure", expression, expectedValue),
-                        booleanAt(row, 0),
-                        enumAt(row, 1, AuthRuleType.class, AuthRuleType.CUSTOM),
-                        expression,
-                        expectedValue));
-            }
-            return List.copyOf(rules);
-        }
-
-        private void setRules(List<?> rules) {
-            model.setRowCount(0);
-            if (rules == null) {
-                return;
-            }
-            for (Object rule : rules) {
-                if (rule instanceof AuthSuccessRule successRule) {
-                    model.addRow(new Object[]{
-                            successRule.enabled(),
-                            successRule.type(),
-                            successRule.expression(),
-                            successRule.expectedValue(),
-                            successRule.id()});
-                } else if (rule instanceof AuthFailureRule failureRule) {
-                    model.addRow(new Object[]{
-                            failureRule.enabled(),
-                            failureRule.type(),
-                            failureRule.expression(),
-                            failureRule.expectedValue(),
-                            failureRule.id()});
-                }
-            }
-        }
-
-        private JPanel buttons() {
-            JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-            javax.swing.JButton add = StyledButton.neutral("Add Row");
-            javax.swing.JButton remove = StyledButton.danger("Remove Row");
-            add.addActionListener(event -> model.addRow(new Object[]{
-                    true,
-                    AuthRuleType.STATUS_CODE,
-                    success ? "200" : "401",
-                    "",
-                    ""}));
-            remove.addActionListener(event -> removeSelectedRow());
-            panel.add(add);
-            panel.add(remove);
-            panel.add(Box.createHorizontalStrut(6));
-            panel.add(new JLabel(title));
-            return panel;
         }
 
         private void removeSelectedRow() {

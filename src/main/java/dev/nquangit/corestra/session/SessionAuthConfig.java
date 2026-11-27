@@ -4,6 +4,9 @@ import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dev.nquangit.corestra.access.auth.AuthFailureRule;
+import dev.nquangit.corestra.access.auth.AuthRetryPolicy;
+import dev.nquangit.corestra.access.auth.AuthRuleType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -11,57 +14,72 @@ import java.util.Objects;
 
 /**
  * Configures when and how a session profile runs its main authentication flow.
+ *
+ * <p>Live re-login for standalone profiles uses the same model as an Auth Provider: a list of
+ * {@link AuthFailureRule}s (any enabled rule matching a live response means "session lost") and an
+ * {@link AuthRetryPolicy}. A standalone profile has only a login flow, so refresh policies are
+ * normalised to {@link AuthRetryPolicy#LOGIN_AND_RETRY_ONCE}. Linked profiles ignore these fields
+ * and use their Auth Provider's failure rules and target retry policy.</p>
  */
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 public final class SessionAuthConfig {
+    /** Default policy: re-run the standalone auth flow and resend the failed request once. */
+    public static final AuthRetryPolicy DEFAULT_RETRY_POLICY = AuthRetryPolicy.LOGIN_AND_RETRY_ONCE;
+
     private final String mainAuthFlowId;
     private final long ttlSeconds;
     private final List<SessionScopeCriterion> triggerCriteria;
-    private final String reloginStatusCodes;
-    private final String reloginBodyContains;
-    private final boolean resendAfterRelogin;
+    private final List<AuthFailureRule> failureRules;
+    private final AuthRetryPolicy retryPolicy;
 
     /**
-     * Creates auth configuration without live re-login conditions.
+     * Creates auth configuration without live re-login rules.
      *
      * @param mainAuthFlowId Flowise flow id used for authentication
      * @param ttlSeconds session TTL in seconds, or 0 for no explicit expiry
      * @param triggerCriteria optional request criteria that permit on-demand auth
      */
     public SessionAuthConfig(String mainAuthFlowId, long ttlSeconds, List<SessionScopeCriterion> triggerCriteria) {
-        this(mainAuthFlowId, ttlSeconds, triggerCriteria, "", "", false);
+        this(mainAuthFlowId, ttlSeconds, triggerCriteria, List.of(), DEFAULT_RETRY_POLICY);
     }
 
     /**
      * Creates auth configuration.
      *
-     * <p>Live re-login conditions apply to standalone profiles only: when a live response handled
-     * by the Session Handler has one of {@code reloginStatusCodes} <em>or</em> its body contains
-     * {@code reloginBodyContains} (case-insensitive), the auth flow runs again. Linked profiles use
-     * their Auth Provider's failure rules and target retry policy instead.</p>
-     *
      * @param mainAuthFlowId Flowise flow id used for authentication
      * @param ttlSeconds session TTL in seconds, or 0 for no explicit expiry
      * @param triggerCriteria optional request criteria that permit on-demand auth
-     * @param reloginStatusCodes comma-separated HTTP status codes meaning "session lost", or empty
-     * @param reloginBodyContains body text meaning "session lost", or empty
-     * @param resendAfterRelogin whether the failed live request is sent once more after re-login
-     * @throws IllegalArgumentException when a status code is not a number between 100 and 599
+     * @param failureRules rules that mark a live response as "session lost"
+     * @param retryPolicy what to do when a failure rule matches
      */
-    @JsonCreator
-    public SessionAuthConfig(
-            @JsonProperty("mainAuthFlowId") String mainAuthFlowId,
-            @JsonProperty("ttlSeconds") long ttlSeconds,
-            @JsonProperty("triggerCriteria") List<SessionScopeCriterion> triggerCriteria,
-            @JsonProperty("reloginStatusCodes") String reloginStatusCodes,
-            @JsonProperty("reloginBodyContains") String reloginBodyContains,
-            @JsonProperty("resendAfterRelogin") boolean resendAfterRelogin) {
+    public SessionAuthConfig(String mainAuthFlowId, long ttlSeconds, List<SessionScopeCriterion> triggerCriteria,
+                             List<AuthFailureRule> failureRules, AuthRetryPolicy retryPolicy) {
         this.mainAuthFlowId = normalizeOptionalText(mainAuthFlowId);
         this.ttlSeconds = Math.max(0L, ttlSeconds);
         this.triggerCriteria = copyCriteria(triggerCriteria);
-        this.reloginStatusCodes = normalizeStatusCodes(reloginStatusCodes);
-        this.reloginBodyContains = normalizeOptionalText(reloginBodyContains);
-        this.resendAfterRelogin = resendAfterRelogin;
+        this.failureRules = failureRules == null ? List.of() : List.copyOf(failureRules);
+        this.retryPolicy = normalizePolicy(retryPolicy);
+    }
+
+    /**
+     * Jackson factory. Accepts the pre-rules fields ({@code reloginStatusCodes},
+     * {@code reloginBodyContains}, {@code resendAfterRelogin}) from older documents and converts
+     * them into failure rules; those fields are never written back.
+     */
+    @JsonCreator
+    static SessionAuthConfig fromJson(
+            @JsonProperty("mainAuthFlowId") String mainAuthFlowId,
+            @JsonProperty("ttlSeconds") long ttlSeconds,
+            @JsonProperty("triggerCriteria") List<SessionScopeCriterion> triggerCriteria,
+            @JsonProperty("failureRules") List<AuthFailureRule> failureRules,
+            @JsonProperty("retryPolicy") AuthRetryPolicy retryPolicy,
+            @JsonProperty("reloginStatusCodes") String legacyStatusCodes,
+            @JsonProperty("reloginBodyContains") String legacyBodyContains,
+            @JsonProperty("resendAfterRelogin") Boolean legacyResend) {
+        List<AuthFailureRule> rules = failureRules != null
+                ? failureRules
+                : legacyRules(legacyStatusCodes, legacyBodyContains);
+        return new SessionAuthConfig(mainAuthFlowId, ttlSeconds, triggerCriteria, rules, retryPolicy);
     }
 
     /**
@@ -120,101 +138,65 @@ public final class SessionAuthConfig {
     }
 
     /**
-     * Returns the normalised comma-separated status codes that mean "session lost".
+     * Returns the rules that mark a live response as "session lost".
      *
-     * @return codes such as {@code 401,419}, or empty
+     * @return immutable rules
      */
-    public String reloginStatusCodes() {
-        return reloginStatusCodes;
+    public List<AuthFailureRule> failureRules() {
+        return failureRules;
     }
 
     /**
-     * Returns the parsed status codes that mean "session lost".
+     * Returns what happens when a failure rule matches.
      *
-     * @return immutable status codes
+     * @return {@link AuthRetryPolicy#NO_RETRY} or {@link AuthRetryPolicy#LOGIN_AND_RETRY_ONCE}
      */
-    @JsonIgnore
-    public List<Integer> reloginStatusCodeList() {
-        if (reloginStatusCodes.isEmpty()) {
-            return List.of();
-        }
-        return java.util.Arrays.stream(reloginStatusCodes.split(",")).map(Integer::valueOf).toList();
+    public AuthRetryPolicy retryPolicy() {
+        return retryPolicy;
     }
 
     /**
-     * Returns the body text that means "session lost".
+     * Returns whether any enabled failure rule is configured.
      *
-     * @return text, or empty
-     */
-    public String reloginBodyContains() {
-        return reloginBodyContains;
-    }
-
-    /**
-     * Returns whether a failed live request is sent once more after re-login.
-     *
-     * @return true when resending
-     */
-    public boolean resendAfterRelogin() {
-        return resendAfterRelogin;
-    }
-
-    /**
-     * Returns whether any live re-login condition is configured.
-     *
-     * @return true when status codes or body text are set
+     * @return true when live re-login can trigger
      */
     @JsonIgnore
-    public boolean hasReloginConditions() {
-        return !reloginStatusCodes.isEmpty() || !reloginBodyContains.isEmpty();
+    public boolean hasEnabledFailureRules() {
+        return failureRules.stream().anyMatch(AuthFailureRule::enabled);
     }
 
     /**
-     * Returns whether a live response means the standalone session was lost.
+     * Returns a copy with different live re-login rules and policy.
      *
-     * @param statusCode response status code
-     * @param body response body
-     * @return true when a configured status code or body text matches
-     */
-    public boolean indicatesSessionLost(int statusCode, String body) {
-        if (reloginStatusCodeList().contains(statusCode)) {
-            return true;
-        }
-        return !reloginBodyContains.isEmpty() && body != null
-                && body.toLowerCase(java.util.Locale.ROOT).contains(reloginBodyContains.toLowerCase(java.util.Locale.ROOT));
-    }
-
-    /**
-     * Returns a copy with different live re-login conditions.
-     *
-     * @param statusCodes comma-separated status codes
-     * @param bodyContains body text
-     * @param resend whether to resend the failed request once
+     * @param rules failure rules
+     * @param policy retry policy
      * @return updated config
      */
-    public SessionAuthConfig withReloginConditions(String statusCodes, String bodyContains, boolean resend) {
-        return new SessionAuthConfig(mainAuthFlowId, ttlSeconds, triggerCriteria, statusCodes, bodyContains, resend);
+    public SessionAuthConfig withFailureHandling(List<AuthFailureRule> rules, AuthRetryPolicy policy) {
+        return new SessionAuthConfig(mainAuthFlowId, ttlSeconds, triggerCriteria, rules, policy);
     }
 
-    private static String normalizeStatusCodes(String value) {
-        if (value == null || value.isBlank()) {
-            return "";
-        }
-        java.util.LinkedHashSet<Integer> codes = new java.util.LinkedHashSet<>();
-        for (String part : value.split("[,\\s]+")) {
-            if (part.isBlank()) continue;
-            int code;
-            try {
-                code = Integer.parseInt(part.strip());
-            } catch (NumberFormatException invalid) {
-                throw new IllegalArgumentException("Re-login status code must be a number: " + part.strip());
+    private static AuthRetryPolicy normalizePolicy(AuthRetryPolicy policy) {
+        return policy == AuthRetryPolicy.NO_RETRY ? AuthRetryPolicy.NO_RETRY : DEFAULT_RETRY_POLICY;
+    }
+
+    private static List<AuthFailureRule> legacyRules(String statusCodes, String bodyContains) {
+        ArrayList<AuthFailureRule> rules = new ArrayList<>();
+        if (statusCodes != null) {
+            java.util.LinkedHashSet<String> codes = new java.util.LinkedHashSet<>();
+            for (String part : statusCodes.split("[,\\s]+")) {
+                if (part.strip().matches("[1-5]\\d\\d")) {
+                    codes.add(part.strip());
+                }
             }
-            if (code < 100 || code > 599) {
-                throw new IllegalArgumentException("Re-login status code must be between 100 and 599: " + code);
-            }
-            codes.add(code);
+            codes.forEach(code -> rules.add(new AuthFailureRule("relogin-status-" + code, "Status " + code,
+                    true, AuthRuleType.STATUS_CODE, code, "")));
         }
-        return String.join(",", codes.stream().map(String::valueOf).toList());
+        if (bodyContains != null && !bodyContains.isBlank()) {
+            rules.add(new AuthFailureRule("relogin-body", "Body contains", true, AuthRuleType.BODY_CONTAINS,
+                    bodyContains.strip(), ""));
+        }
+        return rules;
     }
 
     /**
@@ -232,11 +214,10 @@ public final class SessionAuthConfig {
             return false;
         }
         return ttlSeconds == that.ttlSeconds
-                && resendAfterRelogin == that.resendAfterRelogin
+                && retryPolicy == that.retryPolicy
                 && Objects.equals(mainAuthFlowId, that.mainAuthFlowId)
                 && Objects.equals(triggerCriteria, that.triggerCriteria)
-                && Objects.equals(reloginStatusCodes, that.reloginStatusCodes)
-                && Objects.equals(reloginBodyContains, that.reloginBodyContains);
+                && Objects.equals(failureRules, that.failureRules);
     }
 
     /**
@@ -246,8 +227,7 @@ public final class SessionAuthConfig {
      */
     @Override
     public int hashCode() {
-        return Objects.hash(mainAuthFlowId, ttlSeconds, triggerCriteria, reloginStatusCodes,
-                reloginBodyContains, resendAfterRelogin);
+        return Objects.hash(mainAuthFlowId, ttlSeconds, triggerCriteria, failureRules, retryPolicy);
     }
 
     private static List<SessionScopeCriterion> copyCriteria(List<SessionScopeCriterion> criteria) {

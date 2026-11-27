@@ -23,7 +23,23 @@ public final class TargetAuthFailureDetector {
      */
     public boolean isAuthFailure(AuthProvider provider, int statusCode, String rawResponse) {
         Objects.requireNonNull(provider, "provider");
-        for (AuthFailureRule rule : provider.failureRules()) {
+        return isAuthFailure(provider.failureRules(), statusCode, rawResponse);
+    }
+
+    /**
+     * Returns whether an enabled failure rule matches the response. Used directly by standalone
+     * Session Handler profiles, which own their failure rules instead of an Auth Provider.
+     *
+     * @param rules failure rules to evaluate
+     * @param statusCode response status code
+     * @param rawResponse raw response text (status line, headers, blank line, body)
+     * @return true when a failure rule matches
+     */
+    public boolean isAuthFailure(java.util.List<AuthFailureRule> rules, int statusCode, String rawResponse) {
+        if (rules == null) {
+            return false;
+        }
+        for (AuthFailureRule rule : rules) {
             if (rule.enabled() && matches(rule, statusCode, rawResponse)) {
                 return true;
             }
