@@ -16,6 +16,8 @@ import dev.nquangit.corestra.session.SessionProfileRepository;
 import dev.nquangit.corestra.session.SessionSchedulerService;
 import dev.nquangit.corestra.ui.component.StyledButton;
 import dev.nquangit.corestra.ui.flowise.FlowWorkspaceController;
+import dev.nquangit.corestra.watch.WatchDefinition;
+import dev.nquangit.corestra.watch.WatchRepository;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -608,6 +610,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
             }
             accessRepository.replaceWith(AccessWorkspaceDocument.empty());
             sessionRepository.clear();
+            if (watchRepository != null) watchRepository.clear();
             metadataRepo.clear();
             settingsRepo.clear();
             dataMaintenanceService.clearAllProjectData();
@@ -635,6 +638,13 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         manualController = Objects.requireNonNull(controller); manualIdleCheck = Objects.requireNonNull(idleCheck);
     }
 
+    private WatchRepository watchRepository;
+
+    /** Includes Watch definitions in project import/export and project-data cleanup. */
+    public void configureWatches(WatchRepository repository) {
+        watchRepository = Objects.requireNonNull(repository, "repository");
+    }
+
     private void exportProject() {
         long now = System.currentTimeMillis();
         currentMeta = currentMeta.withUpdatedAtEpochMillis(now);
@@ -658,6 +668,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
                 accessRepository.snapshotDocument().reportDrafts(),
                 sessionRepository.loadProfiles());
         if (manualController != null) doc = doc.withManualFlows(manualController.flows());
+        if (watchRepository != null) doc = doc.withWatches(watchRepository.load());
         String json;
         try {
             json = projectSerializer.serializeProject(doc, exportMode);
@@ -707,6 +718,7 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
                 + doc.accessReportDrafts().size() + " saved report draft(s), "
                 + doc.manualFlows().size() + " manual draft(s), "
                 + doc.sessionProfiles().size() + " session profile(s), "
+                + doc.watches().size() + " watch(es), "
                 + "send mode " + doc.settings().sendMode() + ".\n\n"
                 + "Runtime scenarios are not stored in project files.\n\n"
                 + "How should existing flows be handled?";
@@ -728,6 +740,12 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         }
         accessRepository.replaceWith(doc.accessDocument());
         sessionRepository.saveProfiles(doc.sessionProfiles());
+        if (watchRepository != null) {
+            Map<String, WatchDefinition> mergedWatches = new java.util.LinkedHashMap<>();
+            if (choice != 1) watchRepository.load().forEach(w -> mergedWatches.put(w.id(), w));
+            doc.watches().forEach(w -> mergedWatches.put(w.id(), w));
+            watchRepository.save(new ArrayList<>(mergedWatches.values()));
+        }
         accessRefreshCallback.run();
     }
 

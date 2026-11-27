@@ -51,6 +51,12 @@ public final class CorestraSettingsKeys {
      */
     public static final String SESSION_PROFILES_DOCUMENT_QUARANTINE = "corestra.session.profiles.document.quarantine";
 
+    /** Stores serialized Watch definitions in Burp project data. */
+    public static final String WATCH_DOCUMENT = "corestra.watch.document";
+
+    /** Stores the last invalid Watch payload quarantined during recovery. */
+    public static final String WATCH_DOCUMENT_QUARANTINE = "corestra.watch.document.quarantine";
+
     private CorestraSettingsKeys() {
         throw new IllegalStateException("Utility class");
     }

@@ -18,6 +18,11 @@ import dev.nquangit.corestra.session.SessionProfile;
 import dev.nquangit.corestra.session.SessionProfilesDocument;
 import dev.nquangit.corestra.session.SessionState;
 
+import dev.nquangit.corestra.watch.WatchDefinition;
+import dev.nquangit.corestra.watch.WatchProbe;
+import dev.nquangit.corestra.watch.WatchRepository;
+
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,6 +95,7 @@ public final class ProjectSerializer {
                 AccessWorkspaceConfiguration.projectState(doc.accessDocument()), exportMode));
         root.set("sessions", objectMapper.valueToTree(
                 new SessionProfilesDocument(sessionProfilesForMode(doc.sessionProfiles(), exportMode))));
+        root.set("watches", objectMapper.valueToTree(watchesForMode(doc.watches(), exportMode)));
         return writeJson(root);
     }
 
@@ -130,7 +136,7 @@ public final class ProjectSerializer {
                     accessProjectState.evidence(),
                     accessProjectState.latestSummary().orElse(null),
                     accessProjectState.reportDrafts(),
-                    sessionProfiles).withManualFlows(manualFlows);
+                    sessionProfiles).withManualFlows(manualFlows).withWatches(deserializeWatches(root.get("watches")));
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Failed to parse project document: " + e.getMessage(), e);
         }
@@ -216,6 +222,39 @@ public final class ProjectSerializer {
                         profile.extractionRules())
                         .withState(transformSessionState(profile.state(), excludeSecrets)))
                 .toList();
+    }
+
+    private List<WatchDefinition> deserializeWatches(JsonNode watchesNode) {
+        if (watchesNode == null || watchesNode.isMissingNode() || watchesNode.isNull()) {
+            return List.of();
+        }
+        if (!watchesNode.isArray()) {
+            throw new IllegalArgumentException("watches must be an array");
+        }
+        List<String> problems = new ArrayList<>();
+        List<WatchDefinition> watches = WatchRepository.readWatches(watchesNode, problems);
+        if (!problems.isEmpty()) {
+            throw new IllegalArgumentException("Invalid watches: " + String.join(" ", problems));
+        }
+        return watches;
+    }
+
+    private List<WatchDefinition> watchesForMode(List<WatchDefinition> watches, ExportMode exportMode) {
+        return switch (exportMode) {
+            case FULL_EXPORT -> List.copyOf(watches);
+            case SANITIZED_EXPORT -> watches.stream().map(watch -> sanitizeWatch(watch, false)).toList();
+            case EXCLUDE_SECRETS -> watches.stream().map(watch -> sanitizeWatch(watch, true)).toList();
+            case ENCRYPTED_EXPORT -> throw new IllegalArgumentException("Encrypted access export is not implemented");
+        };
+    }
+
+    private WatchDefinition sanitizeWatch(WatchDefinition watch, boolean excludeSecrets) {
+        WatchProbe probe = watch.probe();
+        if (!probe.configured()) {
+            return watch;
+        }
+        return watch.withProbe(new WatchProbe(
+                flowExportSanitizer.sanitizeRequest(probe.request(), excludeSecrets), probe.inheritHeaders()));
     }
 
     private List<FlowDefinition> flowsForMode(List<FlowDefinition> flows, ExportMode exportMode) {

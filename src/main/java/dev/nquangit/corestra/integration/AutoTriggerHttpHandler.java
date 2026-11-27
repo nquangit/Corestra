@@ -63,7 +63,8 @@ import dev.nquangit.corestra.http.inject.RequestMutationResult;
  *       They run asynchronously, except when the flow's {@link AggregationPlan} targets the
  *       triggered step and an included downstream step contributes to it: then the callback waits
  *       for them (bounded by {@link #DEFAULT_SYNC_DOWNSTREAM_TIMEOUT_MILLIS}) so their responses
- *       can be shown in the live response.</li>
+ *       can be shown in the live response. A caller (Watch) can also require the wait for one
+ *       message with {@link #requireSynchronousDownstream}, which never changes the live body.</li>
  * </ol>
  *
  * <p>When the response arrives ({@link #handleHttpResponseReceived}), the handler looks up
@@ -290,11 +291,18 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             boolean hasDownstream = pending.stopIdx > pending.matchedStepIndex;
 
             DownstreamOutcome downstream = DownstreamOutcome.NONE;
-            if (hasDownstream && aggregateIntoLive && downstreamContributes(agg, steps, pending)) {
-                // Downstream responses belong in this response, so run them now — still strictly
-                // after the live-response extraction above — bounded by syncDownstreamTimeoutMillis.
+            boolean aggregationWaits = hasDownstream && aggregateIntoLive && downstreamContributes(agg, steps, pending);
+            SynchronousDownstream required = pending.synchronousDownstream;
+            if (hasDownstream && (aggregationWaits || required != null)) {
+                // Downstream responses belong in this response (or a caller such as Watch needs them
+                // finished), so run them now — still strictly after the live-response extraction
+                // above — bounded by the caller's timeout or syncDownstreamTimeoutMillis.
+                long timeout = required != null ? required.timeoutMillis : syncDownstreamTimeoutMillis;
                 downstream = runDownstreamForAggregation(flow, steps, pending, updatedCtx, triggeredStep,
-                        responseReceived.messageId());
+                        responseReceived.messageId(), timeout);
+                if (required != null) required.finish(true, downstream.problem());
+                // A wait requested only by the caller must not change the aggregated body.
+                if (!aggregationWaits) downstream = DownstreamOutcome.NONE;
             } else if (hasDownstream) {
                 try {
                     phase3Executor.execute(() -> {
@@ -307,6 +315,8 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 } catch (RejectedExecutionException ignored) {
                     // Extension unload raced this callback; downstream work is intentionally cancelled.
                 }
+            } else if (required != null) {
+                required.finish(false, null);
             }
 
             if (!aggregateIntoLive) {
@@ -578,7 +588,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
      */
     private DownstreamOutcome runDownstreamForAggregation(FlowDefinition flow, List<FlowStep> steps,
                                                           PendingTrigger pending, ExecutionContext ctx,
-                                                          FlowStep triggeredStep, int messageId) {
+                                                          FlowStep triggeredStep, int messageId, long timeout) {
         FlowDefinition sliceFlow = sliceFlow(flow, steps, pending.matchedStepIndex + 1, pending.stopIdx);
         java.util.concurrent.CompletableFuture<ExecutionResult> future;
         try {
@@ -586,16 +596,17 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                     () -> flowEngine.execute(sliceFlow, ctx), phase3Executor);
         } catch (RejectedExecutionException unloading) {
             return DownstreamOutcome.partial(Map.of(),
-                    "[Corestra] Downstream steps were cancelled (extension unloading); aggregation is partial.");
+                    "[Corestra] Downstream steps were cancelled (extension unloading); aggregation is partial.",
+                    "cancelled (extension unloading)");
         }
-        long timeout = syncDownstreamTimeoutMillis;
         try {
             ExecutionResult result = future.get(timeout, java.util.concurrent.TimeUnit.MILLISECONDS);
             Map<String, StepExecutionRecord> records = lastRecordByStep(result.stepRecords());
-            if (result.success()) return new DownstreamOutcome(records, null);
+            if (result.success()) return new DownstreamOutcome(records, null, null);
             reportInputFailure(flow, triggeredStep, messageId, "Downstream execution failed: " + result.failureMessage());
             return DownstreamOutcome.partial(records,
-                    "[Corestra] Downstream steps failed: " + result.failureMessage() + "; aggregation is partial.");
+                    "[Corestra] Downstream steps failed: " + result.failureMessage() + "; aggregation is partial.",
+                    "failed: " + result.failureMessage());
         } catch (java.util.concurrent.TimeoutException slow) {
             reportInputFailure(flow, triggeredStep, messageId, "Downstream steps did not complete within "
                     + timeout + " ms; the live response was returned with partial aggregation");
@@ -607,16 +618,19 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 }
             });
             return DownstreamOutcome.partial(Map.of(), "[Corestra] Downstream steps did not complete within "
-                    + timeout + " ms; aggregation is partial.");
+                    + timeout + " ms; aggregation is partial.",
+                    "timeout: not complete within " + timeout + " ms (steps continue in the background)");
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return DownstreamOutcome.partial(Map.of(),
-                    "[Corestra] Downstream steps were cancelled (callback interrupted); aggregation is partial.");
+                    "[Corestra] Downstream steps were cancelled (callback interrupted); aggregation is partial.",
+                    "cancelled (callback interrupted)");
         } catch (java.util.concurrent.ExecutionException | java.util.concurrent.CancellationException failed) {
             Throwable cause = failed.getCause() != null ? failed.getCause() : failed;
             reportInputFailure(flow, triggeredStep, messageId, "Downstream execution failed: " + cause.getMessage());
             return DownstreamOutcome.partial(Map.of(),
-                    "[Corestra] Downstream steps failed: " + cause.getMessage() + "; aggregation is partial.");
+                    "[Corestra] Downstream steps failed: " + cause.getMessage() + "; aggregation is partial.",
+                    "failed: " + cause.getMessage());
         }
     }
 
@@ -780,12 +794,99 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
 
     // ── Inner types ───────────────────────────────────────────────────────────
 
-    /** Downstream step records collected for live aggregation, plus an optional partial-result marker. */
-    private record DownstreamOutcome(Map<String, StepExecutionRecord> lastRecords, String marker) {
-        static final DownstreamOutcome NONE = new DownstreamOutcome(Map.of(), null);
+    /**
+     * Downstream step records collected for live aggregation, plus an optional partial-result marker
+     * and a short problem description (null on success) for {@link SynchronousDownstream} callers.
+     */
+    private record DownstreamOutcome(Map<String, StepExecutionRecord> lastRecords, String marker, String problem) {
+        static final DownstreamOutcome NONE = new DownstreamOutcome(Map.of(), null, null);
 
-        static DownstreamOutcome partial(Map<String, StepExecutionRecord> records, String marker) {
-            return new DownstreamOutcome(records, marker);
+        static DownstreamOutcome partial(Map<String, StepExecutionRecord> records, String marker, String problem) {
+            return new DownstreamOutcome(records, marker, problem);
+        }
+    }
+
+    /**
+     * Requests that the downstream steps of the pending trigger for {@code messageId} run
+     * synchronously inside the response callback, so that when
+     * {@link #handleHttpResponseReceived} returns they have finished, failed or timed out.
+     *
+     * <p>Must be called after {@link #handleHttpRequestToBeSent} returned for that message and
+     * before its response is handled. It reuses the aggregation wait (same executor, timeout and
+     * failure handling); a timed-out run keeps going in the background. It does not change the
+     * live response: aggregation output stays exactly as it would be without this call.</p>
+     *
+     * @param messageId     Montoya message id of the triggering request
+     * @param timeoutMillis positive maximum wait for the downstream steps
+     * @return a handle reporting the downstream outcome, or empty when no trigger is pending for
+     *         the message (the request was not an auto-trigger, was stopped, or the handler is closed)
+     */
+    public java.util.Optional<SynchronousDownstream> requireSynchronousDownstream(int messageId, long timeoutMillis) {
+        if (timeoutMillis < 1L) throw new IllegalArgumentException("timeout must be positive");
+        if (closed.get()) return java.util.Optional.empty();
+        PendingTrigger pending = pendingTriggers.get(messageId);
+        if (pending == null) return java.util.Optional.empty();
+        SynchronousDownstream handle = new SynchronousDownstream(timeoutMillis);
+        pending.synchronousDownstream = handle;
+        return java.util.Optional.of(handle);
+    }
+
+    /**
+     * Outcome of a downstream run requested with {@link #requireSynchronousDownstream}. Thread-safe;
+     * filled in by the response callback before it returns.
+     */
+    public static final class SynchronousDownstream {
+        private final long timeoutMillis;
+        private volatile boolean finished;
+        private volatile boolean ran;
+        private volatile String problem;
+
+        SynchronousDownstream(long timeoutMillis) {
+            this.timeoutMillis = timeoutMillis;
+        }
+
+        private void finish(boolean ran, String problem) {
+            this.ran = ran;
+            this.problem = problem;
+            this.finished = true;
+        }
+
+        /**
+         * Returns whether the response callback processed the trigger. False when the response
+         * never reached the handler or the pending trigger expired first.
+         *
+         * @return true once the outcome is known
+         */
+        public boolean finished() {
+            return finished;
+        }
+
+        /**
+         * Returns whether the trigger had downstream steps that were run (waited for).
+         *
+         * @return true when downstream steps ran synchronously
+         */
+        public boolean ran() {
+            return ran;
+        }
+
+        /**
+         * Returns a short description such as {@code "timeout: ..."}, {@code "failed: ..."} or
+         * {@code "cancelled (...)"}, or empty when the downstream steps succeeded or there were none.
+         *
+         * @return problem description
+         */
+        public java.util.Optional<String> problem() {
+            return java.util.Optional.ofNullable(problem);
+        }
+
+        /**
+         * Returns the maximum wait requested.
+         *
+         * @return timeout in milliseconds
+         */
+        public long timeoutMillis() {
+            return timeoutMillis;
         }
     }
 
@@ -796,6 +897,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         final ExecutionContext ctx;
         final HttpMessageSnapshot requestSnapshot;
         final long createdAtEpochMillis;
+        volatile SynchronousDownstream synchronousDownstream;
 
         PendingTrigger(FlowDefinition flow, int matchedStepIndex, int stopIdx,
                        ExecutionContext ctx, HttpMessageSnapshot requestSnapshot,

@@ -8,6 +8,7 @@ import dev.nquangit.corestra.access.workspace.AccessWorkspace;
 import dev.nquangit.corestra.flow.FlowDefinition;
 import dev.nquangit.corestra.session.SessionProfile;
 import dev.nquangit.corestra.session.SessionProfilesDocument;
+import dev.nquangit.corestra.watch.WatchDefinition;
 
 import java.util.List;
 import java.util.Map;
@@ -28,6 +29,7 @@ public final class ProjectDocument {
     private final AccessPlanSummary latestAccessPlanSummary;
     private final Map<String, SavedFindingDraft> accessReportDrafts;
     private final List<SessionProfile> sessionProfiles;
+    private final List<WatchDefinition> watches;
 
     /**
      * Creates a flow-only project document.
@@ -199,7 +201,17 @@ public final class ProjectDocument {
     public ProjectDocument(int schemaVersion, ProjectMetadata metadata, ProjectSettings settings, List<FlowDefinition> flows,
                            AccessWorkspace accessWorkspace, List<AccessEvidence> accessEvidence, AccessPlanSummary latestAccessPlanSummary,
                            Map<String, SavedFindingDraft> accessReportDrafts, List<SessionProfile> sessionProfiles, List<FlowDefinition> manualFlows) {
+        this(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence, latestAccessPlanSummary,
+                accessReportDrafts, sessionProfiles, manualFlows, List.of());
+    }
+
+    /** Creates a project document including Watch definitions. */
+    public ProjectDocument(int schemaVersion, ProjectMetadata metadata, ProjectSettings settings, List<FlowDefinition> flows,
+                           AccessWorkspace accessWorkspace, List<AccessEvidence> accessEvidence, AccessPlanSummary latestAccessPlanSummary,
+                           Map<String, SavedFindingDraft> accessReportDrafts, List<SessionProfile> sessionProfiles, List<FlowDefinition> manualFlows,
+                           List<WatchDefinition> watches) {
         this.manualFlows = List.copyOf(manualFlows);
+        this.watches = List.copyOf(Objects.requireNonNullElse(watches, List.of()));
         this.schemaVersion = schemaVersion;
         this.metadata = Objects.requireNonNull(metadata, "metadata");
         this.settings = Objects.requireNonNullElse(settings, ProjectSettings.defaults());
@@ -245,7 +257,16 @@ public final class ProjectDocument {
     /** Adds manual configuration to a document while preserving every other subsystem. */
     public ProjectDocument withManualFlows(List<FlowDefinition> drafts) {
         return new ProjectDocument(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence,
-                latestAccessPlanSummary, accessReportDrafts, sessionProfiles, drafts);
+                latestAccessPlanSummary, accessReportDrafts, sessionProfiles, drafts, watches);
+    }
+
+    /** Returns Watch definitions (configuration only; results are runtime state). */
+    public List<WatchDefinition> watches() { return watches; }
+
+    /** Adds Watch definitions to a document while preserving every other subsystem. */
+    public ProjectDocument withWatches(List<WatchDefinition> definitions) {
+        return new ProjectDocument(schemaVersion, metadata, settings, flows, accessWorkspace, accessEvidence,
+                latestAccessPlanSummary, accessReportDrafts, sessionProfiles, manualFlows, definitions);
     }
 
     /**

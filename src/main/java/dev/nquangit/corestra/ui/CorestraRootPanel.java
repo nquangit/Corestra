@@ -116,6 +116,20 @@ public final class CorestraRootPanel extends JPanel {
         ThemeCoordinator.applyTheme(panel, api); UiPolish.apply(panel);
     }
 
+    /**
+     * Installs the Watch configuration tab immediately before the last (Project) tab.
+     *
+     * @param panel Watch panel
+     * @param api   Montoya API used for theming
+     */
+    public void installWatch(JPanel panel, MontoyaApi api) {
+        Objects.requireNonNull(panel);
+        tabs.insertTab("Watch", null, panel,
+                "Before/after state checks around Repeater requests (e.g. balance after a transfer).",
+                Math.max(0, tabs.getTabCount() - 1));
+        ThemeCoordinator.applyTheme(panel, api); UiPolish.apply(panel);
+    }
+
     /** Navigates to the explicitly installed manual workspace. */
     public void showManualTesting() { if (manualTesting != null) tabs.setSelectedComponent(manualTesting); }
 

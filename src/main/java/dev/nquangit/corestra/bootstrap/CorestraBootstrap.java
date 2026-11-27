@@ -21,6 +21,12 @@ import dev.nquangit.corestra.http.inject.InjectionService;
 import dev.nquangit.corestra.http.discovery.ParameterDictionary;
 import dev.nquangit.corestra.http.discovery.ParameterDiscoveryHandler;
 import dev.nquangit.corestra.integration.AutoTriggerHttpHandler;
+import dev.nquangit.corestra.integration.watch.MontoyaWatchProbeClient;
+import dev.nquangit.corestra.integration.watch.RepeaterWatchHttpHandler;
+import dev.nquangit.corestra.ui.watch.WatchPanel;
+import dev.nquangit.corestra.watch.WatchEngine;
+import dev.nquangit.corestra.watch.WatchRepository;
+import dev.nquangit.corestra.watch.engine.DefaultWatchEngine;
 import dev.nquangit.corestra.integration.ActorIsolatedHttpClient;
 import dev.nquangit.corestra.integration.CorestraSessionHttpHandler;
 import dev.nquangit.corestra.integration.CorestraSessionHandlingAction;
@@ -282,6 +288,17 @@ public final class CorestraBootstrap {
                 parameterDictionaryPanel, api);
 
         rootPanel.installManualTesting(manualPanel, api);
+
+        // Watch: before/after state probes around Repeater requests, configured in its own tab.
+        WatchRepository watchRepository = new WatchRepository(api.persistence());
+        MontoyaWatchProbeClient watchProbeClient = new MontoyaWatchProbeClient(api, trafficOrigin);
+        registry.registerCloseable(watchProbeClient);
+        WatchEngine watchEngine = new DefaultWatchEngine(watchProbeClient);
+        WatchPanel watchPanel = new WatchPanel(watchRepository, api,
+                definition -> watchEngine.capture(definition, java.util.Map.of(), java.util.List.of()));
+        registry.registerCloseable(watchPanel);
+        projectPanel.configureWatches(watchRepository);
+        rootPanel.installWatch(watchPanel, api);
         flowisePanel.setManualTestingAction(flow -> {
             try { manualPanel.copyFrom(flow); rootPanel.showManualTesting(); }
             catch (RuntimeException exception) {
@@ -331,7 +348,13 @@ public final class CorestraBootstrap {
                 new dev.nquangit.corestra.integration.TriggerInputService(accessRepository::profileSnapshot, Clock.systemUTC()),
                 api.logging()::logToError, trafficOrigin);
         registry.registerCloseable(autoTriggerHttpHandler);
-        api.http().registerHttpHandler(autoTriggerHttpHandler);
+        // The Watch coordinator wraps Auto Trigger (never register both): BEFORE runs ahead of
+        // trigger prerequisites and AFTER runs once downstream steps and aggregation are done.
+        RepeaterWatchHttpHandler repeaterWatchHttpHandler = new RepeaterWatchHttpHandler(
+                watchRepository::load, watchEngine, extractionService, autoTriggerHttpHandler,
+                trafficOrigin, watchPanel::showResult, api.logging()::logToError);
+        registry.registerCloseable(repeaterWatchHttpHandler);
+        api.http().registerHttpHandler(repeaterWatchHttpHandler);
 
         registry.registerCloseable(prompts);
         return registry;
