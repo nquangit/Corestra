@@ -111,6 +111,56 @@ class ExtensionAutoTriggerTest {
         assertTrue(errors.isEmpty(), errors.toString());
     }
 
+    @Test void synchronousAggregatedDownstreamDoesNotRetriggerOnItsOwnNativeSends() throws Exception {
+        var ids = new AtomicInteger(200); var sends = new AtomicInteger();
+        var errors = new CopyOnWriteArrayList<String>();
+        Http http = proxy(Http.class, (p, m, a) -> {
+            if (!m.getName().equals("sendRequest")) throw new UnsupportedOperationException(m.getName());
+            assertTrue(sends.incrementAndGet() <= 2, "Corestra recursively triggered its own flow");
+            var marked = (HttpRequest) a[0];
+            // Burp delivers internal-send callbacks on other threads while the live response
+            // callback is blocked waiting for downstream steps.
+            return callbacks.submit(() -> {
+                var callback = live(ids.incrementAndGet(), origin.handleHttpRequestToBeSent(
+                        live(ids.get(), marked, ToolType.EXTENSIONS)).request(), ToolType.EXTENSIONS);
+                var action = handler.handleHttpRequestToBeSent(callback);
+                assertEquals(0, handler.pendingTriggerCount(), "Internal callbacks must not register triggers");
+                var response = response("HTTP/1.1 200 OK\r\nX-Value: internal\r\n\r\nbody" + callback.path());
+                handler.handleHttpResponseReceived(received(callback.messageId(), action.request(), response));
+                return proxy(HttpRequestResponse.class, (q, n, b) -> n.getName().equals("response") ? response : null);
+            }).get(5, TimeUnit.SECONDS);
+        });
+        var api = proxy(MontoyaApi.class, (p, m, a) -> m.getName().equals("http") ? http : null);
+        var extraction = new ExtractionService(); var injection = new InjectionService();
+        var engine = new FlowEngine(extraction, injection, new MontoyaHttpClient(api, origin));
+        var target = step("target").withIncludeInAggregation(true).withExtractRules(List.of(extract("next")))
+                .withTriggerRule(new StepTriggerRule(true, List.of("REPEATER"), List.of(), StepTriggerRule.ExecutionScope.FULL_FLOW, ""));
+        var flow = new FlowDefinition("f", "Flow", "", true, List.of(target,
+                step("after").withIncludeInAggregation(true).withInjectRules(List.of(inject("next"))),
+                step("last").withIncludeInAggregation(true)), null,
+                new AggregationPlan(true, AggregationPlan.Mode.APPEND_RAW_RESPONSES, "", List.of(), true), null);
+        handler = new AutoTriggerHttpHandler(() -> List.of(flow), engine, extraction, injection, null,
+                new TriggerInputService(dev.nquangit.corestra.access.workspace.AccessWorkspace::empty, Clock.systemUTC()),
+                errors::add, origin);
+
+        var repeater = live(1, request(service("api.test", 443, true), "GET", "/target", List.of(), ""), ToolType.REPEATER);
+        var prepared = handler.handleHttpRequestToBeSent(repeater).request();
+        var liveResponse = response("HTTP/1.1 200 OK\r\nX-Value: live-next\r\n\r\nlive");
+        var liveReceived = proxy(HttpResponseReceived.class, (p, m, a) -> switch (m.getName()) {
+            case "messageId" -> 1; case "initiatingRequest" -> prepared;
+            case "toolSource" -> proxy(ToolSource.class, (q, n, b) -> ToolType.REPEATER);
+            case "withBody" -> response("HTTP/1.1 200 OK\r\n\r\n" + a[0]);
+            default -> HttpResponse.class.getMethod(m.getName(), m.getParameterTypes()).invoke(liveResponse, a);
+        });
+
+        var body = handler.handleHttpResponseReceived(liveReceived).response().bodyToString();
+
+        assertEquals("live\nbody/after\nbody/last\n", body);
+        assertEquals(2, sends.get(), "Downstream ran inside the callback exactly once per step");
+        assertEquals(0, handler.pendingTriggerCount());
+        assertTrue(errors.isEmpty(), errors.toString());
+    }
+
     @Test void leasesReleaseOnErrorsAndIdenticalForeignRequestsAreNotMistakenForInternalTraffic() {
         var original = request(service("api.test", 443, true), "GET", "/same",
                 List.of(header(CorestraTrafficOrigin.HEADER, "old"), header(CorestraTrafficOrigin.HEADER.toLowerCase(Locale.ROOT), "duplicate")), "");

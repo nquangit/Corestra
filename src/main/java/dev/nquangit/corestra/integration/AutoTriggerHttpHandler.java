@@ -58,15 +58,22 @@ import dev.nquangit.corestra.http.inject.RequestMutationResult;
  *   <li>When a match is found, prerequisite steps run (Phase 1) and their execution context
  *       is stored in a correlation map keyed by the triggering request.</li>
  *   <li>The matched step's extract/inject rules apply to the live request (Phase 2).</li>
- *   <li>Post-trigger steps run asynchronously once the live response arrives (Phase 3), so that
- *       response-extracted variables are available to downstream steps.</li>
+ *   <li>Post-trigger steps run once the live response arrives and its extract rules have been
+ *       applied (Phase 3), so that response-extracted variables are available to downstream steps.
+ *       They run asynchronously, except when the flow's {@link AggregationPlan} targets the
+ *       triggered step and an included downstream step contributes to it: then the callback waits
+ *       for them (bounded by {@link #DEFAULT_SYNC_DOWNSTREAM_TIMEOUT_MILLIS}) so their responses
+ *       can be shown in the live response.</li>
  * </ol>
  *
  * <p>When the response arrives ({@link #handleHttpResponseReceived}), the handler looks up
- * the stored context, then combines:
+ * the stored context, then combines, in step order:
  * <ul>
- *   <li>prerequisite responses for steps with {@code includeInAggregation = true}, and</li>
- *   <li>the triggered step's live response if it also has {@code includeInAggregation = true}</li>
+ *   <li>prerequisite responses for steps with {@code includeInAggregation = true},</li>
+ *   <li>the triggered step's live response if it also has {@code includeInAggregation = true}, and</li>
+ *   <li>downstream responses (up to the trigger's stop step) with {@code includeInAggregation = true};
+ *       on downstream timeout, failure or cancellation a {@code [Corestra] ...} marker line is
+ *       appended and whatever completed is kept</li>
  * </ul>
  * into a single {@code flowUpdater} call. This avoids the race condition that would occur if
  * aggregation were split across two separate writes.
@@ -78,6 +85,12 @@ import dev.nquangit.corestra.http.inject.RequestMutationResult;
 public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable {
     static final int DEFAULT_MAX_PENDING_TRIGGERS = 2_048;
     static final long DEFAULT_PENDING_TTL_MILLIS = 5 * 60_000L;
+    /**
+     * Upper bound a response callback waits for downstream steps whose responses are aggregated
+     * into the live response (e.g. the Repeater view). Two ProxyPipeline read timeouts (30 s each);
+     * on expiry the live response is returned with partial aggregation and a marker line.
+     */
+    static final long DEFAULT_SYNC_DOWNSTREAM_TIMEOUT_MILLIS = 60_000L;
 
     private final Supplier<List<FlowDefinition>> flowsSupplier;
     private final FlowEngine flowEngine;
@@ -92,6 +105,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
     private java.util.function.Consumer<String> errors = message -> System.err.println("[Corestra] " + message);
     private final long pendingTtlMillis;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private volatile long syncDownstreamTimeoutMillis = DEFAULT_SYNC_DOWNSTREAM_TIMEOUT_MILLIS;
     private final AutoTriggerPrerequisiteGate prerequisiteGate = new AutoTriggerPrerequisiteGate();
     private CorestraTrafficOrigin origin;
 
@@ -268,7 +282,20 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             ExecutionContext updatedCtx = applyExtractRulesToContext(
                     triggeredStep, pending.requestSnapshot, liveResponseSnapshot, pending.ctx, ExtractRule.SourceSide.RESPONSE);
 
-            if (pending.stopIdx > pending.matchedStepIndex) {
+            AggregationPlan agg = flow.aggregation();
+            // The live response is the only message Burp displays, so it receives the synthetic
+            // body only when the plan targets the triggered step.
+            boolean aggregateIntoLive = agg.enabled()
+                    && (agg.useTriggeredStep() || triggeredStep.id().equals(agg.finalStepId()));
+            boolean hasDownstream = pending.stopIdx > pending.matchedStepIndex;
+
+            DownstreamOutcome downstream = DownstreamOutcome.NONE;
+            if (hasDownstream && aggregateIntoLive && downstreamContributes(agg, steps, pending)) {
+                // Downstream responses belong in this response, so run them now — still strictly
+                // after the live-response extraction above — bounded by syncDownstreamTimeoutMillis.
+                downstream = runDownstreamForAggregation(flow, steps, pending, updatedCtx, triggeredStep,
+                        responseReceived.messageId());
+            } else if (hasDownstream) {
                 try {
                     phase3Executor.execute(() -> {
                     try {
@@ -282,8 +309,7 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
                 }
             }
 
-            AggregationPlan agg = flow.aggregation();
-            if (!agg.enabled() || (!agg.useTriggeredStep() && !triggeredStep.id().equals(agg.finalStepId()))) {
+            if (!aggregateIntoLive) {
                 return ResponseReceivedAction.continueWith(responseReceived);
             }
             StringBuilder aggregated = new StringBuilder();
@@ -299,6 +325,17 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
             if (triggeredStep.includeInAggregation()) {
                 appendAggregatedEntry(aggregated, responseReceived.bodyToString(),
                         responseReceived.statusCode(), agg.mode(), triggeredStep.id());
+            }
+            for (int idx = pending.matchedStepIndex + 1; idx <= pending.stopIdx; idx++) {
+                FlowStep next = steps.get(idx);
+                if (!next.includeInAggregation()) continue;
+                StepExecutionRecord rec = downstream.lastRecords().get(next.id());
+                if (rec == null) continue;
+                appendAggregatedEntry(aggregated, extractBodyFromRaw(rec.receivedResponse()),
+                        rec.responseStatusCode(), agg.mode(), next.id());
+            }
+            if (downstream.marker() != null) {
+                aggregated.append(downstream.marker()).append('\n');
             }
             if (!aggregated.isEmpty()) {
                 return ResponseReceivedAction.continueWith(responseReceived.withBody(aggregated.toString()));
@@ -519,13 +556,98 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
         return ctx;
     }
 
+    /**
+     * Returns whether any downstream step in the trigger's range can add content to the live
+     * aggregated response. Selected-extract mode adds nothing for live aggregation, so it never
+     * needs to wait for downstream steps.
+     */
+    private static boolean downstreamContributes(AggregationPlan agg, List<FlowStep> steps, PendingTrigger pending) {
+        if (agg.mode() == AggregationPlan.Mode.APPEND_SELECTED_EXTRACTS) return false;
+        for (int idx = pending.matchedStepIndex + 1; idx <= pending.stopIdx; idx++) {
+            FlowStep step = steps.get(idx);
+            if (step.enabled() && step.includeInAggregation()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Runs the downstream range on the phase-3 executor and waits up to
+     * {@link #syncDownstreamTimeoutMillis} for it. Never throws: timeouts, failures, cancellation
+     * and interruption are returned as a partial outcome with a marker line. A timed-out run is
+     * left to finish in the background (no mid-flow interruption) and later failures are logged.
+     */
+    private DownstreamOutcome runDownstreamForAggregation(FlowDefinition flow, List<FlowStep> steps,
+                                                          PendingTrigger pending, ExecutionContext ctx,
+                                                          FlowStep triggeredStep, int messageId) {
+        FlowDefinition sliceFlow = sliceFlow(flow, steps, pending.matchedStepIndex + 1, pending.stopIdx);
+        java.util.concurrent.CompletableFuture<ExecutionResult> future;
+        try {
+            future = java.util.concurrent.CompletableFuture.supplyAsync(
+                    () -> flowEngine.execute(sliceFlow, ctx), phase3Executor);
+        } catch (RejectedExecutionException unloading) {
+            return DownstreamOutcome.partial(Map.of(),
+                    "[Corestra] Downstream steps were cancelled (extension unloading); aggregation is partial.");
+        }
+        long timeout = syncDownstreamTimeoutMillis;
+        try {
+            ExecutionResult result = future.get(timeout, java.util.concurrent.TimeUnit.MILLISECONDS);
+            Map<String, StepExecutionRecord> records = lastRecordByStep(result.stepRecords());
+            if (result.success()) return new DownstreamOutcome(records, null);
+            reportInputFailure(flow, triggeredStep, messageId, "Downstream execution failed: " + result.failureMessage());
+            return DownstreamOutcome.partial(records,
+                    "[Corestra] Downstream steps failed: " + result.failureMessage() + "; aggregation is partial.");
+        } catch (java.util.concurrent.TimeoutException slow) {
+            reportInputFailure(flow, triggeredStep, messageId, "Downstream steps did not complete within "
+                    + timeout + " ms; the live response was returned with partial aggregation");
+            future.whenComplete((result, failure) -> {
+                if (failure != null) {
+                    reportInputFailure(flow, triggeredStep, messageId, "Downstream execution failed: " + failure.getMessage());
+                } else if (!result.success()) {
+                    reportInputFailure(flow, triggeredStep, messageId, "Downstream execution failed: " + result.failureMessage());
+                }
+            });
+            return DownstreamOutcome.partial(Map.of(), "[Corestra] Downstream steps did not complete within "
+                    + timeout + " ms; aggregation is partial.");
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return DownstreamOutcome.partial(Map.of(),
+                    "[Corestra] Downstream steps were cancelled (callback interrupted); aggregation is partial.");
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.CancellationException failed) {
+            Throwable cause = failed.getCause() != null ? failed.getCause() : failed;
+            reportInputFailure(flow, triggeredStep, messageId, "Downstream execution failed: " + cause.getMessage());
+            return DownstreamOutcome.partial(Map.of(),
+                    "[Corestra] Downstream steps failed: " + cause.getMessage() + "; aggregation is partial.");
+        }
+    }
+
+    private static Map<String, StepExecutionRecord> lastRecordByStep(List<StepExecutionRecord> records) {
+        Map<String, StepExecutionRecord> last = new java.util.HashMap<>();
+        if (records != null) for (StepExecutionRecord record : records) last.put(record.stepId(), record);
+        return last;
+    }
+
+    /**
+     * Sets how long a response callback waits for downstream steps whose responses are
+     * aggregated into the live response.
+     *
+     * @param millis positive timeout in milliseconds
+     */
+    void syncDownstreamTimeoutMillis(long millis) {
+        if (millis < 1L) throw new IllegalArgumentException("timeout must be positive");
+        this.syncDownstreamTimeoutMillis = millis;
+    }
+
+    private static FlowDefinition sliceFlow(FlowDefinition flow, List<FlowStep> steps, int fromIdx, int toIdx) {
+        List<FlowStep> slice = new ArrayList<>(steps.subList(fromIdx, toIdx + 1));
+        return new FlowDefinition(
+                flow.id(), flow.name(), flow.description(), flow.enabled(),
+                slice, flow.rules(), AggregationPlan.disabled(), flow.triggerConfig());
+    }
+
     ExecutionContext runStepRange(FlowDefinition flow, List<FlowStep> steps,
                                   int fromIdx, int toIdx, ExecutionContext ctx) {
         if (fromIdx > toIdx) return ctx;
-        List<FlowStep> slice = new ArrayList<>(steps.subList(fromIdx, toIdx + 1));
-        FlowDefinition sliceFlow = new FlowDefinition(
-                flow.id(), flow.name(), flow.description(), flow.enabled(),
-                slice, flow.rules(), AggregationPlan.disabled(), flow.triggerConfig());
+        FlowDefinition sliceFlow = sliceFlow(flow, steps, fromIdx, toIdx);
         ExecutionResult result = flowEngine.execute(sliceFlow, ctx);
         if (!result.success()) {
             if (result.actionRecords().stream().anyMatch(action -> action.status() == StepActionStatus.FAILED
@@ -657,6 +779,15 @@ public final class AutoTriggerHttpHandler implements HttpHandler, AutoCloseable 
     }
 
     // ── Inner types ───────────────────────────────────────────────────────────
+
+    /** Downstream step records collected for live aggregation, plus an optional partial-result marker. */
+    private record DownstreamOutcome(Map<String, StepExecutionRecord> lastRecords, String marker) {
+        static final DownstreamOutcome NONE = new DownstreamOutcome(Map.of(), null);
+
+        static DownstreamOutcome partial(Map<String, StepExecutionRecord> records, String marker) {
+            return new DownstreamOutcome(records, marker);
+        }
+    }
 
     private static final class PendingTrigger {
         final FlowDefinition flow;
