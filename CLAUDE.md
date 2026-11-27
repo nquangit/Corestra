@@ -66,6 +66,9 @@ everything and registers tabs, context menus, the session-handling action and HT
   (scoped session injection), `AutoTriggerHttpHandler` (per-step trigger rules; prerequisites →
   inject → send → **extract from live response before running downstream steps**).
   `CorestraTrafficOrigin` (per-send nonce + message IDs) stops Corestra reprocessing its own traffic.
+- `GlobalRetryHttpHandler` (project **Global retry**, `http.retry`) is registered first among live
+  handlers: host cooldown before session injection; retryable responses are resent
+  (Corestra-origin) and replaced before Session Handler / Auto Trigger see them.
 
 ## Domain model (`flow`)
 

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
+import dev.nquangit.corestra.http.retry.GlobalRetryPolicy;
 import dev.nquangit.corestra.session.SessionSelectionConfig;
 
 /**
@@ -26,6 +27,7 @@ public final class ProjectSettings {
     private final String proxyHost;
     private final int proxyPort;
     private final SessionSelectionConfig sessionSelection;
+    private final GlobalRetryPolicy globalRetry;
 
     /**
      * Creates project settings.
@@ -33,17 +35,27 @@ public final class ProjectSettings {
      * @param sendMode transport route; defaults to {@link HttpSendMode#STANDARD} when absent
      * @param proxyHost proxy listener host; defaults to {@value #DEFAULT_PROXY_HOST} when blank
      * @param proxyPort proxy listener port; must be in {@code 1..65535}
+     * @param sessionSelection live-request session choice; disabled when absent
+     * @param globalRetry live-traffic retry policy; {@link GlobalRetryPolicy#defaults()} (disabled) when absent
      */
     @JsonCreator
     public ProjectSettings(
             @JsonProperty("sendMode") HttpSendMode sendMode,
             @JsonProperty("proxyHost") String proxyHost,
             @JsonProperty("proxyPort") int proxyPort,
-            @JsonProperty("sessionSelection") SessionSelectionConfig sessionSelection) {
+            @JsonProperty("sessionSelection") SessionSelectionConfig sessionSelection,
+            @JsonProperty("globalRetry") GlobalRetryPolicy globalRetry) {
         this.sendMode = sendMode == null ? HttpSendMode.STANDARD : sendMode;
         this.proxyHost = normalizeHost(proxyHost);
         this.proxyPort = normalizePort(proxyPort);
         this.sessionSelection = Objects.requireNonNullElseGet(sessionSelection, SessionSelectionConfig::disabled);
+        this.globalRetry = Objects.requireNonNullElseGet(globalRetry, GlobalRetryPolicy::defaults);
+    }
+
+    /** Creates settings compatible with projects saved before the global retry policy existed. */
+    public ProjectSettings(HttpSendMode sendMode, String proxyHost, int proxyPort,
+                           SessionSelectionConfig sessionSelection) {
+        this(sendMode, proxyHost, proxyPort, sessionSelection, null);
     }
 
     /** Creates settings compatible with projects without interactive session selection. */
@@ -56,7 +68,15 @@ public final class ProjectSettings {
 
     /** Returns a copy with updated interactive selection conditions. */
     public ProjectSettings withSessionSelection(SessionSelectionConfig config) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort, config);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, config, globalRetry);
+    }
+
+    /** Returns the project-wide live-traffic retry policy. */
+    public GlobalRetryPolicy globalRetry() { return globalRetry; }
+
+    /** Returns a copy with an updated live-traffic retry policy. */
+    public ProjectSettings withGlobalRetry(GlobalRetryPolicy policy) {
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection, policy);
     }
 
     /**
@@ -102,7 +122,7 @@ public final class ProjectSettings {
      * @return updated settings
      */
     public ProjectSettings withSendMode(HttpSendMode sendMode) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection, globalRetry);
     }
 
     /**
@@ -112,7 +132,7 @@ public final class ProjectSettings {
      * @return updated settings
      */
     public ProjectSettings withProxyHost(String proxyHost) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection, globalRetry);
     }
 
     /**
@@ -122,7 +142,7 @@ public final class ProjectSettings {
      * @return updated settings
      */
     public ProjectSettings withProxyPort(int proxyPort) {
-        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection);
+        return new ProjectSettings(sendMode, proxyHost, proxyPort, sessionSelection, globalRetry);
     }
 
     @Override
@@ -136,12 +156,13 @@ public final class ProjectSettings {
         return proxyPort == that.proxyPort
                 && sendMode == that.sendMode
                 && Objects.equals(proxyHost, that.proxyHost)
-                && Objects.equals(sessionSelection, that.sessionSelection);
+                && Objects.equals(sessionSelection, that.sessionSelection)
+                && Objects.equals(globalRetry, that.globalRetry);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(sendMode, proxyHost, proxyPort, sessionSelection);
+        return Objects.hash(sendMode, proxyHost, proxyPort, sessionSelection, globalRetry);
     }
 
     @Override

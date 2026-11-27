@@ -2,6 +2,7 @@ package dev.nquangit.corestra.bootstrap;
 
 import dev.nquangit.corestra.integration.SessionFlowBindingService;
 import dev.nquangit.corestra.integration.CorestraTrafficOrigin;
+import dev.nquangit.corestra.integration.GlobalRetryHttpHandler;
 import dev.nquangit.corestra.interaction.InteractionAbortedException;
 import dev.nquangit.corestra.session.SessionSelectionService;
 import dev.nquangit.corestra.ui.interaction.SwingPromptService;
@@ -111,6 +112,17 @@ public final class CorestraBootstrap {
         var trafficOrigin = new CorestraTrafficOrigin();
         api.http().registerHttpHandler(trafficOrigin);
         trafficOrigin.activate();
+        // Global retry runs first among Corestra's live handlers: host cooldown waits happen before
+        // session injection, and Session Handler / Auto Trigger / Watch see the final response.
+        var retryGate = new dev.nquangit.corestra.http.retry.HostCooldownGate(Clock.systemUTC());
+        var retryWaiter = new dev.nquangit.corestra.http.retry.ClosableRetryWaiter();
+        GlobalRetryHttpHandler globalRetryHandler = new GlobalRetryHttpHandler(
+                () -> settingsRepo.load().globalRetry(),
+                new dev.nquangit.corestra.http.retry.LiveRetryEngine(Clock.systemUTC(), retryWaiter, retryGate),
+                retryGate, retryWaiter, trafficOrigin);
+        globalRetryHandler.setSender(new MontoyaHttpClient(api, trafficOrigin));
+        globalRetryHandler.setDiagnostics(api.logging()::logToError);
+        api.http().registerHttpHandler(globalRetryHandler);
         HttpClient routingHttpClient = new RoutingHttpClient(
                 settingsRepo::load,
                 new MontoyaHttpClient(api, trafficOrigin),
@@ -148,6 +160,7 @@ public final class CorestraBootstrap {
         accessFlowEngine.addExecutionListener(executionLog::record);
 
         ServiceRegistry registry = new ServiceRegistry(api, flowRepository, flowEngine);
+        registry.registerCloseable(globalRetryHandler);
         registry.registerCloseable(trafficOrigin);
 
         // UI

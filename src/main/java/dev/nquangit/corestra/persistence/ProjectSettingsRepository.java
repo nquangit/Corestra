@@ -49,12 +49,24 @@ public final class ProjectSettingsRepository {
         if (json == null || json.isBlank()) {
             return ProjectSettings.defaults();
         }
-        try {
-            return objectMapper.readValue(json, ProjectSettings.class);
-        } catch (JsonProcessingException | IllegalArgumentException exception) {
-            return ProjectSettings.defaults();
+        // Live HTTP handlers read settings on every request; reparse only when the stored JSON changes.
+        ParsedSettings cached = parsed;
+        if (cached != null && cached.json.equals(json)) {
+            return cached.settings;
         }
+        ProjectSettings settings;
+        try {
+            settings = objectMapper.readValue(json, ProjectSettings.class);
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            settings = ProjectSettings.defaults();
+        }
+        parsed = new ParsedSettings(json, settings);
+        return settings;
     }
+
+    private volatile ParsedSettings parsed;
+
+    private record ParsedSettings(String json, ProjectSettings settings) { }
 
     /**
      * Persists settings to project storage.

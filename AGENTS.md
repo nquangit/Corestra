@@ -99,6 +99,14 @@ large controllers/runners with unrelated responsibilities.
    prerequisites before the live request, applies the trigger step's request rules, then
    extracts from the live response before running downstream steps and aggregation.
 
+`GlobalRetryHttpHandler` (registered right after `CorestraTrafficOrigin`, before the paths
+above) applies `ProjectSettings.globalRetry()` (`http.retry.GlobalRetryPolicy`) to live
+Proxy/Repeater/Intruder/Scanner traffic: it admits covered requests by message ID, waits on
+`HostCooldownGate` for rate-limited hosts, and on a retryable response resends the initiating
+request through a Corestra-origin `MontoyaHttpClient` (`LiveRetryEngine` loop) and replaces the
+response with a note. It must stay before the Session Handler so session-lost detection and
+Auto Trigger see the final response. No-response failures never reach a response handler.
+
 Global HTTP handlers are already part of the implementation. Preserve scope matching,
 recursion guards, Corestra-origin traffic exclusion in auto-trigger, execution stop bounds,
 and pending request/response context. In particular, do not move downstream execution ahead
