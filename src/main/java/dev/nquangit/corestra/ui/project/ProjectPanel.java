@@ -96,7 +96,6 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
     private final JRadioButton proxyPipelineRadio = new JRadioButton("Proxy Pipeline");
     private final JTextField proxyHostField = new JTextField();
     private final JTextField proxyPortField = new JTextField();
-    private final JLabel globalRetryLabel = new JLabel(" ");
     private final JComboBox<ExportMode> accessExportModeCombo = new JComboBox<>(
             new ExportMode[]{ExportMode.FULL_EXPORT, ExportMode.SANITIZED_EXPORT, ExportMode.EXCLUDE_SECRETS});
     private boolean refreshingSettingsControls;
@@ -369,26 +368,6 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
         proxyPortField.setToolTipText("Listener port used by any Proxy Pipeline request, including per-request overrides.");
         section.add(proxyPortField, fc);
 
-        lc.gridy = 3; fc.gridy = 3;
-        section.add(new JLabel("Global retry:"), lc);
-        JPanel retryRow = new JPanel();
-        retryRow.setLayout(new BoxLayout(retryRow, BoxLayout.X_AXIS));
-        globalRetryLabel.setToolTipText("Retry rate-limited / WAF-blocked responses for Proxy, Repeater, Intruder"
-                + " and Scanner traffic; the Burp tool receives the final response.");
-        StyledButton configureRetry = StyledButton.neutral("Configure…");
-        configureRetry.addActionListener(event -> {
-            if (GlobalRetrySettingsDialog.open(this, settingsRepo)) {
-                currentSettings = settingsRepo.load();
-                touchProject();
-                refreshSettingsControls();
-            }
-        });
-        retryRow.add(globalRetryLabel);
-        retryRow.add(Box.createHorizontalStrut(8));
-        retryRow.add(Box.createHorizontalGlue());
-        retryRow.add(configureRetry);
-        section.add(retryRow, fc);
-
         return section;
     }
 
@@ -544,7 +523,6 @@ public final class ProjectPanel extends JPanel implements AutoCloseable {
             proxyPipelineRadio.setSelected(currentSettings.sendMode() == HttpSendMode.PROXY_PIPELINE);
             proxyHostField.setText(currentSettings.proxyHost());
             proxyPortField.setText(Integer.toString(currentSettings.proxyPort()));
-            globalRetryLabel.setText(currentSettings.globalRetry().summary());
             // Requests may opt into Proxy Pipeline even when the project default is Standard.
             proxyHostField.setEnabled(true);
             proxyPortField.setEnabled(true);

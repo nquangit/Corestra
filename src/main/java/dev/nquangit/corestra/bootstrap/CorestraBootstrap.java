@@ -312,6 +312,7 @@ public final class CorestraBootstrap {
         registry.registerCloseable(watchPanel);
         projectPanel.configureWatches(watchRepository);
         rootPanel.installWatch(watchPanel, api);
+        rootPanel.installGlobalRetry(new dev.nquangit.corestra.ui.retry.GlobalRetryPanel(settingsRepo), api);
         flowisePanel.setManualTestingAction(flow -> {
             try { manualPanel.copyFrom(flow); rootPanel.showManualTesting(); }
             catch (RuntimeException exception) {

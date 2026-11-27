@@ -383,9 +383,10 @@ public final class RuleSummaryPanel extends JPanel {
         }
         list.setSelectedIndices(preselected.stream().mapToInt(Integer::intValue).toArray());
         JPanel content = new JPanel(new BorderLayout(0, 6));
-        content.add(new JLabel("<html>Matched by value against earlier steps' captured responses and by name. "
-                + "LOW items (values that also appear in an earlier request) are not pre-selected.<br>"
-                + "New extractors are added to their producer step.</html>"), BorderLayout.NORTH);
+        content.add(new dev.nquangit.corestra.ui.component.WrappedText(
+                "Matched by value against earlier steps' captured responses and by name. "
+                + "LOW items (values that also appear in an earlier request) are not pre-selected.\n"
+                + "New extractors are added to their producer step.", 820), BorderLayout.NORTH);
         JScrollPane scroll = new JScrollPane(list);
         scroll.setPreferredSize(new Dimension(820, Math.min(420, 40 + entries.size() * 22)));
         content.add(scroll, BorderLayout.CENTER);

@@ -224,14 +224,14 @@ Linked mode shares credentials, token/cookie state, provider login/refresh/valid
 
 ### Retry rate-limited or WAF-blocked live requests
 
-**Project → Settings → Global retry → Configure…** retries responses that look rate-limited or blocked on live Burp traffic from Proxy, Repeater, Intruder and Scanner. It is disabled by default.
+The **Global Retry** tab retries responses that look rate-limited or blocked on live Burp traffic from Proxy, Repeater, Intruder and Scanner. It is disabled by default.
 
 - **Coverage:** selected tools (default Proxy, Repeater, Intruder), optionally only requests in Burp's target scope, an optional host regex and an optional method list.
 - **Condition:** response status in the list (default `429, 503`) **or** a regex over the full response (status line, headers, blank line, body), e.g. `(?i)request blocked|cf-mitigated`.
 - **Waiting:** `Retry-After` (seconds or HTTP-date) when honored, otherwise exponential backoff (`base × multiplier^attempt`, capped per wait). A request never waits longer than **Max total wait per request**; if the next wait would exceed it, Corestra gives up and delivers the last response.
 - **Host cooldown:** while a host is rate-limited, other covered requests to the same host wait before being sent, so Intruder threads do not all hit the limit and retry independently.
 
-The Burp tool receives the final response; history still shows the original request, and the response note records what happened (for example `Corestra retry: 2 resends, waited 3.0s, final status 200 (recovered)`). Resends go directly (not through Proxy Pipeline) and are Corestra-origin traffic, so Session Handler and Auto Trigger do not process them again; they appear in Logger as Extensions traffic. Global retry runs before the Session Handler, so a session-lost response after retrying still triggers re-login.
+The Burp tool receives the final response; history still shows the original request, and the response note records what happened (for example `Corestra retry: 2 resends, waited 3.0s, final status 200 (recovered)`). Settings are stored with the project settings, so project export/import carries them. Resends go directly (not through Proxy Pipeline) and are Corestra-origin traffic, so Session Handler and Auto Trigger do not process them again; they appear in Logger as Extensions traffic. Global retry runs before the Session Handler, so a session-lost response after retrying still triggers re-login.
 
 Limits: requests that get no response at all (timeouts, dropped connections) cannot be retried. Scanner is excluded by default because retry waits add to measured response time and can cause false positives in time-based checks. Retrying non-idempotent methods on `5xx` can repeat a side effect — restrict methods if that matters. See [Global retry](guides/GLOBAL_RETRY.md).
 

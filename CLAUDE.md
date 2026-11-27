@@ -47,7 +47,7 @@ Corestra (`dev.nquangit.corestra`) is a Burp Suite extension with four feature a
 4. **Manual Testing** — editable request templates (`{{var}}`) run with session selection.
 
 Root UI (`CorestraRootPanel`) uses `JTabbedPane.TOP`: Flowise, Authentication, Session Handler,
-Access Testing, Parameters, Project (+ Manual Testing).
+Access Testing, Parameters, Watch, Global Retry, Project (+ Manual Testing).
 
 ## Wiring (read `bootstrap/CorestraBootstrap.java` first)
 
@@ -66,7 +66,7 @@ everything and registers tabs, context menus, the session-handling action and HT
   (scoped session injection), `AutoTriggerHttpHandler` (per-step trigger rules; prerequisites →
   inject → send → **extract from live response before running downstream steps**).
   `CorestraTrafficOrigin` (per-send nonce + message IDs) stops Corestra reprocessing its own traffic.
-- `GlobalRetryHttpHandler` (project **Global retry**, `http.retry`) is registered first among live
+- `GlobalRetryHttpHandler` (**Global Retry** tab, `ui.retry.GlobalRetryPanel`; policy in `ProjectSettings.globalRetry`, `http.retry`) is registered first among live
   handlers: host cooldown before session injection; retryable responses are resent
   (Corestra-origin) and replaced before Session Handler / Auto Trigger see them.
 
@@ -128,6 +128,7 @@ Deterministic, explainable heuristics only — no LLM, never sends traffic, read
   `setActiveFlow()` clears `selectedStep` — validate step membership before refreshing fields.
 - `StepListPanel` drag listener: pass interactive children (checkboxes) as `excluded` to
   `installOnTree(c, ma, excluded)`.
+- No HTML in Swing text (`<html>` labels render badly in Burp); use `WrappedText` for multi-line guidance.
 - Use Burp-native editors, `StyledButton.primary/success/danger/neutral`, `UiTheme.pick(light, dark)`.
 - Network work off the EDT (`SwingWorker`); no business logic in Swing listeners.
 

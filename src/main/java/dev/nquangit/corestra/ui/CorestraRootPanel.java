@@ -130,6 +130,20 @@ public final class CorestraRootPanel extends JPanel {
         ThemeCoordinator.applyTheme(panel, api); UiPolish.apply(panel);
     }
 
+    /**
+     * Installs the Global Retry tab immediately before the last (Project) tab.
+     *
+     * @param panel Global Retry panel
+     * @param api   Montoya API used for theming
+     */
+    public void installGlobalRetry(JPanel panel, MontoyaApi api) {
+        Objects.requireNonNull(panel);
+        tabs.insertTab("Global Retry", null, panel,
+                "Retry rate-limited / WAF-blocked responses on live Proxy, Repeater, Intruder and Scanner traffic.",
+                Math.max(0, tabs.getTabCount() - 1));
+        ThemeCoordinator.applyTheme(panel, api); UiPolish.apply(panel);
+    }
+
     /** Navigates to the explicitly installed manual workspace. */
     public void showManualTesting() { if (manualTesting != null) tabs.setSelectedComponent(manualTesting); }
 

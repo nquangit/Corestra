@@ -6,7 +6,7 @@ Mặc định tính năng **tắt**.
 
 ## 1. Bật và cấu hình
 
-Vào **Project → Settings → Global retry → Configure…**
+Mở tab **Global Retry** (nằm trước tab Project), chỉnh cấu hình rồi nhấn **Save**. **Revert** bỏ thay đổi chưa lưu, **Load defaults** khôi phục mặc định (tắt).
 
 | Cấu hình | Mặc định | Ý nghĩa |
 | --- | --- | --- |
